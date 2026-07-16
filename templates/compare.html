@@ -1,0 +1,417 @@
+{% extends 'base.html' %}
+{% block title %}数据对比 - QoR Recorder{% endblock %}
+
+{% block content %}
+<h2 style="font-size: 22px; margin-bottom: 16px;">数据对比分析</h2>
+
+<div class="card">
+    <div class="card-header">对比配置</div>
+    <div class="card-body">
+        <div class="filter-bar">
+            <div class="form-group">
+                <label>项目</label>
+                <select id="cmpProject" onchange="updateCmpModules(); refreshCmpVersions()" style="min-width: 200px;">
+                    <option value="">全部项目</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>选择模块 (Ctrl+多选) <input type="text" id="cmpModuleSearch" placeholder="搜索..."
+                        oninput="filterCmpModules()"
+                        style="margin-left:4px; padding:2px 6px; font-size:12px; width: 100px;"></label>
+                <select id="cmpModules" multiple onchange="refreshCmpVersions()"
+                    style="min-width: 300px; min-height: 120px;">
+                </select>
+                <div style="margin-top: 4px; display: flex; gap: 6px;">
+                    <button class="btn btn-sm" onclick="selectAllCmpModules()"
+                        style="font-size: 11px; padding: 2px 8px;">全选</button>
+                    <button class="btn btn-sm" onclick="clearCmpModules()"
+                        style="font-size: 11px; padding: 2px 8px;">清空</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>对比指标 (Ctrl+多选)</label>
+                <select id="cmpMetrics" multiple style="min-width: 220px; min-height: 120px;">
+                    <option value="area_total" selected>总面积</option>
+                    <option value="wns_setup" selected>Setup WNS</option>
+                    <option value="tns_setup">Setup TNS</option>
+                    <option value="power_total" selected>总功耗</option>
+                    <option value="power_internal">内部功耗</option>
+                    <option value="power_switching">翻转功耗</option>
+                    <option value="power_leakage">漏电功耗</option>
+                    <option value="area_combinational">组合逻辑面积</option>
+                    <option value="area_sequential">时序逻辑面积</option>
+                    <option value="cell_count">单元数量</option>
+                    <option value="instance_count">实例数量</option>
+                    <option value="net_count">网络数量</option>
+                    <option value="achieved_frequency">达成频率</option>
+                    <option value="wns_hold">Hold WNS</option>
+                    <option value="tns_hold">Hold TNS</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Tag / 版本 (多选)</label>
+                <select id="cmpVersion" multiple style="min-width: 200px; min-height: 120px;">
+                </select>
+            </div>
+        </div>
+        <div style="display: flex; gap: 8px; margin-top: 12px;">
+            <button class="btn btn-sm" onclick="runCompare()">生成对比</button>
+            <button class="btn btn-success btn-sm" onclick="exportData('excel')">导出 Excel</button>
+            <button class="btn btn-default btn-sm" onclick="exportData('csv')">导出 CSV</button>
+        </div>
+    </div>
+</div>
+
+<!-- 图表设置 -->
+<div class="card" style="margin-bottom: 12px;">
+    <div class="card-body"
+        style="display: flex; gap: 20px; align-items: flex-end; padding: 10px 16px; flex-wrap: wrap;">
+        <div class="form-group" style="margin: 0;">
+            <label style="font-size: 12px; display: block;">图表方向</label>
+            <select id="cmpOrientation" onchange="rerenderCompareCharts()" style="font-size: 13px;">
+                <option value="vertical">纵向</option>
+                <option value="horizontal">横向</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin: 0;">
+            <label style="font-size: 12px; display: block;">图表高度</label>
+            <select id="cmpChartHeight" onchange="updateCompareChartHeight()" style="font-size: 13px;">
+                <option value="300">小 (300px)</option>
+                <option value="400" selected>中 (400px)</option>
+                <option value="550">大 (550px)</option>
+                <option value="700">超大 (700px)</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin: 0;">
+            <label style="font-size: 12px; display: block;">默认图表类型</label>
+            <select id="cmpDefaultType" onchange="rerenderCompareCharts()" style="font-size: 13px;">
+                <option value="bar">柱状图</option>
+                <option value="line">折线图</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<div id="chartsContainer"></div>
+
+<div class="card" id="tableCard" style="display:none;">
+    <div class="card-header">详细数据表</div>
+    <div class="card-body" style="overflow-x: auto;">
+        <table class="table" id="dataTable">
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    let allProjects = [];
+    let compareResult = null;
+    let charts = [];
+    const COLORS = ['#1a237e', '#e91e63', '#00838f', '#ff8f00', '#43a047', '#5e35b1', '#6d4c41', '#00897b', '#ad1457', '#4527a0'];
+    const METRIC_LABELS = {
+        area_total: '总面积 (um2)', area_combinational: '组合逻辑面积', area_sequential: '时序逻辑面积',
+        wns_setup: 'Setup WNS (ns)', tns_setup: 'Setup TNS (ns)', nvp_setup: 'Setup 违例数',
+        wns_hold: 'Hold WNS (ns)', tns_hold: 'Hold TNS (ns)',
+        power_total: '总功耗 (mW)', power_internal: '内部功耗', power_switching: '翻转功耗', power_leakage: '漏电功耗',
+        cell_count: '单元数量', instance_count: '实例数量', net_count: '网络数量',
+        achieved_frequency: '达成频率 (MHz)'
+    };
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        await loadProjects();
+        await refreshCmpVersions();
+    });
+
+    async function loadProjects() {
+        const resp = await fetch('/api/projects');
+        allProjects = await resp.json();
+        const projSel = document.getElementById('cmpProject');
+        const modSel = document.getElementById('cmpModules');
+        projSel.innerHTML = '<option value="">全部项目</option>';
+        modSel.innerHTML = '';
+        allProjects.forEach(p => {
+            projSel.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+            p.modules.forEach(m => {
+                modSel.innerHTML += `<option value="${m.id}">${p.name} / ${m.name}</option>`;
+            });
+        });
+    }
+
+    async function refreshCmpVersions() {
+        const sel = document.getElementById('cmpVersion');
+        const previouslySelected = Array.from(sel.selectedOptions).map(o => o.value);
+
+        const params = new URLSearchParams();
+        const projId = document.getElementById('cmpProject').value;
+        const modSel = document.getElementById('cmpModules');
+        const selectedModules = Array.from(modSel.selectedOptions).map(o => o.value).filter(Boolean);
+
+        if (selectedModules.length > 0) {
+            params.set('module_ids', selectedModules.join(','));
+        } else if (projId) {
+            params.set('project_ids', projId);
+        }
+
+        const resp = await fetch('/api/versions?' + params.toString());
+        const versions = await resp.json();
+        sel.innerHTML = '';
+        versions.forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v;
+            opt.textContent = v;
+            if (previouslySelected.includes(v)) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    }
+
+    function updateCmpModules() {
+        const projId = document.getElementById('cmpProject').value;
+        const modSel = document.getElementById('cmpModules');
+        modSel.innerHTML = '';
+        allProjects.forEach(p => {
+            if (!projId || p.id == projId) {
+                p.modules.forEach(m => {
+                    modSel.innerHTML += `<option value="${m.id}">${p.name} / ${m.name}</option>`;
+                });
+            }
+        });
+        document.getElementById('cmpModuleSearch').value = '';
+    }
+
+    function filterCmpModules() {
+        const keyword = document.getElementById('cmpModuleSearch').value.toLowerCase();
+        const modSel = document.getElementById('cmpModules');
+        Array.from(modSel.options).forEach(opt => {
+            opt.style.display = (!keyword || opt.text.toLowerCase().includes(keyword)) ? '' : 'none';
+        });
+    }
+
+    function selectAllCmpModules() {
+        const modSel = document.getElementById('cmpModules');
+        Array.from(modSel.options).forEach(opt => {
+            if (opt.style.display !== 'none') opt.selected = true;
+        });
+        refreshCmpVersions();
+    }
+
+    function clearCmpModules() {
+        const modSel = document.getElementById('cmpModules');
+        Array.from(modSel.options).forEach(opt => opt.selected = false);
+        refreshCmpVersions();
+    }
+
+    async function runCompare() {
+        const modules = Array.from(document.getElementById('cmpModules').selectedOptions).map(o => o.value);
+        const metrics = Array.from(document.getElementById('cmpMetrics').selectedOptions).map(o => o.value);
+        const selectedVersions = Array.from(document.getElementById('cmpVersion').selectedOptions).map(o => o.value).filter(Boolean);
+
+        if (modules.length === 0) { alert('请选择至少一个模块'); return; }
+        if (metrics.length === 0) { alert('请选择至少一个指标'); return; }
+
+        const params = new URLSearchParams({
+            module_ids: modules.join(','),
+            metrics: metrics.join(','),
+        });
+        if (selectedVersions.length > 0) params.set('versions', selectedVersions.join(','));
+
+        const resp = await fetch('/api/compare?' + params.toString());
+        compareResult = await resp.json();
+
+        renderCharts(compareResult);
+        renderTable(compareResult);
+    }
+
+    function renderCharts(result) {
+        const container = document.getElementById('chartsContainer');
+        container.innerHTML = '';
+        charts.forEach(c => c.dispose());
+        charts = [];
+
+        const defaultType = document.getElementById('cmpDefaultType').value;
+
+        result.series.forEach((s, idx) => {
+            const metricLabel = METRIC_LABELS[s.metric] || s.metric;
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.innerHTML = `
+            <div class="card-header">
+                <span>${metricLabel}</span>
+                <select onchange="changeChartType(${idx}, this.value)" class="btn-sm" style="font-size:12px;" id="chartType_${idx}">
+                    <option value="bar" ${defaultType === 'bar' ? 'selected' : ''}>柱状图</option>
+                    <option value="line" ${defaultType === 'line' ? 'selected' : ''}>折线图</option>
+                </select>
+            </div>
+            <div class="card-body">
+                <div id="chart_${idx}" class="chart-container"></div>
+            </div>
+        `;
+            container.appendChild(card);
+            renderSingleChart(idx, s, defaultType);
+        });
+        updateCompareChartHeight();
+    }
+
+    function renderSingleChart(idx, seriesData, chartType) {
+        const chart = echarts.init(document.getElementById(`chart_${idx}`));
+        const labels = seriesData.categories || [];
+        const count = labels.length;
+        const maxLen = labels.length > 0 ? Math.max(...labels.map(l => (l || '').length)) : 0;
+        const orientation = document.getElementById('cmpOrientation').value;
+
+        let grid, categoryAxis, valueAxis;
+
+        if (orientation === 'horizontal') {
+            // 横向: y轴是类目
+            let left = 100;
+            if (maxLen > 15) left = 150;
+            if (maxLen > 25) left = 200;
+            grid = { left: left, right: 40, bottom: 40, top: 40, containLabel: true };
+            categoryAxis = {
+                type: 'category',
+                data: labels,
+                axisLabel: { fontSize: 11, interval: 0, width: maxLen > 25 ? 200 : null, overflow: maxLen > 25 ? 'truncate' : null, ellipsis: '...' }
+            };
+            valueAxis = { type: 'value' };
+        } else {
+            // 纵向: x轴是类目
+            let bottom = 70;
+            if (count > 8 || maxLen > 12) bottom = 110;
+            if (count > 15 || maxLen > 20) bottom = 140;
+            grid = { left: 60, right: 30, bottom: bottom, top: 40, containLabel: true };
+            let axisLabel;
+            if (count <= 6 && maxLen <= 15) {
+                axisLabel = { rotate: 0, fontSize: 11, interval: 0, width: 100, overflow: 'truncate', ellipsis: '...' };
+            } else if (count <= 15) {
+                axisLabel = { rotate: 35, fontSize: 11, interval: 0 };
+            } else {
+                axisLabel = { rotate: 45, fontSize: 10, interval: 0 };
+            }
+            categoryAxis = { type: 'category', data: labels, axisLabel: axisLabel };
+            valueAxis = { type: 'value' };
+        }
+
+        const seriesLabel = {
+            show: count <= 20,
+            position: orientation === 'horizontal' ? 'right' : 'top',
+            fontSize: 11,
+            formatter: (params) => {
+                if (params.value === null || params.value === undefined) return '-';
+                return Number.isInteger(params.value) ? params.value : params.value.toFixed(2);
+            }
+        };
+
+        const option = {
+            tooltip: { trigger: 'axis' },
+            legend: { bottom: 0, type: 'scroll' },
+            grid: grid,
+            series: seriesData.series.map((s, i) => ({
+                name: s.name,
+                type: chartType,
+                data: s.data,
+                smooth: chartType === 'line',
+                itemStyle: { color: COLORS[i % COLORS.length] },
+                label: seriesLabel
+            }))
+        };
+        if (orientation === 'horizontal') {
+            option.xAxis = valueAxis;
+            option.yAxis = categoryAxis;
+        } else {
+            option.xAxis = categoryAxis;
+            option.yAxis = valueAxis;
+        }
+        chart.setOption(option);
+        charts[idx] = chart;
+    }
+
+    function changeChartType(idx, type) {
+        if (compareResult && compareResult.series[idx]) {
+            renderSingleChart(idx, compareResult.series[idx], type);
+        }
+    }
+
+    // 重新渲染所有对比图表
+    function rerenderCompareCharts() {
+        if (!compareResult) return;
+        charts.forEach(c => c.dispose());
+        charts = [];
+        const defaultType = document.getElementById('cmpDefaultType').value;
+        compareResult.series.forEach((s, idx) => {
+            document.getElementById(`chartType_${idx}`).value = defaultType;
+            renderSingleChart(idx, s, defaultType);
+        });
+        updateCompareChartHeight();
+    }
+
+    // 更新对比图表高度
+    function updateCompareChartHeight() {
+        const h = document.getElementById('cmpChartHeight').value + 'px';
+        document.querySelectorAll('.chart-container').forEach(el => {
+            el.style.height = h;
+        });
+        charts.forEach(c => c && c.resize && c.resize());
+    }
+
+    function renderTable(result) {
+        const card = document.getElementById('tableCard');
+        const table = document.getElementById('dataTable');
+        card.style.display = 'block';
+
+        if (!result.series || result.series.length === 0) {
+            table.innerHTML = '<tr><td class="empty-state">无数据</td></tr>';
+            return;
+        }
+
+        // 构建表格: 行=模块, 列=指标x版本
+        const categories = result.categories;
+        const allModules = new Set();
+        result.series.forEach(s => s.series.forEach(sr => allModules.add(sr.name)));
+
+        let html = '<thead><tr><th>模块</th>';
+        result.series.forEach(s => {
+            const label = METRIC_LABELS[s.metric] || s.metric;
+            categories.forEach(c => {
+                html += `<th>${label}<br><small>${c}</small></th>`;
+            });
+        });
+        html += '</tr></thead><tbody>';
+
+        allModules.forEach(modName => {
+            html += `<tr><td><strong>${modName}</strong></td>`;
+            result.series.forEach(s => {
+                const modSeries = s.series.find(sr => sr.name === modName);
+                categories.forEach((c, ci) => {
+                    const val = modSeries ? modSeries.data[ci] : null;
+                    const display = val !== null && val !== undefined ? (Number.isInteger(val) ? val : val.toFixed(3)) : '-';
+                    html += `<td>${display}</td>`;
+                });
+            });
+            html += '</tr>';
+        });
+        html += '</tbody>';
+        table.innerHTML = html;
+    }
+
+    function exportData(format) {
+        const modules = Array.from(document.getElementById('cmpModules').selectedOptions).map(o => o.value);
+        const metrics = Array.from(document.getElementById('cmpMetrics').selectedOptions).map(o => o.value);
+        const selectedVersions = Array.from(document.getElementById('cmpVersion').selectedOptions).map(o => o.value).filter(Boolean);
+
+        if (modules.length === 0) { alert('请先选择模块'); return; }
+
+        const params = new URLSearchParams({
+            module_ids: modules.join(','),
+            metrics: metrics.join(','),
+            format: format,
+        });
+        if (selectedVersions.length > 0) params.set('versions', selectedVersions.join(','));
+
+        window.location.href = '/export?' + params.toString();
+    }
+
+    window.addEventListener('resize', () => {
+        charts.forEach(c => c && c.resize());
+    });
+</script>
+{% endblock %}

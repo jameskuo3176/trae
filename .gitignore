@@ -1,0 +1,55 @@
+# 编译输出
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# 数据库
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# 备份
+backups/
+*.sql
+
+# 上传文件
+uploads/
+
+# 日志
+*.log
+logs/
+
+# 环境变量
+.env
+.env.local
+.env.production
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 虚拟环境
+venv/
+.env/
+.venv/
+env/
+
+# Flask 开发服务器
+instance/
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 部署
+*.pid

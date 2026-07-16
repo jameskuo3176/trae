@@ -1,0 +1,711 @@
+{% extends 'base.html' %}
+{% block title %}数据管理 - QoR Recorder{% endblock %}
+
+{% block content %}
+<h2 style="font-size: 22px; margin-bottom: 16px;">数据管理 <span class="tag tag-danger">管理员</span></h2>
+
+<!-- 标签切换 -->
+<div style="display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 2px solid #e8e8e8;">
+    <button class="tab-btn active" onclick="switchTab('upload')" id="tab-upload">上传数据</button>
+    <button class="tab-btn" onclick="switchTab('projects')" id="tab-projects">项目管理</button>
+    <button class="tab-btn" onclick="switchTab('records')" id="tab-records">记录管理</button>
+    <button class="tab-btn" onclick="switchTab('users')" id="tab-users">用户管理</button>
+</div>
+
+<!-- 上传数据 -->
+<div id="panel-upload" class="tab-panel">
+    <div class="card">
+        <div class="card-header">上传 QoR CSV 文件（支持多文件批量导入）</div>
+        <div class="card-body">
+            <form id="uploadForm" enctype="multipart/form-data">
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>选择项目 *</label>
+                        <select id="uploadProject" required style="width: 100%;"></select>
+                    </div>
+                    <div class="form-group">
+                        <label>指定模块 (可选，留空则从 CSV 读取或自动创建)</label>
+                        <select id="uploadModule" style="width: 100%;">
+                            <option value="">自动识别 / 创建</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Tag / 版本标签 (可选，留空则从 CSV tag 列读取)</label>
+                    <input type="text" id="uploadVersion"
+                        placeholder="如: v1.0, commit-hash, 2026-01-15 (留空则用 CSV 中的 tag 列)" style="width: 100%;">
+                </div>
+                <div class="form-group">
+                    <label>数据类型</label>
+                    <select id="uploadDataType" style="width: 100%;">
+                        <option value="qor">QoR 数据（综合结果，新建记录）</option>
+                        <option value="power">功耗数据（合并到已有记录，按 模块+版本 匹配）</option>
+                        <option value="violation">违例路径（关联到已有 QoR 记录，按 模块+版本 匹配）</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>CSV 文件 *（可多选）</label>
+                    <input type="file" id="uploadFile" accept=".csv" multiple required style="width: 100%;">
+                    <div id="fileList" style="margin-top: 4px; font-size: 12px; color: #666;"></div>
+                </div>
+                <button type="submit" class="btn">上传并导入</button>
+                <button type="button" class="btn btn-secondary" id="previewBtn" style="margin-left: 8px;">预览校验
+                    (Dry-Run)</button>
+            </form>
+            <div id="uploadResult" style="margin-top: 12px;"></div>
+
+            <div
+                style="margin-top: 20px; padding: 16px; background: #f5f5f5; border-radius: 4px; font-size: 13px; color: #555;">
+                <strong>支持的 CSV 字段说明:</strong><br>
+                解析器自动识别列名（不区分大小写，忽略空格/下划线/连字符差异）。常见列名:<br>
+                <code>tag, full_dir, comment, reg_count, comb_count, macro_count, total_count,
+                reg_area, comb_area, macro_area, stdcell_area, total_area, no_clock,
+                {CLOCK}_period, {CLOCK}_wns, {CLOCK}_tns, {CLOCK}_path</code><br>
+                其中 <code>{CLOCK}</code> 为时钟名（如 SRAMCLK），可同时存在多个时钟列。<br>
+                <code>tag</code> 会作为图表上的标签。<br>
+                多时钟数据中，最负 WNS 会作为整体 WNS，所有 TNS 之和作为整体 TNS。<br>
+                <strong>功耗合并:</strong> 选择"功耗数据"时，系统按 模块+版本 匹配已有记录，仅更新功耗字段，不会覆盖 QoR 数据。<br>
+                <strong>容错能力:</strong> 跳过空行、处理列数不一致、支持科学计数法/千分位/带单位数值、识别多种空值表示(-, N/A, NULL 等)。
+            </div>
+        </div>
+    </div>
+
+    <!-- 批量创建模块 -->
+    <div class="card">
+        <div class="card-header">批量创建模块</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>选择项目 *</label>
+                <select id="batchProject" required style="width: 100%;"></select>
+            </div>
+            <div class="form-group">
+                <label>模块名称列表（每行一个模块名，或用逗号分隔）</label>
+                <textarea id="batchModuleList" rows="8"
+                    placeholder="module_alu&#10;module_ctrl&#10;module_mem_ctrl&#10;module_data_path"
+                    style="width: 100%; font-family: monospace;"></textarea>
+            </div>
+            <button class="btn" onclick="batchCreateModules()">批量创建</button>
+            <div id="batchResult" style="margin-top: 12px;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 项目管理 -->
+<div id="panel-projects" class="tab-panel" style="display:none;">
+    <div class="card">
+        <div class="card-header">
+            <span>项目与模块</span>
+            <button class="btn btn-sm" onclick="showAddProject()">+ 新建项目</button>
+        </div>
+        <div class="card-body">
+            <div id="projectList"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 记录管理 -->
+<div id="panel-records" class="tab-panel" style="display:none;">
+    <div class="card">
+        <div class="card-header">
+            <span>QoR 数据记录</span>
+            <button class="btn btn-sm" onclick="loadRecords()">刷新</button>
+        </div>
+        <div class="card-body">
+            <div class="filter-bar">
+                <div class="form-group">
+                    <label>项目筛选</label>
+                    <select id="recordFilterProject" onchange="loadRecords()" style="min-width: 180px;">
+                        <option value="">全部</option>
+                    </select>
+                </div>
+            </div>
+            <div style="overflow-x: auto;">
+                <table class="table" id="recordTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>项目</th>
+                            <th>模块</th>
+                            <th>版本</th>
+                            <th>总面积</th>
+                            <th>WNS</th>
+                            <th>TNS</th>
+                            <th>总功耗</th>
+                            <th>单元数</th>
+                            <th>记录时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recordTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 用户管理 -->
+<div id="panel-users" class="tab-panel" style="display:none;">
+    <div class="card">
+        <div class="card-header">
+            <span>用户列表</span>
+            <button class="btn btn-sm" onclick="showAddUser()">+ 添加用户</button>
+        </div>
+        <div class="card-body">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>用户名</th>
+                        <th>角色</th>
+                        <th>显示名</th>
+                        <th>创建时间</th>
+                    </tr>
+                </thead>
+                <tbody id="userTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 新建项目弹窗 -->
+<div id="addProjectModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 400px;">
+        <div class="card-header">新建项目</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>项目名称 *</label>
+                <input type="text" id="newProjectName" style="width: 100%;">
+            </div>
+            <div class="form-group">
+                <label>描述</label>
+                <textarea id="newProjectDesc" style="width: 100%;"></textarea>
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('addProjectModal')">取消</button>
+                <button class="btn btn-sm" onclick="createProject()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 添加模块弹窗 -->
+<div id="addModuleModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 400px;">
+        <div class="card-header">添加模块</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>所属项目</label>
+                <select id="newModuleProject" style="width: 100%;"></select>
+            </div>
+            <div class="form-group">
+                <label>模块名称 *</label>
+                <input type="text" id="newModuleName" style="width: 100%;">
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('addModuleModal')">取消</button>
+                <button class="btn btn-sm" onclick="createModule()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 添加用户弹窗 -->
+<div id="addUserModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 400px;">
+        <div class="card-header">添加用户</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>用户名 *</label>
+                <input type="text" id="newUsername" style="width: 100%;">
+            </div>
+            <div class="form-group">
+                <label>密码 *</label>
+                <input type="password" id="newPassword" style="width: 100%;">
+            </div>
+            <div class="form-group">
+                <label>角色</label>
+                <select id="newUserRole" style="width: 100%;">
+                    <option value="user">普通用户</option>
+                    <option value="admin">管理员</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>显示名</label>
+                <input type="text" id="newDisplayName" style="width: 100%;">
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('addUserModal')">取消</button>
+                <button class="btn btn-sm" onclick="createUser()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .tab-btn {
+        padding: 8px 20px;
+        border: none;
+        background: transparent;
+        cursor: pointer;
+        font-size: 14px;
+        color: #666;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+    }
+
+    .tab-btn.active {
+        color: #1a237e;
+        border-bottom-color: #1a237e;
+        font-weight: 600;
+    }
+
+    .tab-btn:hover {
+        color: #1a237e;
+    }
+
+    .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 2000;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .project-item {
+        padding: 12px;
+        border: 1px solid #e8e8e8;
+        border-radius: 4px;
+        margin-bottom: 8px;
+    }
+
+    .project-item-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+
+    .module-item {
+        padding: 6px 12px;
+        margin-left: 16px;
+        font-size: 13px;
+        color: #555;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+</style>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    let allProjects = [];
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        await loadProjects();
+        loadUsers();
+        loadRecords();
+        setupUploadForm();
+    });
+
+    function switchTab(tab) {
+        document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.getElementById('panel-' + tab).style.display = 'block';
+        document.getElementById('tab-' + tab).classList.add('active');
+    }
+
+    // ---- 项目管理 ----
+    async function loadProjects() {
+        const resp = await fetch('/api/projects');
+        allProjects = await resp.json();
+
+        // 上传表单
+        const uploadProj = document.getElementById('uploadProject');
+        uploadProj.innerHTML = '<option value="">请选择项目</option>';
+        const batchProj = document.getElementById('batchProject');
+        if (batchProj) {
+            batchProj.innerHTML = '<option value="">请选择项目</option>';
+        }
+        const recordFilter = document.getElementById('recordFilterProject');
+        recordFilter.innerHTML = '<option value="">全部</option>';
+
+        allProjects.forEach(p => {
+            uploadProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+            if (batchProj) batchProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+            recordFilter.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+        });
+
+        uploadProj.onchange = () => updateUploadModules();
+        renderProjectList();
+    }
+
+    function updateUploadModules() {
+        const projId = document.getElementById('uploadProject').value;
+        const modSel = document.getElementById('uploadModule');
+        modSel.innerHTML = '<option value="">自动识别 / 创建</option>';
+        allProjects.forEach(p => {
+            if (p.id == projId) {
+                p.modules.forEach(m => {
+                    modSel.innerHTML += `<option value="${m.id}">${m.name} (${m.record_count})</option>`;
+                });
+            }
+        });
+    }
+
+    function renderProjectList() {
+        const container = document.getElementById('projectList');
+        if (allProjects.length === 0) {
+            container.innerHTML = '<div class="empty-state">暂无项目</div>';
+            return;
+        }
+        container.innerHTML = '';
+        allProjects.forEach(p => {
+            const div = document.createElement('div');
+            div.className = 'project-item';
+            let modulesHtml = '';
+            if (p.modules.length === 0) {
+                modulesHtml = '<div class="module-item">无模块</div>';
+            } else {
+                p.modules.forEach(m => {
+                    modulesHtml += `<div class="module-item">
+                    <span>${m.name} <span class="tag">${m.record_count} 条记录</span></span>
+                    <button class="btn btn-danger btn-sm" onclick="deleteModule(${m.id})">删除模块</button>
+                </div>`;
+                });
+            }
+            div.innerHTML = `
+            <div class="project-item-header">
+                <div>
+                    <strong>${p.name}</strong>
+                    ${p.description ? `<span style="color:#999; margin-left:8px;">${p.description}</span>` : ''}
+                    <span class="tag">${p.module_count} 个模块</span>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn btn-default btn-sm" onclick="showAddModule(${p.id})">+ 模块</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteProject(${p.id})">删除项目</button>
+                </div>
+            </div>
+            ${modulesHtml}
+        `;
+            container.appendChild(div);
+        });
+    }
+
+    function showAddProject() {
+        document.getElementById('newProjectName').value = '';
+        document.getElementById('newProjectDesc').value = '';
+        document.getElementById('addProjectModal').style.display = 'flex';
+    }
+
+    async function createProject() {
+        const name = document.getElementById('newProjectName').value.trim();
+        if (!name) { alert('请输入项目名称'); return; }
+        const desc = document.getElementById('newProjectDesc').value.trim();
+        const resp = await fetch('/api/admin/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, description: desc })
+        });
+        if (resp.ok) {
+            closeModal('addProjectModal');
+            await loadProjects();
+        } else {
+            const err = await resp.json();
+            alert(err.error || '创建失败');
+        }
+    }
+
+    async function deleteProject(id) {
+        if (!confirm('确认删除此项目及其所有模块和数据？')) return;
+        const resp = await fetch(`/api/admin/projects/${id}`, { method: 'DELETE' });
+        if (resp.ok) await loadProjects();
+        else alert('删除失败');
+    }
+
+    function showAddModule(projectId) {
+        const sel = document.getElementById('newModuleProject');
+        sel.innerHTML = '';
+        allProjects.forEach(p => {
+            sel.innerHTML += `<option value="${p.id}" ${p.id == projectId ? 'selected' : ''}>${p.name}</option>`;
+        });
+        document.getElementById('newModuleName').value = '';
+        document.getElementById('addModuleModal').style.display = 'flex';
+    }
+
+    async function createModule() {
+        const projectId = document.getElementById('newModuleProject').value;
+        const name = document.getElementById('newModuleName').value.trim();
+        if (!name) { alert('请输入模块名称'); return; }
+        const resp = await fetch('/api/admin/modules', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_id: parseInt(projectId), name })
+        });
+        if (resp.ok) {
+            closeModal('addModuleModal');
+            await loadProjects();
+        } else {
+            const err = await resp.json();
+            alert(err.error || '创建失败');
+        }
+    }
+
+    async function deleteModule(id) {
+        if (!confirm('确认删除此模块及其所有数据？')) return;
+        const resp = await fetch(`/api/admin/modules/${id}`, { method: 'DELETE' });
+        if (resp.ok) await loadProjects();
+        else alert('删除失败');
+    }
+
+    // ---- 上传 ----
+    function setupUploadForm() {
+        // 显示已选文件列表
+        document.getElementById('uploadFile').onchange = function () {
+            const fileList = document.getElementById('fileList');
+            const files = this.files;
+            if (files.length === 0) {
+                fileList.innerHTML = '';
+                return;
+            }
+            let html = `已选择 ${files.length} 个文件:<ul style="margin:4px 0; padding-left:20px;">`;
+            for (let f of files) {
+                html += `<li>${f.name} <span style="color:#999;">(${(f.size / 1024).toFixed(1)} KB)</span></li>`;
+            }
+            html += '</ul>';
+            fileList.innerHTML = html;
+        };
+
+        document.getElementById('uploadForm').onsubmit = async (e) => {
+            e.preventDefault();
+            await submitUpload(false);
+        };
+
+        document.getElementById('previewBtn').onclick = async () => {
+            await submitUpload(true);
+        };
+
+        async function submitUpload(isPreview) {
+            const fileInput = document.getElementById('uploadFile');
+            const files = fileInput.files;
+            if (files.length === 0) { alert('请选择至少一个 CSV 文件'); return; }
+
+            const formData = new FormData();
+            for (let f of files) {
+                formData.append('files', f);
+            }
+            formData.append('project_id', document.getElementById('uploadProject').value);
+            formData.append('module_id', document.getElementById('uploadModule').value);
+            formData.append('version', document.getElementById('uploadVersion').value);
+            formData.append('data_type', document.getElementById('uploadDataType').value);
+
+            const result = document.getElementById('uploadResult');
+            const url = isPreview ? '/api/admin/upload_csv_preview' : '/api/admin/upload';
+            result.innerHTML = `<div class="flash-message">${isPreview ? '预览校验中' : '上传中'}，请稍候...</div>`;
+
+            const resp = await fetch(url, { method: 'POST', body: formData });
+            const data = await resp.json();
+
+            if (resp.ok && data.ok) {
+                let html = `<div class="flash-message ${isPreview ? 'flash-success' : 'flash-success'}">${data.message}</div>`;
+                // 预览模式: 显示 would_create / would_update / warnings
+                if (isPreview && data.file_reports) {
+                    html += `<div style="margin-top:12px;"><strong>预览报告:</strong><table class="table" style="margin-top:8px;"><thead><tr>
+                        <th>文件名</th><th>状态</th><th>总行数</th><th>解析成功</th><th>将新增</th><th>将更新</th><th>将跳过</th><th>警告数</th>
+                    </tr></thead><tbody>`;
+                    data.file_reports.forEach(fr => {
+                        const ok = fr.ok ? '<span style="color:#2e7d32;">OK</span>' : '<span style="color:#c62828;">失败</span>';
+                        const err = fr.error ? `<br/><span style="color:#c62828;font-size:11px;">${fr.error}</span>` : '';
+                        html += `<tr>
+                            <td>${fr.filename}${err}</td>
+                            <td>${ok}</td>
+                            <td>${fr.total_rows || '-'}</td>
+                            <td>${fr.parsed || '-'}</td>
+                            <td style="color:#2e7d32;">${fr.would_create || 0}</td>
+                            <td style="color:#1565c0;">${fr.would_update || 0}</td>
+                            <td style="color:#c62828;">${fr.would_skip || 0}</td>
+                            <td style="color:${fr.warning_count > 0 ? '#e65100' : '#2e7d32'};">${fr.warning_count || 0}</td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table>';
+                    // 显示警告详情
+                    const allWarnings = data.file_reports.flatMap(fr => (fr.warnings || []).map(w => ({ file: fr.filename, w })));
+                    if (allWarnings.length > 0) {
+                        html += `<div style="margin-top:8px;"><strong>警告详情 (最多20条/文件):</strong><ul style="font-size:12px;color:#e65100;">`;
+                        allWarnings.slice(0, 20).forEach(w => {
+                            html += `<li>[${w.file}] ${w.w}</li>`;
+                        });
+                        if (allWarnings.length > 20) {
+                            html += `<li>... 还有 ${allWarnings.length - 20} 条</li>`;
+                        }
+                        html += '</ul></div>';
+                    }
+                    // 显示样本
+                    const samples = data.file_reports.flatMap(fr => (fr.sample || []).map(s => ({ file: fr.filename, s })));
+                    if (samples.length > 0) {
+                        html += `<div style="margin-top:8px;"><strong>样本数据 (前3条/文件):</strong><table class="table" style="margin-top:4px;font-size:12px;"><thead><tr><th>文件</th><th>模块</th><th>版本</th><th>面积</th><th>WNS</th><th>Cell数</th></tr></thead><tbody>`;
+                        samples.forEach(s => {
+                            html += `<tr><td>${s.file}</td><td>${s.s.module_name || '-'}</td><td>${s.s.version || '-'}</td><td>${s.s.area_total ?? '-'}</td><td>${s.s.wns_setup ?? '-'}</td><td>${s.s.cell_count ?? '-'}</td></tr>`;
+                        });
+                        html += '</tbody></table></div>';
+                    }
+                    html += `<div style="margin-top:12px;color:#666;font-size:12px;">确认无误后，点击"上传并导入"正式写入数据库。</div>`;
+                } else if (data.file_results && data.file_results.length > 0) {
+                    const isPower = data.data_type === 'power';
+                    const headerCols = isPower
+                        ? '<th>文件名</th><th>状态</th><th>合并</th><th>新建</th><th>总行数</th><th>空行</th><th>无数据行</th><th>错误</th>'
+                        : '<th>文件名</th><th>状态</th><th>导入</th><th>更新</th><th>跳过</th><th>总行数</th><th>空行</th><th>无数据行</th><th>错误</th>';
+                    html += `<div style="margin-top:12px;"><strong>文件解析详情:</strong><table class="table" style="margin-top:8px;"><thead><tr>${headerCols}</tr></thead><tbody>`;
+                    data.file_results.forEach(fr => {
+                        const stats = fr.stats || {};
+                        html += `<tr>
+                            <td>${fr.filename}</td>
+                            <td>${fr.ok ? '<span class="tag tag-success">成功</span>' : '<span class="tag tag-danger">失败</span>'}</td>
+                            <td>${isPower ? (fr.merged || 0) : (fr.saved || 0)}</td>
+                            ${isPower ? `<td>${fr.saved || 0}</td>` : `<td>${fr.updated || 0}</td><td>${fr.skipped || 0}</td>`}
+                            <td>${stats.total_rows || 0}</td>
+                            <td>${stats.skipped_empty || 0}</td>
+                            <td>${stats.skipped_no_data || 0}</td>
+                            <td>${stats.errors || 0}</td>
+                        </tr>`;
+                        if (fr.error) {
+                            html += `<tr><td colspan="8" style="color:#d32f2f;">错误: ${fr.error}</td></tr>`;
+                        }
+                    });
+                    html += '</tbody></table></div>';
+                }
+                result.innerHTML = html;
+                await loadProjects();
+                loadRecords();
+            } else {
+                result.innerHTML = `<div class="flash-message flash-error">${data.error || '上传失败'}</div>`;
+            }
+        }
+
+        // ---- 批量创建模块 ----
+        async function batchCreateModules() {
+            const projectId = document.getElementById('batchProject').value;
+            const moduleListText = document.getElementById('batchModuleList').value.trim();
+
+            if (!projectId) { alert('请选择项目'); return; }
+            if (!moduleListText) { alert('请输入模块名称列表'); return; }
+
+            const result = document.getElementById('batchResult');
+            result.innerHTML = '<div class="flash-message">创建中...</div>';
+
+            const resp = await fetch('/api/admin/modules/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `project_id=${projectId}&module_list=${encodeURIComponent(moduleListText)}`
+            });
+            const data = await resp.json();
+
+            if (resp.ok && data.ok) {
+                let html = `<div class="flash-message flash-success">${data.message}</div>`;
+                if (data.created && data.created.length > 0) {
+                    html += `<div style="margin-top:8px; font-size:13px;"><strong>已创建:</strong> ${data.created.join(', ')}</div>`;
+                }
+                if (data.skipped && data.skipped.length > 0) {
+                    html += `<div style="margin-top:4px; font-size:13px; color:#999;"><strong>已跳过(已存在):</strong> ${data.skipped.join(', ')}</div>`;
+                }
+                result.innerHTML = html;
+                document.getElementById('batchModuleList').value = '';
+                await loadProjects();
+            } else {
+                result.innerHTML = `<div class="flash-message flash-error">${data.error || '创建失败'}</div>`;
+            }
+        }
+
+        // ---- 记录管理 ----
+        async function loadRecords() {
+            const projId = document.getElementById('recordFilterProject').value;
+            let url = '/api/qor_data?';
+            if (projId) url += `project_ids=${projId}&`;
+
+            const resp = await fetch(url);
+            const records = await resp.json();
+            const tbody = document.getElementById('recordTableBody');
+
+            if (records.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="11" class="empty-state">暂无数据</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = records.map(r => `
+        <tr>
+            <td>${r.id}</td>
+            <td>${r.project_name || '-'}</td>
+            <td>${r.module_name || '-'}</td>
+            <td>${r.version || '-'}</td>
+            <td>${r.area_total != null ? r.area_total.toFixed(2) : '-'}</td>
+            <td>${r.wns_setup != null ? r.wns_setup.toFixed(3) : '-'}</td>
+            <td>${r.tns_setup != null ? r.tns_setup.toFixed(3) : '-'}</td>
+            <td>${r.power_total != null ? r.power_total.toFixed(3) : '-'}</td>
+            <td>${r.cell_count || '-'}</td>
+            <td>${r.recorded_at ? new Date(r.recorded_at).toLocaleString('zh-CN') : '-'}</td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button></td>
+        </tr>
+    `).join('');
+        }
+
+        async function deleteRecord(id) {
+            if (!confirm('确认删除此记录？')) return;
+            const resp = await fetch(`/api/admin/records/${id}`, { method: 'DELETE' });
+            if (resp.ok) loadRecords();
+            else alert('删除失败');
+        }
+
+        // ---- 用户管理 ----
+        async function loadUsers() {
+            const resp = await fetch('/api/admin/users');
+            const users = await resp.json();
+            const tbody = document.getElementById('userTableBody');
+            tbody.innerHTML = users.map(u => `
+        <tr>
+            <td>${u.id}</td>
+            <td>${u.username}</td>
+            <td>${u.role === 'admin' ? '<span class="tag tag-danger">管理员</span>' : '<span class="tag tag-success">普通用户</span>'}</td>
+            <td>${u.display_name || '-'}</td>
+            <td>${u.created_at}</td>
+        </tr>
+    `).join('');
+        }
+
+        function showAddUser() {
+            document.getElementById('newUsername').value = '';
+            document.getElementById('newPassword').value = '';
+            document.getElementById('newDisplayName').value = '';
+            document.getElementById('addUserModal').style.display = 'flex';
+        }
+
+        async function createUser() {
+            const username = document.getElementById('newUsername').value.trim();
+            const password = document.getElementById('newPassword').value;
+            const role = document.getElementById('newUserRole').value;
+            const display_name = document.getElementById('newDisplayName').value.trim();
+            if (!username || !password) { alert('用户名和密码不能为空'); return; }
+
+            const resp = await fetch('/api/admin/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password, role, display_name })
+            });
+            if (resp.ok) {
+                closeModal('addUserModal');
+                loadUsers();
+            } else {
+                const err = await resp.json();
+                alert(err.error || '创建失败');
+            }
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).style.display = 'none';
+        }
+</script>
+{% endblock %}

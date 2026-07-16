@@ -1,0 +1,21 @@
+[Unit]
+Description=QoR Recorder - Design Compiler QoR 数据管理系统
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+User=qor
+WorkingDirectory=/opt/qor_recorder
+EnvironmentFile=/opt/qor_recorder/.env
+ExecStart=/opt/qor_recorder/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+
+# 安全限制
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/opt/qor_recorder/data /opt/qor_recorder/uploads /opt/qor_recorder/backups
+
+[Install]
+WantedBy=multi-user.target
