@@ -40,7 +40,33 @@ class Project(db.Model):
     description = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # 项目状态: active(活跃) / locked(锁定,禁止写入) / archived(归档,只读且隐藏)
+    status = db.Column(db.String(20), nullable=False, default='active', index=True)
+    locked_at = db.Column(db.DateTime)         # 锁定时间
+    locked_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)  # 锁定操作人
+    lock_reason = db.Column(db.String(500))    # 锁定原因
+
     modules = db.relationship('Module', backref='project', lazy='dynamic', cascade='all, delete-orphan')
+    locker = db.relationship('User', foreign_keys=[locked_by])
+
+    @property
+    def is_writable(self):
+        """项目是否可写入 (active 状态才可写)"""
+        return self.status == 'active'
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'status': self.status,
+            'is_writable': self.is_writable,
+            'locked_at': self.locked_at.isoformat() if self.locked_at else None,
+            'locked_by': self.locked_by,
+            'locked_by_name': self.locker.username if self.locker else None,
+            'lock_reason': self.lock_reason,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 class Module(db.Model):
@@ -106,6 +132,12 @@ class QorRecord(db.Model):
     target_frequency = db.Column(db.Float)  # MHz
     achieved_frequency = db.Column(db.Float)  # MHz
 
+    # ---- 物理实现指标 ----
+    mbb_ratio = db.Column(db.Float)           # Multi-Bit Flip-Flop 合并率 (%)
+    clock_gating_ratio = db.Column(db.Float)  # 时钟门控覆盖率 (%)
+    utilization = db.Column(db.Float)         # 布局利用率 (%)
+    congestion = db.Column(db.Float)          # 拥塞指数 (0-1 或 0-100)
+
     # ---- 额外字段 (JSON) ----
     extra_fields = db.Column(db.Text)  # JSON string
 
@@ -156,6 +188,10 @@ class QorRecord(db.Model):
             'sequential_cell_count': self.sequential_cell_count,
             'target_frequency': self.target_frequency,
             'achieved_frequency': self.achieved_frequency,
+            'mbb_ratio': self.mbb_ratio,
+            'clock_gating_ratio': self.clock_gating_ratio,
+            'utilization': self.utilization,
+            'congestion': self.congestion,
             'source_file': self.source_file,
             'recorded_at': self.recorded_at.isoformat() if self.recorded_at else None,
             'extra_fields': extra,
@@ -448,4 +484,106 @@ class AlertEvent(db.Model):
             'triggered_at': self.triggered_at.isoformat() if self.triggered_at else None,
             'acknowledged_by': self.acknowledged_by,
             'acknowledged_at': self.acknowledged_at.isoformat() if self.acknowledged_at else None,
+        }
+
+
+# =========================================================================
+# 数据快照与回滚
+# =========================================================================
+
+class DataSnapshot(db.Model):
+    """数据快照 - 关键节点的不可变数据备份
+
+    用于 tapeout、里程碑等关键节点保存项目数据的完整快照。
+    快照存储为 JSON, 包含当时所有模块/记录的完整数据。
+    创建后不可修改 (immutable), 只能删除整个快照。
+    """
+    __tablename__ = 'data_snapshots'
+
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False, index=True)
+    name = db.Column(db.String(200), nullable=False)           # 快照名称 (如 "Tapeout v2.0")
+    description = db.Column(db.Text)
+    snapshot_type = db.Column(db.String(20), default='milestone')  # milestone / tapeout / pre_release / custom
+    # 快照数据: JSON, 包含 [{module_name, version, ...所有字段}, ...]
+    data = db.Column(db.Text, nullable=False)
+    record_count = db.Column(db.Integer, default=0)            # 快照中的记录数
+    checksum = db.Column(db.String(64), nullable=False)        # sha256 校验和, 防篡改
+    created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    project = db.relationship('Project', backref='snapshots')
+    creator = db.relationship('User', backref='snapshots')
+
+    @staticmethod
+    def compute_checksum(data_str):
+        """计算数据的 SHA256 校验和"""
+        import hashlib
+        return hashlib.sha256(data_str.encode('utf-8')).hexdigest()
+
+    def verify_integrity(self):
+        """校验快照数据完整性 (checksum 是否匹配)"""
+        return self.checksum == self.compute_checksum(self.data)
+
+    def to_dict(self, include_data=False):
+        import json
+        result = {
+            'id': self.id,
+            'project_id': self.project_id,
+            'name': self.name,
+            'description': self.description,
+            'snapshot_type': self.snapshot_type,
+            'record_count': self.record_count,
+            'checksum': self.prefix_checksum,
+            'verified': self.verify_integrity(),
+            'created_by': self.created_by,
+            'created_by_name': self.creator.username if self.creator else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+        if include_data:
+            try:
+                result['data'] = json.loads(self.data) if self.data else []
+            except (json.JSONDecodeError, TypeError):
+                result['data'] = []
+        return result
+
+    @property
+    def prefix_checksum(self):
+        """校验和前12位用于展示"""
+        return self.checksum[:12] if self.checksum else None
+
+
+# =========================================================================
+# 备份记录
+# =========================================================================
+
+class BackupRecord(db.Model):
+    """备份记录 - 记录每次自动/手动备份的元信息
+
+    与文件系统中的备份文件配合, 记录备份时间、大小、校验和。
+    """
+    __tablename__ = 'backup_records'
+
+    id = db.Column(db.Integer, primary_key=True)
+    backup_type = db.Column(db.String(20), default='auto')  # auto / manual / pre_migration
+    file_path = db.Column(db.String(500), nullable=False)   # 备份文件路径
+    file_size = db.Column(db.Integer)                       # 文件大小 (bytes)
+    checksum = db.Column(db.String(64))                     # 文件 sha256
+    record_count = db.Column(db.Integer)                    # 当时 DB 中的记录数
+    status = db.Column(db.String(20), default='ok')         # ok / failed / deleted
+    message = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'backup_type': self.backup_type,
+            'file_path': self.file_path,
+            'file_size': self.file_size,
+            'file_size_mb': round(self.file_size / 1024 / 1024, 2) if self.file_size else 0,
+            'checksum': self.checksum[:12] if self.checksum else None,
+            'record_count': self.record_count,
+            'status': self.status,
+            'message': self.message,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
         }

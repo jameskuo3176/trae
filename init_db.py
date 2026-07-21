@@ -27,8 +27,8 @@ DB_PATH = os.path.join(BASE_DIR, 'qor_recorder.db')
 #     {CLOCK}_period, {CLOCK}_wns, {CLOCK}_tns, {CLOCK}_path
 # =========================================================================
 
-DEMO_CSV_TEMPLATE = """tag,full_dir,comment,reg_count,comb_count,macro_count,total_count,reg_area,comb_area,macro_area,stdcell_area,total_area,no_clock,SRAMCLK_period,SRAMCLK_wns,SRAMCLK_tns,SRAMCLK_path,CLK_CPU_period,CLK_CPU_wns,CLK_CPU_tns,CLK_CPU_path
-{tag},{full_dir},{comment},{reg_count},{comb_count},{macro_count},{total_count},{reg_area:.2f},{comb_area:.2f},{macro_area:.2f},{stdcell_area:.2f},{total_area:.2f},{no_clock},{sram_period:.2f},{sram_wns:.3f},{sram_tns:.3f},{sram_path},{cpu_period:.2f},{cpu_wns:.3f},{cpu_tns:.3f},{cpu_path}
+DEMO_CSV_TEMPLATE = """tag,full_dir,comment,reg_count,comb_count,macro_count,total_count,reg_area,comb_area,macro_area,stdcell_area,total_area,no_clock,SRAMCLK_period,SRAMCLK_wns,SRAMCLK_tns,SRAMCLK_path,CLK_CPU_period,CLK_CPU_wns,CLK_CPU_tns,CLK_CPU_path,mbb_ratio,clock_gating_ratio,utilization,congestion
+{tag},{full_dir},{comment},{reg_count},{comb_count},{macro_count},{total_count},{reg_area:.2f},{comb_area:.2f},{macro_area:.2f},{stdcell_area:.2f},{total_area:.2f},{no_clock},{sram_period:.2f},{sram_wns:.3f},{sram_tns:.3f},{sram_path},{cpu_period:.2f},{cpu_wns:.3f},{cpu_tns:.3f},{cpu_path},{mbb_ratio:.3f},{clock_gating_ratio:.3f},{utilization:.3f},{congestion:.3f}
 """
 
 
@@ -68,6 +68,12 @@ def _gen_csv_row(tag, module_name, version_idx, with_power=False):
     sram_path = f"/clk_div/SRAMCLK/inst_{module_name}/end_reg"
     cpu_path = f"/clk_div/CPU_CLK/inst_{module_name}/out_reg"
 
+    # 物理实现指标（随版本优化）
+    mbb_ratio = min(0.05 + version_idx * 0.12 + random.uniform(-0.03, 0.03), 0.95)
+    clock_gating_ratio = min(0.1 + version_idx * 0.15 + random.uniform(-0.05, 0.05), 0.9)
+    utilization = min(0.4 + version_idx * 0.05 + random.uniform(-0.08, 0.08), 0.92)
+    congestion = max(0.05, min(0.5 - version_idx * 0.03 + random.uniform(-0.05, 0.05), 0.6))
+
     return DEMO_CSV_TEMPLATE.format(
         tag=tag,
         full_dir=f"/proj/demo/work/{module_name}/{tag}",
@@ -90,6 +96,10 @@ def _gen_csv_row(tag, module_name, version_idx, with_power=False):
         cpu_wns=cpu_wns,
         cpu_tns=cpu_tns,
         cpu_path=cpu_path,
+        mbb_ratio=mbb_ratio,
+        clock_gating_ratio=clock_gating_ratio,
+        utilization=utilization,
+        congestion=congestion,
     )
 
 
@@ -149,19 +159,35 @@ def gen_demo_data():
                                         default_version=tag)
                 if result['records']:
                     rec = result['records'][0]
+                    
+                    # 从 extra_fields 中解析物理实现指标
+                    extra = {}
+                    if rec.get('extra_fields'):
+                        try:
+                            extra = json.loads(rec['extra_fields'])
+                            if isinstance(extra, str):
+                                extra = json.loads(extra)
+                        except:
+                            extra = {}
+                    
                     qor = QorRecord(
-                        module_id=mod.id,
-                        version=tag,
-                        area_total=rec.get('area_total'),
-                        area_combinational=rec.get('area_combinational'),
-                        area_sequential=rec.get('area_sequential'),
-                        area_macro=rec.get('area_macro'),
-                        wns_setup=rec.get('wns_setup'),
-                        tns_setup=rec.get('tns_setup'),
-                        cell_count=rec.get('cell_count'),
-                        sequential_cell_count=rec.get('sequential_cell_count'),
-                        source_file=f'{mod_name}_{tag}.csv',
-                    )
+                            module_id=mod.id,
+                            version=tag,
+                            area_total=rec.get('area_total'),
+                            area_combinational=rec.get('area_combinational'),
+                            area_sequential=rec.get('area_sequential'),
+                            area_macro=rec.get('area_macro'),
+                            wns_setup=rec.get('wns_setup'),
+                            tns_setup=rec.get('tns_setup'),
+                            cell_count=rec.get('cell_count'),
+                            sequential_cell_count=rec.get('sequential_cell_count'),
+                            source_file=f'{mod_name}_{tag}.csv',
+                            # 物理实现指标（从 extra_fields 中解析）
+                            mbb_ratio=float(extra.get('mbb_ratio')) if extra.get('mbb_ratio') else None,
+                            clock_gating_ratio=float(extra.get('clock_gating_ratio')) if extra.get('clock_gating_ratio') else None,
+                            utilization=float(extra.get('utilization')) if extra.get('utilization') else None,
+                            congestion=float(extra.get('congestion')) if extra.get('congestion') else None,
+                        )
                     # extra_fields 保存 comment, full_dir, stdcell_area, clocks 等
                     # 注意: parser 返回的 extra_fields 已是 JSON 字符串，直接赋值即可
                     qor.extra_fields = rec.get('extra_fields')

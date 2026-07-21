@@ -18,6 +18,22 @@ from models import db, ApiKey, ProjectMember, DataLock, Project
 from datetime import datetime
 
 
+def check_project_writable(project_id):
+    """检查项目是否可写入 (未被锁定/归档)
+
+    返回:
+      (writable, error_message)
+      writable=True 表示可写入
+    """
+    project = Project.query.get(project_id)
+    if not project:
+        return False, '项目不存在'
+    if not project.is_writable:
+        status_map = {'locked': '项目已锁定', 'archived': '项目已归档'}
+        return False, status_map.get(project.status, f'项目状态为 {project.status}, 禁止写入')
+    return True, None
+
+
 def authenticate_request():
     """认证当前请求, 优先 API Key, 其次 session
 

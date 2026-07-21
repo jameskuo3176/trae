@@ -31,12 +31,14 @@ from config import Config, BASE_DIR
 from models import (
     db, User, Project, Module, QorRecord, UserDashboard, ViolationPath,
     ApiKey, ProjectMember, DataLock, AlertRule, AlertEvent,
+    DataSnapshot, BackupRecord,
 )
 from qor_parser import parse_csv_file, parse_violation_csv
 from api_auth import (
     authenticate_request, api_auth_required, require_project_access,
     get_user_project_role, can_access_project, can_edit_project,
     can_manage_project, check_data_lock, filter_projects_by_permission,
+    check_project_writable,
 )
 from alerts import check_alerts_for_new_record
 
@@ -338,6 +340,11 @@ def api_get_projects():
             'id': p.id,
             'name': p.name,
             'description': p.description,
+            'status': p.status,
+            'is_writable': p.is_writable,
+            'locked_at': p.locked_at.isoformat() if p.locked_at else None,
+            'locked_by_name': p.locker.username if p.locker else None,
+            'lock_reason': p.lock_reason,
             'module_count': len(modules),
             'modules': [{'id': m.id, 'name': m.name, 'record_count': m.records.count()} for m in modules],
         })
@@ -1054,6 +1061,393 @@ def admin_delete_project(project_id):
     return jsonify({'ok': True})
 
 
+# =========================================================================
+# 项目状态管理 - 锁定 / 解锁 / 归档
+# =========================================================================
+
+@app.route('/api/admin/projects/<int:project_id>/lock', methods=['POST'])
+@login_required
+@with_db_retry()
+def admin_lock_project(project_id):
+    """锁定项目, 禁止所有数据写入
+
+    Body:
+      reason: 锁定原因 (可选)
+      status: 目标状态, 默认 'locked', 可指定 'archived'
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    p = Project.query.get_or_404(project_id)
+    if p.status == 'archived':
+        return jsonify({'error': '项目已归档, 请先解除归档'}), 400
+
+    data = request.get_json() or request.form or {}
+    target_status = data.get('status', 'locked')
+    if target_status not in ('locked', 'archived'):
+        return jsonify({'error': '无效的目标状态, 必须是 locked 或 archived'}), 400
+
+    p.status = target_status
+    p.locked_at = datetime.utcnow()
+    p.locked_by = current_user.id
+    p.lock_reason = data.get('reason', '')
+    db.session.commit()
+    return jsonify(p.to_dict())
+
+
+@app.route('/api/admin/projects/<int:project_id>/unlock', methods=['POST'])
+@login_required
+@with_db_retry()
+def admin_unlock_project(project_id):
+    """解除项目锁定, 恢复为 active"""
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    p = Project.query.get_or_404(project_id)
+    if p.status == 'active':
+        return jsonify({'error': '项目未锁定'}), 400
+
+    p.status = 'active'
+    p.locked_at = None
+    p.locked_by = None
+    p.lock_reason = None
+    db.session.commit()
+    return jsonify(p.to_dict())
+
+
+# =========================================================================
+# 数据快照与回滚
+# =========================================================================
+
+@app.route('/api/admin/projects/<int:project_id>/snapshots', methods=['POST'])
+@login_required
+@with_db_retry()
+def admin_create_snapshot(project_id):
+    """创建项目数据快照 (关键节点)
+
+    Body:
+      name: 快照名称 (必填)
+      description: 说明 (可选)
+      snapshot_type: milestone / tapeout / pre_release / custom (默认 milestone)
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    p = Project.query.get_or_404(project_id)
+    data = request.get_json() or request.form
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({'error': '快照名称不能为空'}), 400
+
+    # 收集该项目的所有记录 (与 to_dict 字段一致)
+    records = QorRecord.query.join(Module).filter(Module.project_id == project_id).all()
+    snapshot_data = [r.to_dict() for r in records]
+    data_json = json.dumps(snapshot_data, ensure_ascii=False, default=str)
+
+    snap = DataSnapshot(
+        project_id=project_id,
+        name=name,
+        description=data.get('description', ''),
+        snapshot_type=data.get('snapshot_type', 'milestone'),
+        data=data_json,
+        record_count=len(snapshot_data),
+        checksum=DataSnapshot.compute_checksum(data_json),
+        created_by=current_user.id,
+    )
+    db.session.add(snap)
+    db.session.commit()
+    return jsonify(snap.to_dict())
+
+
+@app.route('/api/admin/projects/<int:project_id>/snapshots')
+@login_required
+def admin_list_snapshots(project_id):
+    """列出项目的所有快照"""
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    Project.query.get_or_404(project_id)
+    snaps = DataSnapshot.query.filter_by(project_id=project_id).order_by(DataSnapshot.created_at.desc()).all()
+    return jsonify([s.to_dict() for s in snaps])
+
+
+@app.route('/api/admin/snapshots/<int:snap_id>')
+@login_required
+def admin_get_snapshot(snap_id):
+    """获取快照详情 (含完整数据)"""
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    snap = DataSnapshot.query.get_or_404(snap_id)
+    if not snap.verify_integrity():
+        return jsonify({'error': '快照数据校验失败, 可能已被篡改', 'verified': False}), 500
+    return jsonify(snap.to_dict(include_data=True))
+
+
+@app.route('/api/admin/snapshots/<int:snap_id>/verify', methods=['POST'])
+@login_required
+def admin_verify_snapshot(snap_id):
+    """校验快照完整性"""
+    snap = DataSnapshot.query.get_or_404(snap_id)
+    ok = snap.verify_integrity()
+    return jsonify({'id': snap_id, 'verified': ok, 'checksum': snap.prefix_checksum})
+
+
+@app.route('/api/admin/snapshots/<int:snap_id>/rollback', methods=['POST'])
+@login_required
+@with_db_retry()
+def admin_rollback_snapshot(snap_id):
+    """回滚项目到指定快照状态 (危险操作)
+
+    流程:
+      1. 自动创建当前状态的快照 (pre_rollback) 以便撤销
+      2. 删除当前所有 QorRecord (该项目下)
+      3. 恢复快照中的数据
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    snap = DataSnapshot.query.get_or_404(snap_id)
+    if not snap.verify_integrity():
+        return jsonify({'error': '快照数据校验失败, 拒绝回滚'}), 500
+
+    # 项目必须可写
+    writable, err = check_project_writable(snap.project_id)
+    if not writable:
+        return jsonify({'error': f'项目当前不可写: {err}'}), 403
+
+    try:
+        snapshot_data = json.loads(snap.data)
+    except (json.JSONDecodeError, TypeError):
+        return jsonify({'error': '快照数据解析失败'}), 500
+
+    project = Project.query.get_or_404(snap.project_id)
+
+    # 1. 创建 pre_rollback 快照
+    current_records = QorRecord.query.join(Module).filter(Module.project_id == snap.project_id).all()
+    current_data = [r.to_dict() for r in current_records]
+    current_json = json.dumps(current_data, ensure_ascii=False, default=str)
+    pre_snap = DataSnapshot(
+        project_id=snap.project_id,
+        name=f'[Auto] Before rollback to "{snap.name}"',
+        description=f'自动创建于回滚操作, 由 {current_user.username} 触发',
+        snapshot_type='custom',
+        data=current_json,
+        record_count=len(current_data),
+        checksum=DataSnapshot.compute_checksum(current_json),
+        created_by=current_user.id,
+    )
+    db.session.add(pre_snap)
+
+    # 2. 记录 module_id 映射 (按名称) 用于恢复
+    module_map = {m.name: m.id for m in project.modules.all()}
+
+    # 3. 删除现有记录
+    for r in current_records:
+        db.session.delete(r)
+    db.session.flush()
+
+    # 4. 恢复快照数据
+    restored = 0
+    skipped = 0
+    for item in snapshot_data:
+        module_name = item.get('module_name')
+        if not module_name or module_name not in module_map:
+            skipped += 1
+            continue
+        rec = QorRecord(
+            module_id=module_map[module_name],
+            version=item.get('version', 'v1'),
+            area_total=item.get('area_total'),
+            area_combinational=item.get('area_combinational'),
+            area_sequential=item.get('area_sequential'),
+            area_black_box=item.get('area_black_box'),
+            area_macro=item.get('area_macro'),
+            wns_setup=item.get('wns_setup'),
+            tns_setup=item.get('tns_setup'),
+            nvp_setup=item.get('nvp_setup'),
+            wns_hold=item.get('wns_hold'),
+            tns_hold=item.get('tns_hold'),
+            nvp_hold=item.get('nvp_hold'),
+            power_internal=item.get('power_internal'),
+            power_switching=item.get('power_switching'),
+            power_leakage=item.get('power_leakage'),
+            power_total=item.get('power_total'),
+            cell_count=item.get('cell_count'),
+            instance_count=item.get('instance_count'),
+            net_count=item.get('net_count'),
+            sequential_cell_count=item.get('sequential_cell_count'),
+            target_frequency=item.get('target_frequency'),
+            achieved_frequency=item.get('achieved_frequency'),
+            mbb_ratio=item.get('mbb_ratio'),
+            clock_gating_ratio=item.get('clock_gating_ratio'),
+            utilization=item.get('utilization'),
+            congestion=item.get('congestion'),
+            source_file=item.get('source_file'),
+        )
+        if item.get('extra_fields') and isinstance(item['extra_fields'], dict):
+            rec.extra_fields = json.dumps(item['extra_fields'], ensure_ascii=False)
+        db.session.add(rec)
+        restored += 1
+
+    db.session.commit()
+    return jsonify({
+        'ok': True,
+        'rolled_back_to': snap.to_dict(),
+        'pre_rollback_snapshot': pre_snap.to_dict(),
+        'restored_count': restored,
+        'skipped_count': skipped,
+    })
+
+
+@app.route('/api/admin/snapshots/<int:snap_id>', methods=['DELETE'])
+@login_required
+@with_db_retry()
+def admin_delete_snapshot(snap_id):
+    """删除快照"""
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    snap = DataSnapshot.query.get_or_404(snap_id)
+    db.session.delete(snap)
+    db.session.commit()
+    return jsonify({'ok': True})
+
+
+# =========================================================================
+# 备份管理
+# =========================================================================
+
+@app.route('/api/admin/backups')
+@login_required
+def admin_list_backups():
+    """列出所有备份记录"""
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    records = BackupRecord.query.order_by(BackupRecord.created_at.desc()).limit(100).all()
+    return jsonify([r.to_dict() for r in records])
+
+
+@app.route('/api/admin/backups', methods=['POST'])
+@login_required
+@with_db_retry()
+def admin_create_backup():
+    """手动触发数据库备份"""
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    result = perform_backup(backup_type='manual', user=current_user)
+    if result['ok']:
+        return jsonify(result)
+    return jsonify(result), 500
+
+
+@app.route('/api/admin/backups/verify', methods=['POST'])
+@login_required
+def admin_verify_all_backups():
+    """校验所有备份文件的完整性"""
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    results = verify_all_backups()
+    return jsonify(results)
+
+
+def perform_backup(backup_type='auto', user=None):
+    """执行数据库备份
+
+    Args:
+        backup_type: auto / manual / pre_migration
+        user: 触发用户 (手动备份时)
+
+    Returns:
+        {ok, backup_id, file_path, ...} 或 {ok: False, error}
+    """
+    import hashlib
+    if not app.config['SQLALCHEMY_DATABASE_URI'].startswith('sqlite'):
+        return {'ok': False, 'error': 'MySQL 模式不支持文件备份, 请使用数据库系统自带的备份方案'}
+
+    db_path = os.path.join(BASE_DIR, 'qor_recorder.db')
+    backup_dir = os.path.join(BASE_DIR, 'backups')
+    try:
+        if not os.path.exists(db_path):
+            return {'ok': False, 'error': 'DB 文件不存在'}
+
+        os.makedirs(backup_dir, exist_ok=True)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_filename = f'qor_recorder_{ts}.db'
+        backup_path = os.path.join(backup_dir, backup_filename)
+        import shutil
+        shutil.copy2(db_path, backup_path)
+
+        # 计算文件校验和
+        h = hashlib.sha256()
+        with open(backup_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        checksum = h.hexdigest()
+        file_size = os.path.getsize(backup_path)
+
+        # 记录当时的记录数
+        record_count = QorRecord.query.count()
+
+        record = BackupRecord(
+            backup_type=backup_type,
+            file_path=backup_path,
+            file_size=file_size,
+            checksum=checksum,
+            record_count=record_count,
+            status='ok',
+            message=f'由 {user.username if user else "system"} 触发' if user else '系统自动',
+        )
+        db.session.add(record)
+        db.session.commit()
+
+        return {
+            'ok': True,
+            'backup_id': record.id,
+            'file_path': backup_path,
+            'file_size': file_size,
+            'checksum': checksum[:12],
+        }
+    except Exception as e:
+        # 记录失败状态
+        try:
+            fail_record = BackupRecord(
+                backup_type=backup_type,
+                file_path=backup_path if 'backup_path' in dir() else '',
+                file_size=0,
+                status='failed',
+                message=str(e),
+            )
+            db.session.add(fail_record)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        return {'ok': False, 'error': str(e)}
+
+
+def verify_all_backups():
+    """校验所有 ok 状态的备份文件"""
+    import hashlib
+    results = {'total': 0, 'ok': 0, 'missing': 0, 'corrupted': 0, 'details': []}
+    records = BackupRecord.query.filter_by(status='ok').all()
+    for rec in records:
+        results['total'] += 1
+        if not rec.checksum or not rec.file_path:
+            continue
+        if not os.path.exists(rec.file_path):
+            results['missing'] += 1
+            results['details'].append({'id': rec.id, 'status': 'missing', 'path': rec.file_path})
+            continue
+        h = hashlib.sha256()
+        try:
+            with open(rec.file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(8192), b''):
+                    h.update(chunk)
+            actual = h.hexdigest()
+            if actual == rec.checksum:
+                results['ok'] += 1
+                results['details'].append({'id': rec.id, 'status': 'ok'})
+            else:
+                results['corrupted'] += 1
+                results['details'].append({'id': rec.id, 'status': 'corrupted'})
+        except Exception as e:
+            results['details'].append({'id': rec.id, 'status': 'error', 'error': str(e)})
+    return results
+
+
 @app.route('/api/admin/modules', methods=['POST'])
 @login_required
 @with_db_retry()
@@ -1083,6 +1477,11 @@ def admin_delete_module(module_id):
     if not current_user.is_admin:
         return jsonify({'error': '无权限'}), 403
     m = Module.query.get_or_404(module_id)
+    # 检查所属项目是否可写入
+    if m.project:
+        writable, err = check_project_writable(m.project.id)
+        if not writable:
+            return jsonify({'error': err}), 403
     db.session.delete(m)
     db.session.commit()
     return jsonify({'ok': True})
@@ -1428,6 +1827,11 @@ def admin_upload_csv():
         return jsonify({'error': '请选择项目'}), 400
 
     project = Project.query.get_or_404(project_id)
+    # 检查项目是否可写入 (锁定/归档项目禁止上传)
+    writable, err = check_project_writable(int(project_id))
+    if not writable:
+        return jsonify({'error': err}), 403
+
     data_type = request.form.get('data_type', 'qor')  # qor / power
 
     total_saved = 0
@@ -1757,6 +2161,11 @@ def admin_delete_record(record_id):
     if not current_user.is_admin:
         return jsonify({'error': '无权限'}), 403
     r = QorRecord.query.get_or_404(record_id)
+    # 检查所属项目是否可写入
+    if r.module and r.module.project:
+        writable, err = check_project_writable(r.module.project.id)
+        if not writable:
+            return jsonify({'error': err}), 403
     db.session.delete(r)
     db.session.commit()
     return jsonify({'ok': True})
@@ -2175,6 +2584,11 @@ def api_v1_upload():
     if not can_edit_project(user, int(project_id)):
         return jsonify({'error': '无权限上传到此项目'}), 403
 
+    # 检查项目是否被锁定/归档
+    writable, err = check_project_writable(int(project_id))
+    if not writable:
+        return jsonify({'error': err}), 403
+
     # 检查模块/项目是否被他人锁定
     if module_id:
         locked_by_other, lock = check_data_lock('module', int(module_id), user)
@@ -2410,8 +2824,9 @@ def backup_database(db_path, backup_dir='backups', max_backups=10):
 
     保护策略:
       - 每次启动备份一份带时间戳的副本
-      - 超过 max_backups 份时自动清理最旧的
+      - 超过 max_backups 份时自动清理最旧的 (同时更新 DB 记录)
       - 备份失败不影响启动
+      - 记录元信息到 BackupRecord 表 (含校验和, 支持后续完整性校验)
     """
     import shutil
     from datetime import datetime
@@ -2423,7 +2838,34 @@ def backup_database(db_path, backup_dir='backups', max_backups=10):
         backup_path = os.path.join(backup_dir, f'qor_recorder_{ts}.db')
         shutil.copy2(db_path, backup_path)
 
-        # 清理旧备份，保留最近 max_backups 份
+        # 计算文件 sha256 校验和
+        import hashlib
+        h = hashlib.sha256()
+        with open(backup_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        checksum = h.hexdigest()
+        file_size = os.path.getsize(backup_path)
+
+        # 记录到 BackupRecord (app_context 内部, 失败不抛)
+        try:
+            with app.app_context():
+                record_count = QorRecord.query.count() if 'QorRecord' in dir() else 0
+                rec = BackupRecord(
+                    backup_type='auto',
+                    file_path=backup_path,
+                    file_size=file_size,
+                    checksum=checksum,
+                    record_count=record_count,
+                    status='ok',
+                    message='系统启动自动备份',
+                )
+                db.session.add(rec)
+                db.session.commit()
+        except Exception as e:
+            print(f'[BACKUP] 写入备份记录失败(不影响启动): {e}')
+
+        # 清理超出 max_backups 份的旧备份
         backups = sorted(
             [f for f in os.listdir(backup_dir) if f.startswith('qor_recorder_') and f.endswith('.db')],
             reverse=True
@@ -2433,7 +2875,7 @@ def backup_database(db_path, backup_dir='backups', max_backups=10):
                 os.remove(os.path.join(backup_dir, old))
             except OSError:
                 pass
-        print(f'[BACKUP] 已备份 DB -> {backup_path}')
+        print(f'[BACKUP] 已备份 DB -> {backup_path} ({file_size//1024}KB)')
     except Exception as e:
         print(f'[BACKUP] 备份失败(不影响启动): {e}')
 

@@ -147,9 +147,10 @@
 <div class="grid-2">
     <div class="card">
         <div class="card-header">
-            <span>功耗分析</span>
-            <select id="chartPowerMetric" onchange="renderPowerChart()" class="btn-sm" style="font-size: 12px;">
-                <option value="power_total">总功耗</option>
+            <span>功耗分析 (多选对比)</span>
+            <select id="chartPowerMetric" multiple onchange="renderPowerChart()" class="btn-sm"
+                style="font-size: 12px; min-width: 220px; min-height: 90px; vertical-align: top;">
+                <option value="power_total" selected>总功耗</option>
                 <option value="power_internal">内部功耗</option>
                 <option value="power_switching">翻转功耗</option>
                 <option value="power_leakage">漏电功耗</option>
@@ -184,6 +185,45 @@
         </div>
         <div class="card-body">
             <div id="chartPie" class="chart-container-small" style="height: 380px;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 物理实现指标 -->
+<div class="grid-2">
+    <div class="card">
+        <div class="card-header">
+            <span>MBB 合并率 (%)</span>
+        </div>
+        <div class="card-body">
+            <div id="chartMBB" class="chart-container-small"></div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-header">
+            <span>时钟门控覆盖率 (%)</span>
+        </div>
+        <div class="card-body">
+            <div id="chartClockGating" class="chart-container-small"></div>
+        </div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <div class="card-header">
+            <span>布局利用率 (%)</span>
+        </div>
+        <div class="card-body">
+            <div id="chartUtilization" class="chart-container-small"></div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-header">
+            <span>拥塞指数</span>
+        </div>
+        <div class="card-body">
+            <div id="chartCongestion" class="chart-container-small"></div>
         </div>
     </div>
 </div>
@@ -442,17 +482,25 @@
             params.set('module_ids', selectedModules.join(','));
         } else if (projId) {
             params.set('project_ids', projId);
+        } else if (allProjects.length > 0) {
+            // 如果没有选择任何过滤器，默认返回第一个项目的数据
+            params.set('project_ids', allProjects[0].id);
         }
         if (selectedVersions.length > 0) params.set('versions', selectedVersions.join(','));
 
         const resp = await fetch('/api/qor_data?' + params.toString());
         currentData = await resp.json();
+        console.log('Dashboard data loaded:', currentData.length, 'records');
 
-        renderAreaChart();
-        renderTimingChart();
-        renderPowerChart();
-        renderCellChart();
-        renderPieChart();
+        try { renderAreaChart(); } catch(e) { console.error('renderAreaChart error:', e); }
+        try { renderTimingChart(); } catch(e) { console.error('renderTimingChart error:', e); }
+        try { renderPowerChart(); } catch(e) { console.error('renderPowerChart error:', e); }
+        try { renderCellChart(); } catch(e) { console.error('renderCellChart error:', e); }
+        try { renderPieChart(); } catch(e) { console.error('renderPieChart error:', e); }
+        try { renderMBBChart(); } catch(e) { console.error('renderMBBChart error:', e); }
+        try { renderClockGatingChart(); } catch(e) { console.error('renderClockGatingChart error:', e); }
+        try { renderUtilizationChart(); } catch(e) { console.error('renderUtilizationChart error:', e); }
+        try { renderCongestionChart(); } catch(e) { console.error('renderCongestionChart error:', e); }
         // 加载违例路径
         initViolationPanels();
     }
@@ -912,7 +960,7 @@
         if (data.length === 0) return initChart('chartArea', '暂无数据');
         if (metrics.length === 0) return initChart('chartArea', '请在右上角选择至少一个面积指标');
 
-        const chart = echarts.init(document.getElementById('chartArea'));
+        const chart = echarts.init(document.getElementById('chartArea'), null, { renderer: 'svg' });
         const labels = getLabels();
         const orientation = getOrientation();
         const chartType = getChartType();
@@ -978,7 +1026,7 @@
         if (data.length === 0) return initChart('chartCell', '暂无数据');
         if (metrics.length === 0) return initChart('chartCell', '请选择至少一个统计指标');
 
-        const chart = echarts.init(document.getElementById('chartCell'));
+        const chart = echarts.init(document.getElementById('chartCell'), null, { renderer: 'svg' });
         const labels = getLabels();
         const orientation = getOrientation();
         const chartType = getChartType();
@@ -1030,7 +1078,7 @@
         const data = getFilteredData();
         if (data.length === 0) return initChart('chartTiming', '暂无数据');
 
-        const chart = echarts.init(document.getElementById('chartTiming'));
+        const chart = echarts.init(document.getElementById('chartTiming'), null, { renderer: 'svg' });
         const labels = getLabels();
         const orientation = getOrientation();
         const chartType = getChartType();
@@ -1127,17 +1175,27 @@
     }
 
     function renderPowerChart() {
-        const metric = document.getElementById('chartPowerMetric').value;
-        const data = getFilteredData();
-        // 功耗数据可能为空（大多数模块没有功耗数据）
-        const hasPowerData = data.some(r => r[metric] !== null && r[metric] !== undefined);
-        if (data.length === 0 || !hasPowerData) {
-            return initChart('chartPower', hasPowerData ? '暂无数据' : '暂无功耗数据（需上传功耗CSV）');
+        // 支持多选指标
+        const selectedMetrics = Array.from(document.getElementById('chartPowerMetric').selectedOptions).map(o => o.value);
+        if (selectedMetrics.length === 0) {
+            return initChart('chartPower', '请选择至少一个功耗指标');
         }
 
-        // 过滤掉无功耗数据的记录
-        const powerData = data.filter(r => r[metric] !== null && r[metric] !== undefined);
-        const chart = echarts.init(document.getElementById('chartPower'));
+        const data = getFilteredData();
+        const chart = echarts.init(document.getElementById('chartPower'), null, { renderer: 'svg' });
+
+        // 检查是否有任何功耗数据
+        const hasAnyPowerData = selectedMetrics.some(metric =>
+            data.some(r => r[metric] !== null && r[metric] !== undefined)
+        );
+        if (data.length === 0 || !hasAnyPowerData) {
+            return initChart('chartPower', hasAnyPowerData ? '暂无数据' : '暂无功耗数据（需上传功耗CSV）');
+        }
+
+        // 过滤掉所有选中指标都为空的记录
+        const powerData = data.filter(r =>
+            selectedMetrics.some(metric => r[metric] !== null && r[metric] !== undefined)
+        );
 
         // 复用 getLabels 逻辑（基于过滤后的数据）
         const mode = document.getElementById('chartLabelMode').value;
@@ -1174,33 +1232,59 @@
         const chartType = getChartType();
         const axes = buildAxes(labels, 'mW');
 
-        const seriesConfig = {
+        // 功耗指标名称映射
+        const powerMetricNames = {
+            power_total: '总功耗',
+            power_internal: '内部功耗',
+            power_switching: '翻转功耗',
+            power_leakage: '漏电功耗'
+        };
+
+        // 为每个选中的指标创建一个 series
+        const series = selectedMetrics.map((metric, idx) => ({
+            name: powerMetricNames[metric] || metric,
             type: chartType,
             data: powerData.map(r => r[metric] == null ? null : Math.round(r[metric])),
             smooth: true,
-            itemStyle: { color: COLORS[3] },
-            areaStyle: chartType === 'line' ? { opacity: 0.3 } : undefined,
-            label: getSeriesLabelConfig(),
-        };
+            itemStyle: { color: COLORS[idx % COLORS.length] },
+            areaStyle: chartType === 'line' ? { opacity: 0.15 } : undefined,
+            label: idx === 0 ? getSeriesLabelConfig() : { show: false },
+            emphasis: { focus: 'series' },
+        }));
 
-        // power chart 的 tooltip 需要基于过滤后的数据
+        // 多指标 tooltip
         const powerTooltipFormatter = function (params) {
-            const p = Array.isArray(params) ? params[0] : params;
-            const idx = p.dataIndex;
+            if (!Array.isArray(params)) params = [params];
+            const idx = params[0].dataIndex;
             const r = powerData[idx];
-            if (!r) return p.name + ': ' + p.value;
+            if (!r) return params.map(p => `${p.seriesName}: ${p.value}`).join('<br/>');
+
             let html = `<b>${r.module_name || ''}</b>`;
             const tag = r.tag || r.version;
             if (tag) html += ` / ${tag}`;
-            html += `<br/>${metric}: <b>${p.value === null || p.value === undefined ? '-' : Math.round(p.value)} mW</b>`;
+
+            params.forEach(p => {
+                if (p.value !== null && p.value !== undefined) {
+                    html += `<br/>${p.seriesName}: <b>${Math.round(p.value)} mW</b>`;
+                }
+            });
+
             if (r.comment) html += `<br/><span style="color:#999;font-size:11px;">${r.comment}</span>`;
             return html;
         };
 
+        // 图例（多指标时显示）
+        const legend = selectedMetrics.length > 1 ? {
+            data: selectedMetrics.map(m => powerMetricNames[m] || m),
+            top: 10,
+            left: 'center'
+        } : null;
+
         const option = {
+            legend: legend,
             tooltip: { trigger: 'axis', formatter: powerTooltipFormatter },
             grid: getGridConfig(labels),
-            series: [seriesConfig]
+            series: series
         };
         if (orientation === 'horizontal') {
             option.xAxis = axes.valueAxis;
@@ -1255,7 +1339,7 @@
             selectedIdx = selectedIdx.slice(0, 6);
         }
 
-        const chart = echarts.init(document.getElementById('chartPie'));
+        const chart = echarts.init(document.getElementById('chartPie'), null, { renderer: 'svg' });
         const PIE_COLORS = COLORS.slice(0, 4);
         const COMP_NAMES = ['组合逻辑', '时序逻辑', '黑盒', '宏单元'];
 
@@ -1313,6 +1397,88 @@
         charts.pie = chart;
     }
 
+    // 通用物理指标图表渲染函数
+    function renderPhysicalMetricChart(chartId, metric, title, unit, colorIdx, scaleToPercent) {
+        const data = getFilteredData();
+        if (data.length === 0) return initChart(chartId, '暂无数据');
+
+        // 检查是否有该指标的数据
+        const hasData = data.some(r => r[metric] !== null && r[metric] !== undefined);
+        if (!hasData) return initChart(chartId, '暂无物理实现数据');
+
+        // 销毁旧图表
+        if (charts[chartId]) { charts[chartId].dispose(); delete charts[chartId]; }
+
+        const chart = echarts.init(document.getElementById(chartId), null, { renderer: 'svg' });
+        const labels = getLabels();
+        const orientation = getOrientation();
+        const chartType = getChartType();
+        const axes = buildAxes(labels, unit);
+
+        // 数据转换
+        const vals = data.map(r => {
+            if (r[metric] == null) return null;
+            const v = parseFloat(r[metric]);
+            if (isNaN(v)) return null;
+            return scaleToPercent ? Math.round(v * 1000) / 10 : Math.round(v * 1000) / 1000;
+        });
+
+        const s = {
+            name: title,
+            type: chartType,
+            data: vals,
+            itemStyle: { color: COLORS[colorIdx % COLORS.length] },
+            label: getSeriesLabelConfig(),
+            smooth: chartType === 'line',
+        };
+        if (chartType === 'line') s.areaStyle = { opacity: 0.15 };
+
+        const tooltipFormatter = function (params) {
+            const p = Array.isArray(params) ? params[0] : params;
+            const idx = p.dataIndex;
+            const r = data[idx];
+            if (!r) return p.name;
+            let html = `<b>${r.module_name || ''}</b>`;
+            const tag = r.tag || r.version;
+            if (tag) html += ` / ${tag}`;
+            html += `<br/>${title}: <b>${p.value}${unit ? ' ' + unit : ''}</b>`;
+            if (r.comment) html += `<br/><span style="color:#999;font-size:11px;">${r.comment}</span>`;
+            return html;
+        };
+
+        const option = {
+            tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: tooltipFormatter },
+            grid: getGridConfig(labels),
+            series: [s],
+        };
+        if (orientation === 'horizontal') {
+            option.xAxis = axes.valueAxis;
+            option.yAxis = axes.categoryAxis;
+        } else {
+            option.xAxis = axes.categoryAxis;
+            option.yAxis = axes.valueAxis;
+        }
+
+        chart.setOption(option, true);
+        charts[chartId] = chart;
+    }
+
+    function renderMBBChart() {
+        renderPhysicalMetricChart('chartMBB', 'mbb_ratio', 'MBB 合并率', '%', 5, true);
+    }
+
+    function renderClockGatingChart() {
+        renderPhysicalMetricChart('chartClockGating', 'clock_gating_ratio', '时钟门控覆盖率', '%', 6, true);
+    }
+
+    function renderUtilizationChart() {
+        renderPhysicalMetricChart('chartUtilization', 'utilization', '布局利用率', '%', 7, true);
+    }
+
+    function renderCongestionChart() {
+        renderPhysicalMetricChart('chartCongestion', 'congestion', '拥塞指数', '', 0, false);
+    }
+
     function initChart(id, msg) {
         const el = document.getElementById(id);
         el.innerHTML = `<div class="empty-state">${msg}</div>`;
@@ -1328,6 +1494,10 @@
         renderPowerChart();
         renderCellChart();
         renderPieChart();
+        renderMBBChart();
+        renderClockGatingChart();
+        renderUtilizationChart();
+        renderCongestionChart();
     }
 
     // 更新图表高度
