@@ -442,6 +442,124 @@ class UserDashboard(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class DashboardGroup(db.Model):
+    """项目级 Dashboard Group 共享视图
+
+    设计目标: 不同项目可以拥有同名但**内容独立**的 group 视图,
+    group owner 与成员打开 dashboard 时**无需保存个人模板**即可看到
+    该 group 共享的 config, 实现"团队默认视图"语义。
+
+    与 UserDashboard 的区别:
+      - UserDashboard: 单人私有, 只对当前 user 可见
+      - DashboardGroup: 跨用户共享, owner 管理, 成员只读应用
+
+    关键字段:
+      - project_id: 所属项目; NULL = 全局 group(跨项目共享)
+      - owner_id: 创建者, 可编辑/删除/邀请成员
+      - member_ids: JSON 数组, 共享成员 user_id 列表
+      - config: 同样的 JSON 结构 (与 user_dashboards.config 兼容)
+      - shared_default: 成员登录时是否自动应用此 group 的 config
+      - is_public: 项目内非成员是否可只读访问 (默认 False, 严格私有)
+    """
+    __tablename__ = 'dashboard_groups'
+    __table_args__ = (
+        db.UniqueConstraint('project_id', 'name', name='uq_dashboard_groups_project_name'),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    # 所属项目; NULL = 全局 group, 非 NULL = 项目专属 group
+    # 配合 UniqueConstraint(project_id, name) 实现"不同项目同名 group 互不干扰"
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=True, index=True)
+    # group owner (创建者)
+    owner_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    # 共享成员 user_id 列表 (JSON 数组); owner 自动视为成员
+    member_ids = db.Column(db.Text, nullable=False, default='[]')
+    # 共享 config (与 user_dashboards.config 同样的 JSON 结构)
+    config = db.Column(db.Text, nullable=False, default='{}')
+    # 成员登录时是否自动加载
+    shared_default = db.Column(db.Boolean, nullable=False, default=False)
+    # 是否对项目内所有用户只读可见
+    is_public = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # 关系: 关联到项目和 owner, 供 to_dict / 模板渲染使用
+    project = db.relationship('Project', backref=db.backref('dashboard_groups', lazy='dynamic'),
+                              foreign_keys=[project_id])
+    owner = db.relationship('User', backref=db.backref('owned_dashboard_groups', lazy='dynamic'),
+                            foreign_keys=[owner_id])
+
+    def get_member_ids(self):
+        """返回成员 user_id 列表 (含 owner)"""
+        import json
+        try:
+            members = json.loads(self.member_ids) if self.member_ids else []
+        except (json.JSONDecodeError, TypeError):
+            members = []
+        if self.owner_id not in members:
+            members.insert(0, self.owner_id)
+        return members
+
+    def is_member(self, user_id):
+        return int(user_id) in [int(x) for x in self.get_member_ids()]
+
+    def is_visible_to(self, user, role):
+        """当前 user/role 是否有权查看此 group"""
+        # admin 看所有
+        if role == 'admin':
+            return True
+        # owner / member 总可见
+        if self.is_member(user.id):
+            return True
+        # release 角色: 只看公开 + 项目已发布
+        if role == 'release':
+            if not self.is_public:
+                return False
+            # 进一步要求: 此 group 关联的项目下有已发布数据
+            from sqlalchemy import and_
+            from models import QorRecord, Module
+            if self.project_id is None:
+                # 全局 group + 公开 + 至少有一条已发布记录
+                return QorRecord.query.filter_by(is_released=True).first() is not None
+            return QorRecord.query.join(Module).filter(
+                Module.project_id == self.project_id,
+                QorRecord.is_released == True  # noqa: E712
+            ).first() is not None
+        # user: 公开可见
+        return self.is_public
+
+    def can_edit(self, user, role):
+        """是否有编辑权限: owner / admin"""
+        if role == 'admin':
+            return True
+        return self.owner_id == user.id
+
+    def to_dict(self, include_config=True):
+        result = {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'project_id': self.project_id,
+            'project_name': self.project.name if self.project else None,
+            'owner_id': self.owner_id,
+            'owner_name': self.owner.username if self.owner else None,
+            'member_ids': self.get_member_ids(),
+            'is_public': bool(self.is_public),
+            'shared_default': bool(self.shared_default),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+        if include_config:
+            import json
+            try:
+                result['config'] = json.loads(self.config) if self.config else {}
+            except (json.JSONDecodeError, TypeError):
+                result['config'] = {}
+        return result
+
+
 # =========================================================================
 # API Key (自动化集成认证)
 # =========================================================================

@@ -33,7 +33,9 @@ from models import (
     db, User, Project, Module, QorRecord, UserDashboard, ViolationPath,
     ApiKey, ProjectMember, DataLock, AlertRule, AlertEvent,
     DataSnapshot, BackupRecord, DEFAULT_THEME, THEME_PRESETS, RunNote,
+    DashboardGroup,
 )
+import repo
 from qor_parser import parse_csv_file, parse_violation_csv, parse_notes_csv
 from api_auth import (
     authenticate_request, api_auth_required, require_project_access,
@@ -1368,6 +1370,175 @@ def delete_dashboard_config(dash_id):
     db.session.delete(dash)
     db.session.commit()
     return jsonify({'ok': True})
+
+
+# =========================================================================
+# Dashboard Group (项目级共享视图)
+# =========================================================================
+# 设计目标:
+#   1. 每个 project 独立 group 命名空间 (UniqueConstraint(project_id, name))
+#   2. group owner 创建/编辑/邀请成员; 成员只读应用, 无需保存个人模板
+#   3. shared_default=True 的 group 在成员登录时自动应用 config
+#   4. release 角色只能看已发布项目下的公开 group
+#   5. 双写 MongoDB: 与其他核心实体保持一致的双写策略
+
+@app.route('/api/groups', methods=['GET'])
+@login_required
+def list_dashboard_groups():
+    """列出当前用户可见的 group
+
+    可见性:
+      - admin: 全部
+      - owner / member: 自己创建 + 被邀请的
+      - release: 项目内已发布数据 + 公开的 group
+      - user: owner/member + 项目内公开 group
+    """
+    role = current_user.role
+    user_id = current_user.id
+    all_groups = DashboardGroup.query.all()
+    visible = [g for g in all_groups if g.is_visible_to(current_user, role)]
+    return jsonify([g.to_dict(include_config=False) for g in visible])
+
+
+@app.route('/api/groups', methods=['POST'])
+@login_required
+def create_dashboard_group():
+    """创建 group (任何角色均可创建, 自己是 owner)"""
+    if current_user.role == 'release':
+        return jsonify({'error': 'release 角色不能创建 group'}), 403
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name 必填'}), 400
+    if len(name) > 120:
+        return jsonify({'error': 'name 过长 (≤120)'}), 400
+    project_id = data.get('project_id')  # 可选: None = 全局 group
+    if project_id is not None:
+        # 校验项目存在
+        if Project.query.get(project_id) is None:
+            return jsonify({'error': 'project_id 不存在'}), 400
+    # 唯一性: 同一 project_id 下 name 唯一 (含 None)
+    if DashboardGroup.query.filter_by(project_id=project_id, name=name).first():
+        return jsonify({'error': '该项目下已存在同名 group'}), 400
+    import json as _json
+    config = data.get('config') or {}
+    if not isinstance(config, dict):
+        return jsonify({'error': 'config 必须是对象'}), 400
+    g = DashboardGroup(
+        name=name,
+        description=(data.get('description') or '').strip() or None,
+        project_id=project_id,
+        owner_id=current_user.id,
+        member_ids=_json.dumps(data.get('member_ids') or []),
+        config=_json.dumps(config),
+        shared_default=bool(data.get('shared_default', False)),
+        is_public=bool(data.get('is_public', False)),
+    )
+    db.session.add(g)
+    db.session.commit()
+    # 双写 MongoDB
+    try:
+        repo.sync_dashboard_group(g, 'upsert')
+    except Exception as e:
+        app.logger.warning(f'mongo sync group failed: {e}')
+    return jsonify(g.to_dict()), 201
+
+
+@app.route('/api/groups/<int:gid>', methods=['GET'])
+@login_required
+def get_dashboard_group(gid):
+    """获取 group 详情 (含 config)"""
+    g = DashboardGroup.query.get_or_404(gid)
+    if not g.is_visible_to(current_user, current_user.role):
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(g.to_dict(include_config=True))
+
+
+@app.route('/api/groups/<int:gid>', methods=['PUT'])
+@login_required
+def update_dashboard_group(gid):
+    """更新 group (仅 owner / admin)"""
+    g = DashboardGroup.query.get_or_404(gid)
+    if not g.can_edit(current_user, current_user.role):
+        return jsonify({'error': 'forbidden'}), 403
+    data = request.get_json() or {}
+    import json as _json
+    if 'description' in data:
+        g.description = (data.get('description') or '').strip() or None
+    if 'config' in data:
+        cfg = data['config']
+        if not isinstance(cfg, dict):
+            return jsonify({'error': 'config 必须是对象'}), 400
+        g.config = _json.dumps(cfg)
+    if 'member_ids' in data:
+        mids = data['member_ids'] or []
+        if not isinstance(mids, list):
+            return jsonify({'error': 'member_ids 必须是数组'}), 400
+        # 校验所有 id 存在
+        for uid in mids:
+            if not isinstance(uid, int) or User.query.get(uid) is None:
+                return jsonify({'error': f'user_id {uid} 不存在'}), 400
+        g.member_ids = _json.dumps(mids)
+    if 'shared_default' in data:
+        g.shared_default = bool(data['shared_default'])
+    if 'is_public' in data:
+        g.is_public = bool(data['is_public'])
+    # 重命名: 仍需检查唯一性
+    if 'name' in data and data['name'] and data['name'].strip() != g.name:
+        new_name = data['name'].strip()
+        if DashboardGroup.query.filter(
+            DashboardGroup.project_id == g.project_id,
+            DashboardGroup.name == new_name,
+            DashboardGroup.id != g.id
+        ).first():
+            return jsonify({'error': '该项目下已存在同名 group'}), 400
+        g.name = new_name
+    g.updated_at = datetime.utcnow()
+    db.session.commit()
+    try:
+        repo.sync_dashboard_group(g, 'upsert')
+    except Exception as e:
+        app.logger.warning(f'mongo sync group failed: {e}')
+    return jsonify(g.to_dict())
+
+
+@app.route('/api/groups/<int:gid>', methods=['DELETE'])
+@login_required
+def delete_dashboard_group(gid):
+    """删除 group (仅 owner / admin)"""
+    g = DashboardGroup.query.get_or_404(gid)
+    if not g.can_edit(current_user, current_user.role):
+        return jsonify({'error': 'forbidden'}), 403
+    db.session.delete(g)
+    db.session.commit()
+    try:
+        repo.sync_dashboard_group(g, 'delete')
+    except Exception as e:
+        app.logger.warning(f'mongo delete group failed: {e}')
+    return jsonify({'ok': True})
+
+
+@app.route('/api/groups/my-default', methods=['GET'])
+@login_required
+def my_default_group():
+    """获取当前用户应自动应用的 group config
+
+    逻辑:
+      - 优先返回 shared_default=True 且当前用户是 owner/member 的 group
+      - 多个时: 项目内 group 优先于全局 group; 同级则取最新
+      - release 角色不返回 (该角色不应自动应用团队视图)
+    """
+    if current_user.role == 'release':
+        return jsonify({'group': None, 'config': None})
+    user_id = current_user.id
+    candidates = [g for g in DashboardGroup.query.all()
+                  if g.shared_default and g.is_member(user_id)]
+    if not candidates:
+        return jsonify({'group': None, 'config': None})
+    # 排序: 项目内优先 (project_id 非 None 排前), 然后按 updated_at 倒序
+    candidates.sort(key=lambda g: (g.project_id is None, -(g.updated_at.timestamp() if g.updated_at else 0)))
+    g = candidates[0]
+    return jsonify({'group': g.to_dict(include_config=False), 'config': g.to_dict(include_config=True)['config']})
 
 
 # =========================================================================
