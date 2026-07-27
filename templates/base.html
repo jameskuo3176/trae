@@ -1079,24 +1079,30 @@
         }
         .ms-dropdown {
             display: none;
-            position: absolute;
-            top: 100%;
-            left: 0;
-            right: 0;
-            margin-top: 4px;
-            max-height: 280px;
+            position: fixed;  /* 脱离祖先 overflow 裁剪 */
+            margin-top: 2px;
+            max-height: 320px;
+            min-width: 280px;
+            max-width: 460px;
             overflow-y: auto;
             background: var(--bg-card, #131a29);
             border: 1px solid var(--border-color, #2d3a52);
             border-radius: 6px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-            z-index: 1000;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+            z-index: 9999;
         }
         .ms-dropdown.open { display: block; }
         .ms-option {
-            padding: 6px 10px;
+            padding: 8px 12px;
             font-size: 13px;
             color: var(--text-main, #e0e6f0);
+            cursor: pointer;
+            transition: background 0.12s;
+        }
+        .ms-option:hover, .ms-option.active {
+            background: var(--accent-soft, rgba(79, 158, 255, 0.18));
+            color: var(--accent, #4f9eff);
+        }
             cursor: pointer;
             transition: background 0.1s;
             word-break: break-all;

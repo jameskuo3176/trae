@@ -894,6 +894,20 @@
             }
         });
     });
+
+    // 滚动 / 缩放时: 下拉跟随输入框位置
+    window.addEventListener('scroll', function () {
+        ['Modules', 'Versions'].forEach(kind => {
+            const dd = document.getElementById((kind === 'Modules' ? 'modules' : 'versions') + 'Dropdown');
+            if (dd && dd.classList.contains('open')) positionMultiSelectDropdown(kind);
+        });
+    }, true);
+    window.addEventListener('resize', function () {
+        ['Modules', 'Versions'].forEach(kind => {
+            const dd = document.getElementById((kind === 'Modules' ? 'modules' : 'versions') + 'Dropdown');
+            if (dd && dd.classList.contains('open')) positionMultiSelectDropdown(kind);
+        });
+    });
     function focusModuleInput(e) {
         if (e.target.classList.contains('ms-chip-x')) return;
         document.getElementById('moduleSearch').focus();
@@ -901,6 +915,17 @@
     function focusVersionInput(e) {
         if (e.target.classList.contains('ms-chip-x')) return;
         document.getElementById('versionSearch').focus();
+    }
+
+    // 定位下拉: 使用 fixed, 计算 input 框位置, 防止被祖先 overflow 裁剪
+    function positionMultiSelectDropdown(kind) {
+        const input = document.getElementById(kind === 'Modules' ? 'moduleSearch' : 'versionSearch');
+        const dropdown = document.getElementById((kind === 'Modules' ? 'modules' : 'versions') + 'Dropdown');
+        if (!input || !dropdown) return;
+        const rect = input.getBoundingClientRect();
+        dropdown.style.left = rect.left + 'px';
+        dropdown.style.top = (rect.bottom + 2) + 'px';
+        dropdown.style.width = rect.width + 'px';
     }
 
     // 输入即搜索, 同步下拉
@@ -929,6 +954,7 @@
             }).join('');
         }
         openMultiSelectDropdown(kind);
+        positionMultiSelectDropdown(kind);  // 每次打开/重渲都重新定位
     }
 
     // 点击下拉项: 切换选中
@@ -983,13 +1009,32 @@
 
     // 键盘支持: Enter 选中第一个匹配项, Backspace 在空输入时删最后一个
     function onMultiSelectKey(kind, e) {
-        if (e.key === 'Enter') {
-            const dropdown = document.getElementById(
-                kind === 'Modules' ? 'modulesDropdown' : 'versionsDropdown');
-            const first = dropdown.querySelector('.ms-option');
-            if (first) {
-                toggleMultiSelectOption(kind, first.dataset.value);
-                e.preventDefault();
+        const dropdown = document.getElementById(
+            kind === 'Modules' ? 'modulesDropdown' : 'versionsDropdown');
+        const options = Array.from(dropdown.querySelectorAll('.ms-option'));
+        let activeIdx = options.findIndex(o => o.classList.contains('active'));
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (options.length === 0) return;
+            options.forEach(o => o.classList.remove('active'));
+            activeIdx = (activeIdx + 1) % options.length;
+            options[activeIdx].classList.add('active');
+            options[activeIdx].scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (options.length === 0) return;
+            options.forEach(o => o.classList.remove('active'));
+            activeIdx = activeIdx <= 0 ? options.length - 1 : activeIdx - 1;
+            options[activeIdx].classList.add('active');
+            options[activeIdx].scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            // 优先选高亮项, 否则选第一项
+            const pick = options[activeIdx] || options[0];
+            if (pick) {
+                pick.classList.remove('active');
+                toggleMultiSelectOption(kind, pick.dataset.value);
             }
         } else if (e.key === 'Backspace') {
             const inputId = kind === 'Modules' ? 'moduleSearch' : 'versionSearch';
@@ -1002,6 +1047,8 @@
                     e.preventDefault();
                 }
             }
+        } else if (e.key === 'Escape') {
+            dropdown.classList.remove('open');
         }
     }
 
