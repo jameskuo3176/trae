@@ -875,8 +875,18 @@
     function closeMultiSelectDropdown(kind) {
         document.getElementById(kind.toLowerCase() + 'Dropdown').classList.remove('open');
     }
-    // 点击外部关闭
-    document.addEventListener('click', function (e) {
+
+    // 聚焦输入框: 同步已选胶囊, 填充下拉选项
+    function onMultiSelectFocus(kind) {
+        // 1) 同步当前隐藏 select 的选中状态到胶囊
+        if (kind === 'Modules') renderModuleSelected();
+        else renderVersionSelected();
+        // 2) 填充下拉 (即使空关键字也展示所有未选项)
+        onMultiSelectSearch(kind);
+    }
+
+    // 点击外部关闭: 用 mousedown 比 click 更早, 避免与 input 失焦竞争
+    document.addEventListener('mousedown', function (e) {
         ['modules', 'versions'].forEach(kind => {
             const root = document.getElementById('multiSelect' + (kind === 'modules' ? 'Modules' : 'Versions'));
             if (root && !root.contains(e.target)) {
