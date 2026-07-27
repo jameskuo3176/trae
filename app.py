@@ -12,6 +12,7 @@
 import io
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from functools import wraps
@@ -19,7 +20,7 @@ from functools import wraps
 import pandas as pd
 from flask import (
     Flask, render_template, request, redirect, url_for, jsonify,
-    send_file, flash, abort, Response, g
+    send_file, flash, abort, Response, g, session
 )
 from flask_login import (
     LoginManager, login_user, logout_user, login_required, current_user
@@ -31,9 +32,9 @@ from config import Config, BASE_DIR
 from models import (
     db, User, Project, Module, QorRecord, UserDashboard, ViolationPath,
     ApiKey, ProjectMember, DataLock, AlertRule, AlertEvent,
-    DataSnapshot, BackupRecord,
+    DataSnapshot, BackupRecord, DEFAULT_THEME, THEME_PRESETS, RunNote,
 )
-from qor_parser import parse_csv_file, parse_violation_csv
+from qor_parser import parse_csv_file, parse_violation_csv, parse_notes_csv
 from api_auth import (
     authenticate_request, api_auth_required, require_project_access,
     get_user_project_role, can_access_project, can_edit_project,
@@ -42,11 +43,69 @@ from api_auth import (
 )
 from alerts import check_alerts_for_new_record
 
+from security import (
+    init_csrf, csrf_protect, rate_limit, get_client_ip,
+    is_default_admin_password_weak, generate_csrf_token,
+)
+
 app = Flask(__name__)
 app.config.from_object(Config)
 
 db.init_app(app)
 migrate = Migrate(app, db)
+
+
+# =========================================================================
+# 轻量级列迁移: 为已有表补充新增列 (SQLite/MySQL 兼容, 无需 alembic)
+# =========================================================================
+
+def _ensure_columns():
+    """检查并补充新增列 (用于已存在数据库的平滑升级)
+
+    仅支持新增列 (ADD COLUMN), 不支持改类型/删列。
+    新增列必须有默认值或可空, 以兼容旧行。
+    """
+    # 待补充的列: (表名, 列名, DDL 类型定义)
+    new_columns = [
+        # QorRecord: release 标记
+        ('qor_records', 'is_released', "BOOLEAN DEFAULT 0"),
+        ('qor_records', 'released_at', "DATETIME"),
+        ('qor_records', 'released_by', "INTEGER"),
+        # RunNote: full_dir 字段 (用于区分同 module+version 下不同 run 目录)
+        ('run_notes', 'full_dir', "VARCHAR(1000)"),
+    ]
+    uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
+    is_sqlite = uri.startswith('sqlite')
+    try:
+        for table, col, ddl in new_columns:
+            # 检查列是否已存在
+            if is_sqlite:
+                rows = db.session.execute(text(f"PRAGMA table_info({table})")).fetchall()
+                existing = {r[1] for r in rows}
+            else:
+                rows = db.session.execute(text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"
+                ), {'t': table}).fetchall()
+                existing = {r[0] for r in rows}
+            if col in existing:
+                continue
+            try:
+                db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+                db.session.commit()
+                print(f"[DB] 已新增列: {table}.{col}")
+            except Exception as e:
+                db.session.rollback()
+                print(f"[DB] 新增列失败 {table}.{col}: {e}")
+    except Exception as e:
+        print(f"[DB] _ensure_columns 异常: {e}")
+
+    # 创建新表 (run_notes)
+    try:
+        from models import RunNote
+        db.create_all()
+    except Exception as e:
+        print(f"[DB] create_all 异常: {e}")
 
 
 # =========================================================================
@@ -120,6 +179,75 @@ def with_db_retry(max_retries=3, base_delay=0.1):
 # 延迟初始化 (在 app_context 内执行)
 with app.app_context():
     _init_db_concurrency()
+
+
+# =========================================================================
+# 安全: SECRET_KEY 启动检查 / CSRF 保护初始化
+# =========================================================================
+
+def _check_secret_key():
+    """检查 SECRET_KEY 是否仍是默认值 (生产环境拒绝启动)"""
+    sk = app.config.get('SECRET_KEY', '')
+    default = app.config.get('_DEFAULT_SECRET_KEY', '')
+    enforce = app.config.get('ENFORCE_SECRET_KEY', True)
+    is_default = (sk == default) or not sk
+    if not is_default:
+        return
+    # DEBUG 模式下允许默认密钥 (本地开发)
+    if app.config.get('DEBUG'):
+        print('[SECURITY] 警告: SECRET_KEY 仍是默认值, 仅允许 DEBUG 模式使用!')
+        return
+    if not enforce:
+        print('[SECURITY] 警告: SECRET_KEY 仍是默认值 (ENFORCE_SECRET_KEY=0 已关闭强制检查)')
+        return
+    raise RuntimeError(
+        '\n' + '=' * 60 + '\n'
+        '[SECURITY] 致命错误: SECRET_KEY 仍是出厂默认值, 拒绝启动!\n'
+        '  请设置环境变量 SECRET_KEY 为随机字符串, 例如:\n'
+        '    # Linux/Mac\n'
+        '    export SECRET_KEY="$(python -c "import secrets; print(secrets.token_hex(32))")"\n'
+        '    # Windows PowerShell\n'
+        '    $env:SECRET_KEY = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 64 | % {[char]$_})\n'
+        '  或在 .env 文件中写入:\n'
+        '    SECRET_KEY=<your-random-key>\n'
+        '  本地调试可临时关闭:\n'
+        '    export ENFORCE_SECRET_KEY=0\n'
+        '=' * 60
+    )
+
+
+_check_secret_key()
+init_csrf(app)
+
+
+@app.before_request
+def _security_before_request():
+    """安全中间件: CSRF 校验 + release 角色只读拦截
+
+    Rate Limiting 通过 @rate_limit 装饰器按端点配置。
+    """
+    # release 角色: 禁止所有写操作 (POST/PUT/DELETE/PATCH)
+    # 仅放行用户级自助功能 (不涉及项目/数据写入):
+    #   - change_own_password: 修改自己密码
+    #   - save_dashboard_config: 保存自己的 Dashboard 配置
+    #   - delete_dashboard_config: 删除自己的 Dashboard 配置
+    #   - save_user_theme: 保存自己的主题
+    if (current_user.is_authenticated
+            and current_user.is_release
+            and request.method in ('POST', 'PUT', 'DELETE', 'PATCH')):
+        allowed_write_endpoints = {
+            'change_own_password',
+            'save_dashboard_config',
+            'delete_dashboard_config',
+            'save_user_theme',
+        }
+        if request.endpoint not in allowed_write_endpoints:
+            app.logger.warning(
+                '[AUTH] release 角色尝试写操作被拒: endpoint=%s path=%s ip=%s',
+                request.endpoint, request.path, get_client_ip()
+            )
+            return jsonify({'error': 'release 账号为只读权限, 不允许此操作'}), 403
+    return csrf_protect()
 
 
 login_manager = LoginManager()
@@ -275,6 +403,7 @@ def load_user(user_id):
 # =========================================================================
 
 @app.route('/login', methods=['GET', 'POST'])
+@rate_limit(5, 60)  # 每 IP 每分钟最多 5 次登录尝试 (防暴力破解)
 def login():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
@@ -283,9 +412,14 @@ def login():
         password = request.form.get('password', '')
         user = User.query.filter_by(username=username).first()
         if user and user.check_password(password):
+            # 防 session fixation: 登录前清空 session, 重新建立
+            session.clear()
             login_user(user)
+            # 主动生成新的 CSRF token (供后续 POST 请求使用)
+            generate_csrf_token()
             next_url = request.args.get('next')
             return redirect(next_url or url_for('dashboard'))
+        app.logger.warning('[AUTH] 登录失败: username=%s ip=%s', username, get_client_ip())
         flash('用户名或密码错误', 'error')
     return render_template('login.html')
 
@@ -336,6 +470,12 @@ def api_get_projects():
     result = []
     for p in projects:
         modules = p.modules.order_by(Module.name).all()
+        # release 角色: 隐藏无已发布记录的模块, 且只统计 released 记录数
+        if current_user.is_release:
+            modules = [m for m in modules
+                       if m.records.filter(QorRecord.is_released.is_(True)).count() > 0]
+            if not modules:
+                continue
         result.append({
             'id': p.id,
             'name': p.name,
@@ -346,7 +486,11 @@ def api_get_projects():
             'locked_by_name': p.locker.username if p.locker else None,
             'lock_reason': p.lock_reason,
             'module_count': len(modules),
-            'modules': [{'id': m.id, 'name': m.name, 'record_count': m.records.count()} for m in modules],
+            'modules': [{
+                'id': m.id, 'name': m.name,
+                'record_count': m.records.filter(QorRecord.is_released.is_(True)).count()
+                                 if current_user.is_release else m.records.count(),
+            } for m in modules],
         })
     return jsonify(result)
 
@@ -357,10 +501,14 @@ def api_get_modules(project_id):
     """获取指定项目的模块列表"""
     project = Project.query.get_or_404(project_id)
     modules = project.modules.order_by(Module.name).all()
+    if current_user.is_release:
+        modules = [m for m in modules
+                   if m.records.filter(QorRecord.is_released.is_(True)).count() > 0]
     return jsonify([{
         'id': m.id,
         'name': m.name,
-        'record_count': m.records.count(),
+        'record_count': m.records.filter(QorRecord.is_released.is_(True)).count()
+                         if current_user.is_release else m.records.count(),
     } for m in modules])
 
 
@@ -384,6 +532,10 @@ def api_get_qor_data():
     versions = request.args.get('versions', '')
 
     query = QorRecord.query.join(Module).join(Project)
+
+    # release 角色: 只能看 is_released=True 的记录
+    if current_user.is_release:
+        query = query.filter(QorRecord.is_released.is_(True))
 
     if module_ids:
         mod_id_list = [int(x) for x in module_ids.split(',') if x.strip().isdigit()]
@@ -447,6 +599,8 @@ def api_get_versions():
     module_ids = request.args.get('module_ids', '')
 
     query = db.session.query(QorRecord.version).join(Module).join(Project)
+    if current_user.is_release:
+        query = query.filter(QorRecord.is_released.is_(True))
     if module_ids:
         mod_id_list = [int(x) for x in module_ids.split(',') if x.strip().isdigit()]
         if mod_id_list:
@@ -461,8 +615,118 @@ def api_get_versions():
 
 
 # =========================================================================
+# 数据 API - Release 标记管理 (仅 admin)
+# =========================================================================
+
+@app.route('/api/admin/qor/<int:record_id>/release', methods=['POST'])
+@login_required
+def admin_toggle_release(record_id):
+    """切换 QoR 记录的 release 状态
+
+    请求体 (可选):
+      released: bool - 显式指定目标状态, 默认切换
+    返回: {id, is_released, released_at}
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    rec = QorRecord.query.get_or_404(record_id)
+    data = request.get_json(silent=True) or {}
+    if 'released' in data:
+        target = bool(data['released'])
+    else:
+        target = not bool(rec.is_released)
+    if target:
+        rec.is_released = True
+        rec.released_at = datetime.utcnow()
+        rec.released_by = current_user.id
+    else:
+        rec.is_released = False
+        rec.released_at = None
+        rec.released_by = None
+    db.session.commit()
+    return jsonify({
+        'id': rec.id,
+        'is_released': bool(rec.is_released),
+        'released_at': rec.released_at.isoformat() if rec.released_at else None,
+    })
+
+
+@app.route('/api/admin/qor/batch_release', methods=['POST'])
+@login_required
+def admin_batch_release():
+    """批量切换 release 状态
+
+    请求体:
+      record_ids: [int] - 记录 ID 列表
+      released: bool - 目标状态 (True=发布, False=撤回)
+    返回: {updated: n, skipped: [...]}
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    data = request.get_json() or {}
+    ids = data.get('record_ids', [])
+    target = bool(data.get('released', True))
+    if not isinstance(ids, list) or not ids:
+        return jsonify({'error': 'record_ids 必须为非空数组'}), 400
+    recs = QorRecord.query.filter(QorRecord.id.in_(ids)).all()
+    now = datetime.utcnow()
+    for r in recs:
+        if target:
+            r.is_released = True
+            r.released_at = now
+            r.released_by = current_user.id
+        else:
+            r.is_released = False
+            r.released_at = None
+            r.released_by = None
+    db.session.commit()
+    return jsonify({'updated': len(recs), 'target': target})
+
+
+# =========================================================================
 # 数据 API - 对比分析
 # =========================================================================
+
+@app.route('/api/run_notes')
+@login_required
+def api_get_run_notes():
+    """获取 Run 备注数据
+
+    查询参数:
+      record_id: QorRecord ID (可选，优先使用)
+      module_id: 单个模块 ID (可选)
+      version: 版本号 (可选，与 module_id 组合使用)
+      full_dir: Run 目录路径 (可选，与 module_id + version 组合使用，精确匹配)
+      project_id: 项目 ID (可选，用于拉取该项目下所有已发布记录的备注)
+    """
+    record_id = request.args.get('record_id', '')
+    module_id = request.args.get('module_id', '')
+    version = request.args.get('version', '')
+    full_dir = request.args.get('full_dir', '').strip()
+    project_id = request.args.get('project_id', '')
+
+    query = RunNote.query.join(QorRecord).join(Module).join(Project)
+
+    # release 角色: 只能看已发布记录的备注
+    if current_user.is_release:
+        query = query.filter(QorRecord.is_released.is_(True))
+
+    if record_id and record_id.isdigit():
+        query = query.filter(RunNote.qor_record_id == int(record_id))
+    elif module_id and module_id.isdigit():
+        query = query.filter(QorRecord.module_id == int(module_id))
+        if version:
+            query = query.filter(QorRecord.version == version)
+    elif project_id and project_id.isdigit():
+        query = query.filter(Module.project_id == int(project_id))
+
+    # full_dir 精确过滤 (为空时不过滤, 返回该 module+version 下全部备注)
+    if full_dir:
+        query = query.filter(RunNote.full_dir == full_dir)
+
+    notes = query.order_by(RunNote.qor_record_id, RunNote.seq).all()
+    return jsonify([n.to_dict() for n in notes])
+
 
 @app.route('/api/violations')
 @login_required
@@ -594,12 +858,19 @@ def _group_bus_endpoints(paths):
 @app.route('/api/violations/source_files')
 @login_required
 def api_get_violation_source_files():
-    """获取违例路径的源 CSV 文件列表（按模块+版本+timing_group 过滤）"""
+    """获取违例路径的源 CSV 文件列表（按模块+版本+timing_group 过滤）
+
+    返回格式: [{"name": "xxx.csv", "count": 123}, ...]
+    自动过滤 count=0 的项, 按 count 倒序排列
+    """
     module_id = request.args.get('module_id', '')
     version = request.args.get('version', '')
     timing_group = request.args.get('timing_group', '')
 
-    query = db.session.query(ViolationPath.source_file).join(QorRecord)
+    query = db.session.query(
+        ViolationPath.source_file,
+        db.func.count(ViolationPath.id)
+    ).join(QorRecord)
     if module_id and module_id.strip().isdigit():
         query = query.filter(QorRecord.module_id == int(module_id))
     if version:
@@ -607,8 +878,12 @@ def api_get_violation_source_files():
     if timing_group:
         query = query.filter(ViolationPath.timing_group == timing_group)
 
-    files = query.distinct().order_by(ViolationPath.source_file).all()
-    return jsonify([f[0] for f in files if f[0]])
+    query = query.group_by(ViolationPath.source_file)
+    rows = query.all()
+    # 过滤空名 + 按条数倒序
+    result = [{'name': f, 'count': c} for f, c in rows if f]
+    result.sort(key=lambda x: -x['count'])
+    return jsonify(result)
 
 
 @app.route('/api/violations/diff')
@@ -771,11 +1046,18 @@ def _group_bus_diff(paths):
 @app.route('/api/violations/timing_groups')
 @login_required
 def api_get_timing_groups():
-    """获取所有 timing group 列表（可选按模块/版本过滤）"""
+    """获取所有 timing group 列表（可选按模块/版本过滤）
+
+    返回格式: [{"name": "SRAMCLK", "count": 123}, ...]
+    自动过滤 count=0 的项, 按 count 倒序排列, 方便前端只显示非空 group
+    """
     module_ids = request.args.get('module_ids', '')
     versions = request.args.get('versions', '')
 
-    query = db.session.query(ViolationPath.timing_group).join(QorRecord).join(Module)
+    query = db.session.query(
+        ViolationPath.timing_group,
+        db.func.count(ViolationPath.id)
+    ).join(QorRecord).join(Module)
     if module_ids:
         mod_id_list = [int(x) for x in module_ids.split(',') if x.strip().isdigit()]
         if mod_id_list:
@@ -785,8 +1067,71 @@ def api_get_timing_groups():
         if ver_list:
             query = query.filter(QorRecord.version.in_(ver_list))
 
-    groups = query.distinct().order_by(ViolationPath.timing_group).all()
-    return jsonify([g[0] for g in groups if g[0]])
+    query = query.group_by(ViolationPath.timing_group)
+    rows = query.all()
+    # 过滤空名 + 按条数倒序
+    result = [{'name': g, 'count': c} for g, c in rows if g]
+    result.sort(key=lambda x: -x['count'])
+    return jsonify(result)
+
+
+@app.route('/api/violations/summary')
+@login_required
+def api_get_violation_summary():
+    """获取违例路径按 module/version 聚合的统计
+
+    返回格式:
+    {
+      "modules": [
+        {"module_id": 1, "module_name": "cpu_top", "count": 123},
+        ...
+      ],
+      "versions_by_module": {
+        "1": [  // key = module_id
+          {"version": "v1", "count": 50},
+          {"version": "v2", "count": 73},
+          ...
+        ],
+        ...
+      }
+    }
+
+    用途:
+      - 前端用 modules 列表过滤掉 count=0 的 module
+      - 选中 module 后用 versions_by_module[modId] 过滤掉空版本
+    """
+    # 按 module 聚合
+    mod_query = db.session.query(
+        Module.id,
+        Module.name,
+        db.func.count(ViolationPath.id)
+    ).join(QorRecord, QorRecord.module_id == Module.id) \
+     .join(ViolationPath, ViolationPath.qor_record_id == QorRecord.id) \
+     .group_by(Module.id, Module.name)
+    mod_rows = mod_query.all()
+    modules = [{'module_id': mid, 'module_name': mname, 'count': cnt}
+               for mid, mname, cnt in mod_rows]
+    modules.sort(key=lambda x: -x['count'])
+
+    # 按 (module_id, version) 聚合
+    ver_query = db.session.query(
+        QorRecord.module_id,
+        QorRecord.version,
+        db.func.count(ViolationPath.id)
+    ).join(ViolationPath, ViolationPath.qor_record_id == QorRecord.id) \
+     .group_by(QorRecord.module_id, QorRecord.version)
+    ver_rows = ver_query.all()
+    versions_by_module = {}
+    for mid, ver, cnt in ver_rows:
+        versions_by_module.setdefault(str(mid), []).append({'version': ver, 'count': cnt})
+    # 每个模块下版本按 count 倒序
+    for k in versions_by_module:
+        versions_by_module[k].sort(key=lambda x: -x['count'])
+
+    return jsonify({
+        'modules': modules,
+        'versions_by_module': versions_by_module
+    })
 
 
 @app.route('/api/compare')
@@ -1026,6 +1371,104 @@ def delete_dashboard_config(dash_id):
 
 
 # =========================================================================
+# 用户主题
+# =========================================================================
+
+# 允许在主题 JSON 中保存的字段及其类型校验
+_THEME_FIELDS = {
+    'name': str,
+    'primary': str,
+    'primary_gradient_end': str,
+    'background': str,
+    'surface': str,
+    'surface_hover': str,
+    'text': str,
+    'text_secondary': str,
+    'border': str,
+    'navbar_text': str,
+    'navbar_text_active': str,
+}
+
+# 颜色字段 (粗略校验: #hex / rgb()/rgba()/hsl())
+_COLOR_RE = re.compile(r'^(#[0-9a-fA-F]{3,8}|rgb\(.+\)|rgba\(.+\)|hsl\(.+\)|hsla\(.+\))$')
+
+
+def _validate_theme(data):
+    """校验并清洗主题数据, 返回 (theme_dict, error_message)"""
+    if not isinstance(data, dict):
+        return None, '主题数据必须为对象'
+    cleaned = {}
+    for key, expected_type in _THEME_FIELDS.items():
+        if key not in data:
+            continue
+        val = data[key]
+        if not isinstance(val, expected_type):
+            return None, f'字段 {key} 类型错误'
+        if key != 'name':
+            # 颜色字段校验
+            if not _COLOR_RE.match(val.strip()):
+                return None, f'字段 {key} 不是合法颜色值: {val}'
+        cleaned[key] = val.strip() if isinstance(val, str) else val
+    # name 字段若为空, 用 'custom'
+    if not cleaned.get('name'):
+        cleaned['name'] = 'custom'
+    return cleaned, None
+
+
+@app.route('/api/user/theme')
+@login_required
+def get_user_theme():
+    """获取当前用户的主题"""
+    return jsonify({
+        'theme': current_user.get_theme(),
+        'presets': THEME_PRESETS,
+        'default': DEFAULT_THEME,
+    })
+
+
+@app.route('/api/user/theme', methods=['POST'])
+@login_required
+@with_db_retry()
+def save_user_theme():
+    """保存当前用户的自定义主题
+
+    请求体:
+      - {preset: 'classic'}: 应用预设主题
+      - {theme: {...}}: 保存自定义主题 (字段经校验)
+      - {reset: true}: 重置为默认主题
+    """
+    data = request.get_json() or {}
+
+    # 重置
+    if data.get('reset'):
+        current_user.theme = None
+        db.session.commit()
+        return jsonify({'ok': True, 'theme': current_user.get_theme()})
+
+    # 应用预设
+    preset_name = data.get('preset')
+    if preset_name:
+        if preset_name not in THEME_PRESETS:
+            return jsonify({'error': f'未知预设: {preset_name}'}), 400
+        current_user.set_theme(dict(THEME_PRESETS[preset_name]))
+        db.session.commit()
+        return jsonify({'ok': True, 'theme': current_user.get_theme()})
+
+    # 自定义主题
+    theme_data = data.get('theme')
+    if theme_data is None:
+        return jsonify({'error': '缺少 theme 字段或 preset/reset 参数'}), 400
+
+    cleaned, err = _validate_theme(theme_data)
+    if err:
+        return jsonify({'error': err}), 400
+
+    current_user.set_theme(cleaned)
+    db.session.commit()
+    return jsonify({'ok': True, 'theme': current_user.get_theme()})
+
+
+# =========================================================================
 # 管理员 API - 数据管理
 # =========================================================================
 
@@ -1128,8 +1571,9 @@ def admin_create_snapshot(project_id):
       description: 说明 (可选)
       snapshot_type: milestone / tapeout / pre_release / custom (默认 milestone)
     """
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
+    # 项目级权限: admin / owner / editor 可创建快照
+    if not can_edit_project(current_user, project_id):
+        return jsonify({'error': '无权限创建此项目的快照 (需要 editor 及以上角色)'}), 403
     p = Project.query.get_or_404(project_id)
     data = request.get_json() or request.form
     name = data.get('name', '').strip()
@@ -1160,8 +1604,9 @@ def admin_create_snapshot(project_id):
 @login_required
 def admin_list_snapshots(project_id):
     """列出项目的所有快照"""
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
+    # 项目级权限: viewer 以上可查看
+    if not can_access_project(current_user, project_id):
+        return jsonify({'error': '无权限查看此项目的快照'}), 403
     Project.query.get_or_404(project_id)
     snaps = DataSnapshot.query.filter_by(project_id=project_id).order_by(DataSnapshot.created_at.desc()).all()
     return jsonify([s.to_dict() for s in snaps])
@@ -1171,9 +1616,10 @@ def admin_list_snapshots(project_id):
 @login_required
 def admin_get_snapshot(snap_id):
     """获取快照详情 (含完整数据)"""
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
     snap = DataSnapshot.query.get_or_404(snap_id)
+    # 项目级权限: viewer 以上可查看
+    if not can_access_project(current_user, snap.project_id):
+        return jsonify({'error': '无权限查看此快照'}), 403
     if not snap.verify_integrity():
         return jsonify({'error': '快照数据校验失败, 可能已被篡改', 'verified': False}), 500
     return jsonify(snap.to_dict(include_data=True))
@@ -1199,9 +1645,15 @@ def admin_rollback_snapshot(snap_id):
       2. 删除当前所有 QorRecord (该项目下)
       3. 恢复快照中的数据
     """
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
-    snap = DataSnapshot.query.get_or_404(snap_id)
+    snap = DataSnapshot.query.get(snap_id)
+    if snap is None:
+        # 不存在时返回 404 (无权用户也返回 404, 避免泄露存在性)
+        if current_user.is_admin:
+            return jsonify({'error': '快照不存在'}), 404
+        return jsonify({'error': '快照不存在'}), 404
+    # 项目级权限: admin / owner 才能回滚 (危险操作)
+    if not can_manage_project(current_user, snap.project_id):
+        return jsonify({'error': '无权限回滚此项目 (需要 owner 及以上角色)'}), 403
     if not snap.verify_integrity():
         return jsonify({'error': '快照数据校验失败, 拒绝回滚'}), 500
 
@@ -1277,8 +1729,12 @@ def admin_rollback_snapshot(snap_id):
             clock_gating_ratio=item.get('clock_gating_ratio'),
             utilization=item.get('utilization'),
             congestion=item.get('congestion'),
+            congestion_h=item.get('congestion_h'),
+            congestion_v=item.get('congestion_v'),
+            congestion_b=item.get('congestion_b'),
             source_file=item.get('source_file'),
         )
+        _sync_congestion(rec)
         if item.get('extra_fields') and isinstance(item['extra_fields'], dict):
             rec.extra_fields = json.dumps(item['extra_fields'], ensure_ascii=False)
         db.session.add(rec)
@@ -1299,9 +1755,10 @@ def admin_rollback_snapshot(snap_id):
 @with_db_retry()
 def admin_delete_snapshot(snap_id):
     """删除快照"""
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
     snap = DataSnapshot.query.get_or_404(snap_id)
+    # 项目级权限: admin / owner / editor 可删除快照
+    if not can_edit_project(current_user, snap.project_id):
+        return jsonify({'error': '无权限删除此项目的快照 (需要 editor 及以上角色)'}), 403
     db.session.delete(snap)
     db.session.commit()
     return jsonify({'ok': True})
@@ -1453,13 +1910,18 @@ def verify_all_backups():
 @with_db_retry()
 def admin_create_module():
     """创建模块"""
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
+    # 项目级权限: admin / owner / editor 可创建模块
     data = request.get_json() or request.form
     project_id = data.get('project_id')
     name = data.get('name', '').strip()
     if not project_id or not name:
         return jsonify({'error': '项目ID和模块名称不能为空'}), 400
+    try:
+        pid = int(project_id)
+    except (ValueError, TypeError):
+        return jsonify({'error': '无效的 project_id'}), 400
+    if not can_edit_project(current_user, pid):
+        return jsonify({'error': '无权限在此项目创建模块 (需要 editor 及以上角色)'}), 403
     Project.query.get_or_404(project_id)
     if Module.query.filter_by(project_id=project_id, name=name).first():
         return jsonify({'error': '模块已存在'}), 400
@@ -1474,20 +1936,38 @@ def admin_create_module():
 @with_db_retry()
 def admin_delete_module(module_id):
     """删除模块"""
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
     m = Module.query.get_or_404(module_id)
-    # 检查所属项目是否可写入
+    # 项目级权限: admin / owner 才能删模块 (结构变更)
     if m.project:
+        if not can_manage_project(current_user, m.project.id):
+            return jsonify({'error': '无权限删除模块 (需要 owner 及以上角色)'}), 403
         writable, err = check_project_writable(m.project.id)
         if not writable:
             return jsonify({'error': err}), 403
+    else:
+        if not current_user.is_admin:
+            return jsonify({'error': '无权限'}), 403
     db.session.delete(m)
     db.session.commit()
     return jsonify({'ok': True})
 
 
-def _save_records_to_db(records, project, module_id, version, source_filename):
+def _sync_congestion(rec):
+    """同步拥塞指数字段, 保持向后兼容
+
+    规则:
+      - 若 congestion_b 有值但 congestion 为空, 则 congestion = congestion_b
+      - 若 congestion 有值但 congestion_b 为空, 则 congestion_b = congestion
+      - 二者都为空时不动
+    这样旧客户端读 congestion / 新客户端读 congestion_b 都能拿到值。
+    """
+    if rec.congestion_b is not None and rec.congestion is None:
+        rec.congestion = rec.congestion_b
+    elif rec.congestion is not None and rec.congestion_b is None:
+        rec.congestion_b = rec.congestion
+
+
+def _save_records_to_db(records, project, module_id, version, source_filename, mark_released=False):
     """将解析后的记录保存到数据库（内部辅助函数）
 
     保护措施:
@@ -1495,6 +1975,8 @@ def _save_records_to_db(records, project, module_id, version, source_filename):
       - 字符串截断: 防止超长字符串破坏 DB / JSON
       - 去重 upsert: 同 (module_id, version) 已存在则更新而非新增
       - 单行异常不影响整体
+
+    mark_released=True 时, 新建/更新的记录会被标记为已发布 (对 release 账号可见)
     """
     saved_count = 0
     skipped_count = 0
@@ -1517,6 +1999,11 @@ def _save_records_to_db(records, project, module_id, version, source_filename):
         'nvp_setup': (0, 1e9), 'nvp_hold': (0, 1e9),
         'cell_count': (0, 1e9), 'instance_count': (0, 1e9),
         'net_count': (0, 1e9), 'sequential_cell_count': (0, 1e9),
+        # 物理实现指标 (0-1 之间的小数 或 0-100 的百分比, 都接受)
+        'mbb_ratio': (0, 100), 'clock_gating_ratio': (0, 100),
+        'utilization': (0, 100),
+        'congestion': (0, 100), 'congestion_h': (0, 100),
+        'congestion_v': (0, 100), 'congestion_b': (0, 100),
     }
 
     FLOAT_FIELDS_SET = set(NUMERIC_RANGES.keys())
@@ -1591,6 +2078,8 @@ def _save_records_to_db(records, project, module_id, version, source_filename):
                         cleaned = sanitize_value(f, record[f])
                         if cleaned is not None:
                             setattr(existing, f, cleaned)
+                # 拥塞指数向后兼容: 若 congestion 与 congestion_b 任一为空, 用对方兜底
+                _sync_congestion(existing)
                 # 合并 extra_fields（保留原有，更新同名字段）
                 new_extra = record.get('extra_fields')
                 if new_extra:
@@ -1614,6 +2103,12 @@ def _save_records_to_db(records, project, module_id, version, source_filename):
                         cur.update(new_extra)
                     existing.extra_fields = cur
                 existing.source_file = sanitize_str(source_filename) or existing.source_file
+                if mark_released:
+                    existing.is_released = True
+                    if not existing.released_at:
+                        existing.released_at = datetime.utcnow()
+                    if not existing.released_by and current_user.is_authenticated:
+                        existing.released_by = current_user.id
                 updated_count += 1
             else:
                 # 新建记录
@@ -1627,7 +2122,13 @@ def _save_records_to_db(records, project, module_id, version, source_filename):
                         cleaned = sanitize_value(f, record[f])
                         if cleaned is not None:
                             setattr(qor, f, cleaned)
+                _sync_congestion(qor)
                 qor.extra_fields = record.get('extra_fields')
+                if mark_released:
+                    qor.is_released = True
+                    qor.released_at = datetime.utcnow()
+                    if current_user.is_authenticated:
+                        qor.released_by = current_user.id
                 db.session.add(qor)
                 saved_count += 1
         except Exception:
@@ -1638,12 +2139,14 @@ def _save_records_to_db(records, project, module_id, version, source_filename):
     return saved_count, skipped_count, updated_count
 
 
-def _merge_power_to_db(records, project, module_id, version, source_filename):
+def _merge_power_to_db(records, project, module_id, version, source_filename, mark_released=False):
     """将功耗数据合并到已有 QorRecord（内部辅助函数）
 
     匹配策略: (module_id, version) 组合，若指定 module_id 则全用该模块，
     否则按 record['module_name'] 查找模块。
     若匹配到已有记录，仅更新功耗字段；若无匹配，则新建带功耗数据的记录。
+
+    mark_released=True 时, 新建/更新的记录会被标记为已发布。
     """
     merged_count = 0
     created_count = 0
@@ -1700,6 +2203,12 @@ def _merge_power_to_db(records, project, module_id, version, source_filename):
                 updated_any = True
 
             if updated_any:
+                if mark_released:
+                    existing.is_released = True
+                    if not existing.released_at:
+                        existing.released_at = datetime.utcnow()
+                    if not existing.released_by and current_user.is_authenticated:
+                        existing.released_by = current_user.id
                 merged_count += 1
         else:
             # 无匹配记录，新建（仅含功耗数据，其他字段为空）
@@ -1712,6 +2221,11 @@ def _merge_power_to_db(records, project, module_id, version, source_filename):
                 if f in record and record[f] is not None:
                     setattr(qor, f, record[f])
             qor.extra_fields = record.get('extra_fields')
+            if mark_released:
+                qor.is_released = True
+                qor.released_at = datetime.utcnow()
+                if current_user.is_authenticated:
+                    qor.released_by = current_user.id
             db.session.add(qor)
             created_count += 1
 
@@ -1792,6 +2306,136 @@ def _save_violations_to_db(records, project, module_id, version, source_filename
     return saved_count, skipped_count
 
 
+def _save_notes_to_db(records, project, module_id, version, source_filename, full_dir=None):
+    """将 Run 备注保存到数据库
+
+    匹配策略:
+      按 (module_id, version) 查找已有 QorRecord, 若 full_dir 不为空则进一步按
+      QorRecord.extra_fields.full_dir 匹配 (用于多目录同版本场景), 找不到则回退到
+      该 module+version 的第一条 QorRecord。
+
+    覆盖策略 (再次上传时覆盖旧数据):
+      按 (qor_record_id, full_dir) 删除旧备注后写入新备注。这样同一目录重复 make
+      不会累积, 而其他目录的备注不受影响。
+
+    full_dir 来源优先级: CSV 行内 > 函数参数 full_dir (通常来自上传表单)。
+    """
+    saved_count = 0
+    skipped_count = 0
+    module_cache = {}
+    # 记录已清空的 (qor_record_id, full_dir) 对, 避免重复删除
+    cleared_keys = set()
+
+    MAX_STR_LEN = 2000
+
+    def sanitize_str(val, max_len=500):
+        if val is None:
+            return None
+        s = str(val).strip()
+        return s[:max_len] if len(s) > max_len else (s if s else None)
+
+    def get_qor_full_dir(qor_rec):
+        """从 QorRecord.extra_fields JSON 中提取 full_dir (容错多种键名/大小写)"""
+        if not qor_rec or not qor_rec.extra_fields:
+            return None
+        import json as _json
+        try:
+            extra = _json.loads(qor_rec.extra_fields)
+            if isinstance(extra, str):
+                extra = _json.loads(extra)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(extra, dict):
+            return None
+        # 尝试常见键名 (大小写不敏感)
+        for k in ('full_dir', 'Fulldir', 'fulldir', 'FULL_DIR', 'fullDir',
+                  'dir', 'directory', 'path', 'run_dir'):
+            for ek, ev in extra.items():
+                if str(ek).strip().lower() == k.lower():
+                    return str(ev).strip() if ev else None
+        return None
+
+    for record in records:
+        try:
+            mod_name = sanitize_str(record.get('module_name'))
+            if module_id:
+                mod = Module.query.get(module_id)
+            elif mod_name:
+                if mod_name in module_cache:
+                    mod = module_cache[mod_name]
+                else:
+                    mod = Module.query.filter_by(project_id=project.id, name=mod_name).first()
+                    module_cache[mod_name] = mod
+            else:
+                mod = None
+
+            if not mod:
+                skipped_count += 1
+                continue
+
+            rec_version = sanitize_str(record.get('version')) or sanitize_str(version) or 'v1'
+
+            # 行内 full_dir 优先, 其次表单 full_dir
+            row_full_dir = sanitize_str(record.get('full_dir'), max_len=1000) or sanitize_str(full_dir, max_len=1000)
+
+            # 查找关联的 QorRecord: 先按 (module_id, version) 取全部候选
+            candidates = QorRecord.query.filter_by(module_id=mod.id, version=rec_version).all()
+            if not candidates:
+                skipped_count += 1
+                continue
+
+            qor_rec = None
+            if row_full_dir:
+                # 在候选里按 extra_fields.full_dir 匹配
+                for cand in candidates:
+                    if (get_qor_full_dir(cand) or '') == row_full_dir:
+                        qor_rec = cand
+                        break
+                # 找不到精确匹配, 回退到第一条 (兼容 QoR 上传时 full_dir 列名不一致的情况)
+                if qor_rec is None:
+                    qor_rec = candidates[0]
+            else:
+                qor_rec = candidates[0]
+
+            # 覆盖逻辑: 按 (qor_record_id, full_dir) 清空旧备注
+            # row_full_dir 可能为 None, 此时按 qor_record_id + full_dir IS NULL 清空
+            clear_key = (qor_rec.id, row_full_dir)
+            if clear_key not in cleared_keys:
+                if row_full_dir:
+                    RunNote.query.filter_by(
+                        qor_record_id=qor_rec.id, full_dir=row_full_dir
+                    ).delete()
+                else:
+                    # full_dir 为空: 清空该记录下所有 full_dir 为空的备注
+                    RunNote.query.filter_by(
+                        qor_record_id=qor_rec.id, full_dir=None
+                    ).delete()
+                cleared_keys.add(clear_key)
+
+            item = sanitize_str(record.get('item'), MAX_STR_LEN) or ''
+            desc = sanitize_str(record.get('description'), MAX_STR_LEN) or ''
+
+            if not item and not desc:
+                skipped_count += 1
+                continue
+
+            note = RunNote(
+                qor_record_id=qor_rec.id,
+                item=item,
+                description=desc,
+                seq=saved_count,
+                source_file=sanitize_str(source_filename),
+                full_dir=row_full_dir,
+            )
+            db.session.add(note)
+            saved_count += 1
+        except Exception:
+            skipped_count += 1
+            continue
+
+    return saved_count, skipped_count
+
+
 @app.route('/api/admin/upload', methods=['POST'])
 @login_required
 @with_db_retry()
@@ -1804,8 +2448,16 @@ def admin_upload_csv():
       module_id: 模块 ID (可选，不传则从 CSV 中读取或自动创建)
       version: 版本号 (可选)
     """
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
+    # 项目级权限: admin / owner / editor 可上传
+    project_id = request.form.get('project_id')
+    if not project_id:
+        return jsonify({'error': '请选择项目'}), 400
+    try:
+        pid = int(project_id)
+    except (ValueError, TypeError):
+        return jsonify({'error': '无效的 project_id'}), 400
+    if not can_edit_project(current_user, pid):
+        return jsonify({'error': '无权限上传此项目数据 (需要 editor 及以上角色)'}), 403
 
     # 收集所有上传的文件 (支持 file 和 files[] 两种字段名)
     files = []
@@ -1816,15 +2468,22 @@ def admin_upload_csv():
 
     files = [f for f in files if f and f.filename and f.filename.lower().endswith('.csv')]
 
+    # 前端可选传入 file_paths (webkitdirectory 模式下保留相对路径, 用于 dirname 提取)
+    file_paths = request.form.getlist('file_paths') if 'file_paths' in request.form else []
+    # 若未传 file_paths, 用 file.filename 兜底
+    file_paths = file_paths if len(file_paths) == len(files) else [f.filename for f in files]
+
     if not files:
         return jsonify({'error': '请选择至少一个 CSV 文件'}), 400
 
-    project_id = request.form.get('project_id')
     module_id = request.form.get('module_id')
     version = request.form.get('version', '').strip()
 
-    if not project_id:
-        return jsonify({'error': '请选择项目'}), 400
+    # 模块名来源: csv(默认,从CSV列读取) / filename(从文件名提取) / dirname(从父目录名提取)
+    # 批量目录上传场景下, 每个 CSV 对应一个模块, 文件内通常没有 module_name 列
+    module_name_source = request.form.get('module_name_source', 'csv').strip()
+    # 文件名后缀去除规则 (用于 filename 模式), 逗号分隔, 大小写不敏感
+    filename_suffixes = request.form.get('filename_suffixes', '_qor,qor,_qor_report').strip()
 
     project = Project.query.get_or_404(project_id)
     # 检查项目是否可写入 (锁定/归档项目禁止上传)
@@ -1834,24 +2493,77 @@ def admin_upload_csv():
 
     data_type = request.form.get('data_type', 'qor')  # qor / power
 
+    # 上传时是否直接标记为已发布 (对 release 账号可见)
+    mark_released = request.form.get('mark_released') in ('1', 'true', 'on', 'yes')
+
+    # Run 备注专用: full_dir 用于区分同 module+version 下的不同 run 目录
+    upload_full_dir = request.form.get('full_dir', '').strip() if data_type == 'notes' else ''
+
+    # 预处理: 文件名 -> 模块名 提取函数
+    _suffix_tokens = tuple(s.strip().lower() for s in filename_suffixes.split(',') if s.strip())
+
+    def _extract_module_from_filename(fname):
+        """从文件名提取模块名: 去掉路径、扩展名、常见后缀(_qor 等)"""
+        import os as _os
+        base = _os.path.basename(fname or '')
+        # 去扩展名
+        name, _ext = _os.path.splitext(base)
+        name_lower = name.lower()
+        # 去掉配置的后缀 token (可能多次, 如 module_a_qor_qor -> module_a)
+        changed = True
+        while changed:
+            changed = False
+            for tok in _suffix_tokens:
+                if name_lower.endswith(tok) and len(name_lower) > len(tok):
+                    name = name[: -len(tok)]
+                    name_lower = name.lower()
+                    changed = True
+        return name.strip() or None
+
+    def _extract_module_from_dirname(fname):
+        """从文件的父目录名提取模块名 (webkitdirectory 上传时 file.filename 带相对路径)"""
+        import os as _os
+        # file.filename 在 webkitdirectory 模式下形如 "module_dir/module_a/module_a_qor.csv"
+        parent = _os.path.basename(_os.path.dirname(fname or ''))
+        return parent.strip() or None
+
     total_saved = 0
     total_skipped = 0
     total_merged = 0
     total_updated = 0
     file_results = []
 
-    for file in files:
+    for file_idx, file in enumerate(files):
         file_content = file.read()
+        # webkitdirectory 模式下 file.filename 会被截断, 用 file_paths 保留的相对路径
+        file_path = file_paths[file_idx] if file_idx < len(file_paths) else file.filename
 
         try:
             if data_type == 'violation':
                 # 违例路径 CSV
                 result = parse_violation_csv(file_content, filename=file.filename)
+            elif data_type == 'notes':
+                # Run 备注 CSV (2~3 列: item, description[, full_dir])
+                result = parse_notes_csv(file_content, filename=file.filename, default_full_dir=upload_full_dir)
             else:
+                # 批量上传: 按 module_name_source 提取每个文件的默认模块名
+                # csv 模式下也提取作为回退 (CSV 无 module_name 列时自动使用)
+                file_default_module = None
+                if not module_id:
+                    if module_name_source == 'filename':
+                        file_default_module = _extract_module_from_filename(file_path)
+                    elif module_name_source == 'dirname':
+                        file_default_module = _extract_module_from_dirname(file_path)
+                        if not file_default_module:
+                            file_default_module = _extract_module_from_filename(file_path)
+                    else:
+                        # csv 模式: 提取作为回退 (dirname 优先, filename 兜底)
+                        file_default_module = _extract_module_from_dirname(file_path) or \
+                                              _extract_module_from_filename(file_path)
                 result = parse_csv_file(
                     file_content,
                     default_project=project.name,
-                    default_module=None,
+                    default_module=file_default_module,
                     default_version=version if version else None,
                 )
             records = result['records']
@@ -1877,7 +2589,7 @@ def admin_upload_csv():
         try:
             triggered_alerts = []
             if data_type == 'power':
-                merged, created = _merge_power_to_db(records, project, module_id, version, file.filename)
+                merged, created = _merge_power_to_db(records, project, module_id, version, file.filename, mark_released=mark_released)
                 db.session.commit()  # 立即提交本文件
                 # 触发告警检查 (对受影响的模块/版本)
                 affected_mods = set()
@@ -1918,8 +2630,21 @@ def admin_upload_csv():
                     'skipped': skipped,
                     'stats': stats,
                 })
+            elif data_type == 'notes':
+                # Run 备注: 按 (qor_record_id, full_dir) 覆盖旧备注, 再写入
+                saved, skipped = _save_notes_to_db(records, project, module_id, version, file.filename, full_dir=upload_full_dir or None)
+                db.session.commit()
+                total_saved += saved
+                total_skipped += skipped
+                file_results.append({
+                    'filename': file.filename,
+                    'ok': True,
+                    'saved': saved,
+                    'skipped': skipped,
+                    'stats': stats,
+                })
             else:
-                saved, skipped, updated = _save_records_to_db(records, project, module_id, version, file.filename)
+                saved, skipped, updated = _save_records_to_db(records, project, module_id, version, file.filename, mark_released=mark_released)
                 db.session.commit()  # 立即提交本文件
                 # 触发告警检查: 查找本次新增/更新的记录
                 affected_mods = set()
@@ -1979,6 +2704,248 @@ def admin_upload_csv():
     })
 
 
+@app.route('/api/admin/upload_block_qor', methods=['POST'])
+@login_required
+@with_db_retry()
+def admin_upload_block_qor():
+    """上传 block_qor.csv 补充 FlopCount / FlopCount_incr 到已有 QoR 记录
+
+    不新建记录，仅通过 Fulldir 匹配已存在的 QorRecord.extra_fields.full_dir:
+      - 命中唯一记录: 更新 extra_fields 加入 FlopCount / FlopCount_incr
+      - 命中多条: 跳过, 计入 conflict
+      - 命中 0 条: 跳过, 计入 missed
+
+    表单字段:
+      file / files: block_qor.csv (支持多文件 / 整目录上传)
+      project_id: 项目 ID (权限校验用; 留空则跨项目全局匹配)
+      file_paths: webkitdirectory 模式下前端额外传的相对路径数组
+    """
+    project_id = request.form.get('project_id')
+    pid = None
+    if project_id:
+        try:
+            pid = int(project_id)
+        except (ValueError, TypeError):
+            return jsonify({'error': '无效的 project_id'}), 400
+        if not can_edit_project(current_user, pid):
+            return jsonify({'error': '无权限补充此项目数据 (需要 editor 及以上角色)'}), 403
+
+    files = []
+    if 'file' in request.files:
+        files.append(request.files['file'])
+    if 'files' in request.files:
+        files.extend(request.files.getlist('files'))
+    files = [f for f in files if f and f.filename and f.filename.lower().endswith('.csv')]
+
+    if not files:
+        return jsonify({'error': '未选择 CSV 文件'}), 400
+
+    file_paths = request.form.getlist('file_paths') if 'file_paths' in request.form else []
+    file_paths = file_paths if len(file_paths) == len(files) else [f.filename for f in files]
+
+    # block_qor.csv header 别名映射 (大小写/空格/下划线不敏感)
+    # 仅关心 Fulldir (匹配键) + FlopCount + FlopCount_incr
+    BLOCK_HEADER_ALIASES = {
+        'fulldir': 'full_dir',
+        'fuldir': 'full_dir',
+        'full_dir': 'full_dir',
+        'fullpath': 'full_dir',
+        'full_path': 'full_dir',
+        'dir': 'full_dir',
+        'flopcount': 'flop_count',
+        'flop_count': 'flop_count',
+        'flops': 'flop_count',
+        'ff_count': 'flop_count',
+        'flopcount_incr': 'flop_count_incr',
+        'flop_count_incr': 'flop_count_incr',
+        'flops_incr': 'flop_count_incr',
+    }
+
+    def _normalize_header(h):
+        if not h:
+            return ''
+        return h.strip().lower().replace(' ', '_').replace('-', '_')
+
+    def _parse_int_safe(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s or s in ('-', 'n/a', 'na', 'none', 'null'):
+            return None
+        try:
+            return int(float(s))
+        except (ValueError, TypeError):
+            return None
+
+    # 构建全表 full_dir -> [QorRecord] 索引 (一次查询, 后续内存匹配)
+    # pid 为空时跨项目扫描
+    import json as _json
+    query = QorRecord.query.join(Module).join(Project)
+    if pid:
+        query = query.filter(Project.id == pid)
+    all_records = query.all()
+
+    full_dir_index = {}  # full_dir (lower) -> [QorRecord]
+    for rec in all_records:
+        try:
+            extra = _json.loads(rec.extra_fields) if rec.extra_fields else {}
+            if isinstance(extra, str):
+                extra = _json.loads(extra)
+        except (ValueError, TypeError):
+            extra = {}
+        fd = extra.get('full_dir') if isinstance(extra, dict) else None
+        if fd:
+            full_dir_index.setdefault(str(fd).strip().lower(), []).append(rec)
+
+    file_results = []
+    total_updated = 0
+    total_missed = 0
+    total_conflict = 0
+
+    for file_idx, file in enumerate(files):
+        file_content = file.read()
+        try:
+            text = file_content.decode('utf-8-sig', errors='replace')
+        except Exception:
+            text = file_content.decode('latin-1', errors='replace')
+
+        import csv as _csv
+        import io as _io
+        try:
+            reader = _csv.reader(_io.StringIO(text))
+            rows = list(reader)
+        except Exception as e:
+            file_results.append({
+                'filename': file.filename,
+                'ok': False,
+                'error': f'CSV 解析失败: {str(e)}',
+            })
+            continue
+
+        if not rows:
+            file_results.append({
+                'filename': file.filename,
+                'ok': False,
+                'error': '空文件',
+            })
+            continue
+
+        # 解析 header, 大小写不敏感 + 别名
+        headers = [_normalize_header(h) for h in rows[0]]
+        col_map = {}  # 标准字段名 -> col_idx
+        for idx, h in enumerate(headers):
+            std = BLOCK_HEADER_ALIASES.get(h)
+            if std and std not in col_map:
+                col_map[std] = idx
+
+        if 'full_dir' not in col_map:
+            file_results.append({
+                'filename': file.filename,
+                'ok': False,
+                'error': 'CSV 缺少 Fulldir 列 (匹配键)',
+            })
+            continue
+
+        fd_idx = col_map['full_dir']
+        flop_idx = col_map.get('flop_count')
+        flop_incr_idx = col_map.get('flop_count_incr')
+
+        file_updated = 0
+        file_missed = 0
+        file_conflict = 0
+        skipped_no_flop = 0
+        missed_samples = []
+        conflict_samples = []
+
+        for row in rows[1:]:
+            if not row or all(not c.strip() for c in row if c):
+                continue
+            if fd_idx >= len(row):
+                continue
+            fd_value = (row[fd_idx] or '').strip()
+            if not fd_value or fd_value.lower() in ('-', 'n/a', 'none'):
+                continue
+
+            # 提取 FlopCount / FlopCount_incr (至少有一个非空才更新)
+            flop_val = _parse_int_safe(row[flop_idx]) if flop_idx is not None and flop_idx < len(row) else None
+            flop_incr_val = _parse_int_safe(row[flop_incr_idx]) if flop_incr_idx is not None and flop_incr_idx < len(row) else None
+            if flop_val is None and flop_incr_val is None:
+                skipped_no_flop += 1
+                continue
+
+            # 通过 full_dir 匹配 (大小写不敏感)
+            matches = full_dir_index.get(fd_value.lower(), [])
+            if len(matches) == 0:
+                file_missed += 1
+                if len(missed_samples) < 3:
+                    missed_samples.append(fd_value)
+                continue
+            if len(matches) > 1:
+                file_conflict += 1
+                if len(conflict_samples) < 3:
+                    conflict_samples.append(fd_value)
+                continue
+
+            # 唯一匹配: 更新 extra_fields
+            rec = matches[0]
+            try:
+                extra = _json.loads(rec.extra_fields) if rec.extra_fields else {}
+                if isinstance(extra, str):
+                    extra = _json.loads(extra)
+                if not isinstance(extra, dict):
+                    extra = {}
+            except (ValueError, TypeError):
+                extra = {}
+
+            # 用 block_qor.csv 原始 header 名作为 key (保留大小写信息)
+            # 但用户习惯小写, 统一用 FlopCount / FlopCount_incr
+            changed = False
+            if flop_val is not None and extra.get('FlopCount') != flop_val:
+                extra['FlopCount'] = flop_val
+                changed = True
+            if flop_incr_val is not None and extra.get('FlopCount_incr') != flop_incr_val:
+                extra['FlopCount_incr'] = flop_incr_val
+                changed = True
+
+            if changed:
+                rec.extra_fields = _json.dumps(extra, ensure_ascii=False)
+                db.session.add(rec)
+                file_updated += 1
+
+        db.session.commit()
+
+        file_results.append({
+            'filename': file.filename,
+            'ok': True,
+            'updated': file_updated,
+            'missed': file_missed,
+            'conflict': file_conflict,
+            'skipped_no_flop': skipped_no_flop,
+            'missed_samples': missed_samples,
+            'conflict_samples': conflict_samples,
+            'total_rows': len(rows) - 1,
+        })
+        total_updated += file_updated
+        total_missed += file_missed
+        total_conflict += file_conflict
+
+    msg = f'补充完成: 更新 {total_updated} 条'
+    if total_missed:
+        msg += f'，未匹配 {total_missed} 条'
+    if total_conflict:
+        msg += f'，冲突 {total_conflict} 条'
+
+    return jsonify({
+        'ok': True,
+        'updated_count': total_updated,
+        'missed_count': total_missed,
+        'conflict_count': total_conflict,
+        'file_count': len(files),
+        'file_results': file_results,
+        'message': msg,
+    })
+
+
 @app.route('/api/admin/upload_csv_preview', methods=['POST'])
 @login_required
 def admin_upload_csv_preview():
@@ -1986,8 +2953,16 @@ def admin_upload_csv_preview():
 
     用于上传前确认数据质量，避免脏数据污染 DB。
     """
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
+    # 项目级权限: admin / owner / editor 可预览
+    project_id = request.form.get('project_id')
+    if not project_id:
+        return jsonify({'error': '请选择项目'}), 400
+    try:
+        pid = int(project_id)
+    except (ValueError, TypeError):
+        return jsonify({'error': '无效的 project_id'}), 400
+    if not can_edit_project(current_user, pid):
+        return jsonify({'error': '无权限预览此项目数据 (需要 editor 及以上角色)'}), 403
 
     files = request.files.getlist('files')
     files = [f for f in files if f and f.filename and f.filename.lower().endswith('.csv')]
@@ -1995,21 +2970,63 @@ def admin_upload_csv_preview():
     if not files:
         return jsonify({'error': '请选择至少一个 CSV 文件'}), 400
 
-    project_id = request.form.get('project_id')
+    # 前端可选传入 file_paths (webkitdirectory 模式下保留相对路径)
+    file_paths = request.form.getlist('file_paths') if 'file_paths' in request.form else []
+    file_paths = file_paths if len(file_paths) == len(files) else [f.filename for f in files]
+
     version = request.form.get('version', '').strip()
-    if not project_id:
-        return jsonify({'error': '请选择项目'}), 400
+
+    # 与 admin_upload_csv 保持一致的模块名提取逻辑
+    module_id = request.form.get('module_id')
+    module_name_source = request.form.get('module_name_source', 'csv').strip()
+    filename_suffixes = request.form.get('filename_suffixes', '_qor,qor,_qor_report').strip()
+    _suffix_tokens = tuple(s.strip().lower() for s in filename_suffixes.split(',') if s.strip())
+
+    def _extract_module_from_filename(fname):
+        import os as _os
+        base = _os.path.basename(fname or '')
+        name, _ext = _os.path.splitext(base)
+        name_lower = name.lower()
+        changed = True
+        while changed:
+            changed = False
+            for tok in _suffix_tokens:
+                if name_lower.endswith(tok) and len(name_lower) > len(tok):
+                    name = name[: -len(tok)]
+                    name_lower = name.lower()
+                    changed = True
+        return name.strip() or None
+
+    def _extract_module_from_dirname(fname):
+        import os as _os
+        parent = _os.path.basename(_os.path.dirname(fname or ''))
+        return parent.strip() or None
 
     project = Project.query.get_or_404(project_id)
 
     file_reports = []
-    for file in files:
+    for file_idx, file in enumerate(files):
         file_content = file.read()
+        file_path = file_paths[file_idx] if file_idx < len(file_paths) else file.filename
         try:
+            # 批量上传: 按 module_name_source 提取每个文件的默认模块名
+            # csv 模式下也提取作为回退 (CSV 无 module_name 列时自动使用)
+            file_default_module = None
+            if not module_id:
+                if module_name_source == 'filename':
+                    file_default_module = _extract_module_from_filename(file_path)
+                elif module_name_source == 'dirname':
+                    file_default_module = _extract_module_from_dirname(file_path)
+                    if not file_default_module:
+                        file_default_module = _extract_module_from_filename(file_path)
+                else:
+                    # csv 模式: 提取作为回退 (dirname 优先, filename 兜底)
+                    file_default_module = _extract_module_from_dirname(file_path) or \
+                                          _extract_module_from_filename(file_path)
             result = parse_csv_file(
                 file_content,
                 default_project=project.name,
-                default_module=None,
+                default_module=file_default_module,
                 default_version=version if version else None,
             )
             records = result['records']
@@ -2108,9 +3125,6 @@ def admin_batch_create_modules():
     或表单:
       project_id, module_list (换行分隔的模块名文本)
     """
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
-
     if request.is_json:
         data = request.get_json()
         project_id = data.get('project_id')
@@ -2125,6 +3139,14 @@ def admin_batch_create_modules():
         return jsonify({'error': '请选择项目'}), 400
     if not module_names:
         return jsonify({'error': '模块名称列表不能为空'}), 400
+
+    # 项目级权限: admin / owner / editor 可批量创建模块
+    try:
+        pid = int(project_id)
+    except (ValueError, TypeError):
+        return jsonify({'error': '无效的 project_id'}), 400
+    if not can_edit_project(current_user, pid):
+        return jsonify({'error': '无权限在此项目批量创建模块 (需要 editor 及以上角色)'}), 403
 
     Project.query.get_or_404(project_id)
 
@@ -2158,14 +3180,17 @@ def admin_batch_create_modules():
 @with_db_retry()
 def admin_delete_record(record_id):
     """删除单条 QoR 记录"""
-    if not current_user.is_admin:
-        return jsonify({'error': '无权限'}), 403
     r = QorRecord.query.get_or_404(record_id)
-    # 检查所属项目是否可写入
+    # 项目级权限: admin / owner / editor 可删除记录
     if r.module and r.module.project:
+        if not can_edit_project(current_user, r.module.project.id):
+            return jsonify({'error': '无权限删除此项目的记录 (需要 editor 及以上角色)'}), 403
         writable, err = check_project_writable(r.module.project.id)
         if not writable:
             return jsonify({'error': err}), 403
+    else:
+        if not current_user.is_admin:
+            return jsonify({'error': '无权限'}), 403
     db.session.delete(r)
     db.session.commit()
     return jsonify({'ok': True})
@@ -2201,7 +3226,7 @@ def admin_create_user():
 
     if not username or not password:
         return jsonify({'error': '用户名和密码不能为空'}), 400
-    if role not in ('admin', 'user'):
+    if role not in ('admin', 'user', 'release'):
         return jsonify({'error': '无效的角色'}), 400
     if User.query.filter_by(username=username).first():
         return jsonify({'error': '用户名已存在'}), 400
@@ -2211,6 +3236,115 @@ def admin_create_user():
     db.session.add(user)
     db.session.commit()
     return jsonify({'id': user.id, 'username': user.username, 'role': user.role})
+
+
+@app.route('/api/admin/users/batch', methods=['POST'])
+@login_required
+def admin_batch_create_users():
+    """批量创建用户
+
+    请求体:
+      - usernames: 用户名列表 (字符串数组或换行分隔的字符串)
+      - password: 默认密码 (可选, 默认 '123456')
+      - role: 角色 (可选, 默认 'user')
+    返回: {created: [...], skipped: [{username, reason}], total: n}
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    data = request.get_json() or {}
+
+    # 解析用户名列表
+    raw = data.get('usernames', [])
+    if isinstance(raw, str):
+        usernames = [u.strip() for u in re.split(r'[\n,;\s]+', raw) if u.strip()]
+    else:
+        usernames = [str(u).strip() for u in raw if str(u).strip()]
+
+    if not usernames:
+        return jsonify({'error': '用户名列表不能为空'}), 400
+
+    password = data.get('password') or '123456'
+    role = data.get('role', 'user')
+    if role not in ('admin', 'user', 'release'):
+        return jsonify({'error': '无效的角色'}), 400
+
+    created = []
+    skipped = []
+
+    # 一次性查所有已存在的用户名, 避免逐条查询
+    existing = set(u.username for u in User.query.filter(
+        User.username.in_(usernames)
+    ).all())
+
+    for uname in usernames:
+        if uname in existing:
+            skipped.append({'username': uname, 'reason': '用户名已存在'})
+            continue
+        user = User(username=uname, role=role)
+        user.set_password(password)
+        db.session.add(user)
+        try:
+            db.session.flush()
+            created.append({'id': user.id, 'username': uname})
+            existing.add(uname)  # 防止列表内重复
+        except Exception as e:
+            db.session.rollback()
+            skipped.append({'username': uname, 'reason': str(e)})
+
+    db.session.commit()
+    return jsonify({
+        'created': created,
+        'skipped': skipped,
+        'total': len(usernames),
+        'default_password': password,
+    })
+
+
+@app.route('/api/admin/users/<int:user_id>/reset-password', methods=['POST'])
+@login_required
+def admin_reset_user_password(user_id):
+    """管理员重置指定用户的密码
+
+    请求体:
+      - password: 新密码 (可选, 不传则重置为 '123456')
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': '无权限'}), 403
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({'error': '用户不存在'}), 404
+
+    data = request.get_json(silent=True) or {}
+    new_password = data.get('password') or 'Reset@123'
+
+    user.set_password(new_password)
+    db.session.commit()
+    return jsonify({'ok': True, 'username': user.username, 'reset_to': new_password})
+
+
+@app.route('/api/user/password', methods=['POST'])
+@login_required
+def user_change_own_password():
+    """用户修改自己的密码
+
+    请求体:
+      - old_password: 旧密码
+      - new_password: 新密码 (至少 4 位)
+    """
+    data = request.get_json() or {}
+    old_password = data.get('old_password', '')
+    new_password = data.get('new_password', '')
+
+    if not old_password or not new_password:
+        return jsonify({'error': '旧密码和新密码不能为空'}), 400
+    if not current_user.check_password(old_password):
+        return jsonify({'error': '旧密码错误'}), 400
+    if old_password == new_password:
+        return jsonify({'error': '新密码不能与旧密码相同'}), 400
+
+    current_user.set_password(new_password)
+    db.session.commit()
+    return jsonify({'ok': True})
 
 
 # =========================================================================
@@ -2579,6 +3713,12 @@ def api_v1_upload():
     version = request.form.get('version', '').strip()
     data_type = request.form.get('data_type', 'qor')
 
+    # 上传时是否直接标记为已发布
+    mark_released = request.form.get('mark_released') in ('1', 'true', 'on', 'yes')
+
+    # Run 备注专用: full_dir 用于区分同 module+version 下的不同 run 目录 (Makefile 多目录场景)
+    upload_full_dir = request.form.get('full_dir', '').strip() if data_type == 'notes' else ''
+
     if not project_id:
         return jsonify({'error': '缺少 project_id'}), 400
     if not can_edit_project(user, int(project_id)):
@@ -2618,6 +3758,8 @@ def api_v1_upload():
         try:
             if data_type == 'violation':
                 result = parse_violation_csv(content, filename=f.filename)
+            elif data_type == 'notes':
+                result = parse_notes_csv(content, filename=f.filename, default_full_dir=upload_full_dir)
             else:
                 result = parse_csv_file(content, default_project=project.name,
                                         default_module=None,
@@ -2634,7 +3776,7 @@ def api_v1_upload():
 
         try:
             if data_type == 'power':
-                merged, created = _merge_power_to_db(records, project, module_id, version, f.filename)
+                merged, created = _merge_power_to_db(records, project, module_id, version, f.filename, mark_released=mark_released)
                 db.session.commit()
                 total_merged += merged
                 total_saved += created
@@ -2643,8 +3785,13 @@ def api_v1_upload():
                 db.session.commit()
                 total_saved += saved
                 total_skipped += skipped
+            elif data_type == 'notes':
+                saved, skipped = _save_notes_to_db(records, project, module_id, version, f.filename, full_dir=upload_full_dir or None)
+                db.session.commit()
+                total_saved += saved
+                total_skipped += skipped
             else:
-                saved, skipped, updated = _save_records_to_db(records, project, module_id, version, f.filename)
+                saved, skipped, updated = _save_records_to_db(records, project, module_id, version, f.filename, mark_released=mark_released)
                 db.session.commit()
                 # 告警检查
                 affected_mods = set()
@@ -2815,6 +3962,27 @@ def not_found(e):
     return render_template('error.html', code=404, message='页面不存在'), 404
 
 
+@app.errorhandler(429)
+def rate_limited(e):
+    """Rate Limit 超限"""
+    retry_after = request.headers.get('Retry-After', '60')
+    msg = f'请求过于频繁, 请 {retry_after} 秒后重试'
+    # API 请求返回 JSON
+    if request.path.startswith('/api/') or request.is_json:
+        resp = jsonify({'error': msg, 'retry_after': int(retry_after)})
+        resp.headers['Retry-After'] = str(retry_after)
+        return resp, 429
+    return render_template('error.html', code=429, message=msg), 429
+
+
+@app.errorhandler(400)
+def bad_request(e):
+    """CSRF 校验失败等 400 错误"""
+    if request.path.startswith('/api/') or request.is_json:
+        return jsonify({'error': str(e.description) if hasattr(e, 'description') else '请求错误'}), 400
+    return render_template('error.html', code=400, message='请求错误'), 400
+
+
 # =========================================================================
 # 启动
 # =========================================================================
@@ -2889,16 +4057,35 @@ if __name__ == '__main__':
 
     with app.app_context():
         db.create_all()
+        # 轻量级列迁移: 为已有表补充新增列 (SQLite/MySQL 兼容)
+        _ensure_columns()
+
         # 初始化默认管理员
+        # 注意: admin@2026 符合密码策略 (8+ 位, 含字母+数字), 首次登录后请立即修改
         if User.query.filter_by(username='admin').first() is None:
             admin = User(username='admin', role='admin', display_name='管理员')
-            admin.set_password('admin123')
+            admin.set_password('admin@2026')
             db.session.add(admin)
         if User.query.filter_by(username='user').first() is None:
             user = User(username='user', role='user', display_name='普通用户')
-            user.set_password('user123')
+            user.set_password('user@2026')
             db.session.add(user)
+        # 初始化默认 release 账号 (对外只读, 仅看已发布的 QoR 数据)
+        if User.query.filter_by(username='release').first() is None:
+            rel = User(username='release', role='release', display_name='Release 客户')
+            rel.set_password('release@2026')
+            db.session.add(rel)
+            print('[INIT] 已创建默认 release 账号: release / release@2026 (仅可查看已发布数据)')
         db.session.commit()
+
+        # 安全检查: admin 是否仍使用默认密码
+        if is_default_admin_password_weak():
+            # 注: 默认密码 admin@2026 符合密码策略但仍属弱口令 (公开可知)
+            print('=' * 60)
+            print('[SECURITY] 警告: admin 账户仍使用出厂默认密码!')
+            print('  当前默认: admin@2026 (或历史版本 admin123)')
+            print('  请立即登录修改为强密码')
+            print('=' * 60)
 
     host = app.config.get('HOST', '0.0.0.0')
     port = app.config.get('PORT', 5000)
@@ -2906,9 +4093,11 @@ if __name__ == '__main__':
 
     print('=' * 60)
     print('QoR Recorder 系统启动中...')
-    print('默认管理员: admin / admin123')
-    print('默认用户:   user / user123')
+    print('默认管理员: admin / admin@2026  (首次登录请立即修改)')
+    print('默认用户:   user / user@2026')
     print(f'监听地址:   {host}:{port}  (debug={debug})')
+    print(f'安全:       SECRET_KEY={"默认值(仅DEBUG)" if app.config.get("SECRET_KEY")==app.config.get("_DEFAULT_SECRET_KEY") else "已配置"}'
+          f'  Cookie Secure={app.config.get("SESSION_COOKIE_SECURE")}')
     if host in ('0.0.0.0', '::'):
         print(f'访问地址:   http://localhost:{port}  (或 http://<本机IP>:{port})')
     else:

@@ -98,6 +98,17 @@ FIELD_ALIASES = {
     'target_frequency': ['target_frequency', 'target_freq', 'freq_target', 'clock_frequency', 'clock_freq', 'target_clock'],
     'achieved_frequency': ['achieved_frequency', 'achieved_freq', 'freq', 'frequency', 'max_freq', 'fmax'],
 
+    # 物理实现指标
+    'mbb_ratio': ['mbb_ratio', 'mbb', 'multi_bit_ratio', 'mbff_ratio'],
+    'clock_gating_ratio': ['clock_gating_ratio', 'cg_ratio', 'clock_gating', 'gating_ratio'],
+    'utilization': ['utilization', 'util', 'placement_utilization', 'util_ratio'],
+    # 拥塞指数: H=水平 / V=垂直 / B=Both(综合)
+    # 旧字段 congestion 仍接受, 作为兼容入口 (等同于 congestion_b)
+    'congestion': ['congestion', 'cong', 'congestion_index'],
+    'congestion_h': ['congestion_h', 'congestion_horizontal', 'h_congestion', 'congestionh', 'cong_h'],
+    'congestion_v': ['congestion_v', 'congestion_vertical', 'v_congestion', 'congestionv', 'cong_v'],
+    'congestion_b': ['congestion_b', 'congestion_both', 'b_congestion', 'congestionb', 'cong_b'],
+
     # 元数据
     'version': ['version', 'commit', 'revision', 'tag', 'label', 'run_id', 'run', 'build'],
     'module_name': ['module', 'module_name', 'design', 'design_name', 'top_module', 'top', 'hierarchical_cell', 'instance'],
@@ -116,6 +127,9 @@ FLOAT_FIELDS = frozenset([
     'wns_setup', 'tns_setup', 'wns_hold', 'tns_hold',
     'power_internal', 'power_switching', 'power_leakage', 'power_total',
     'target_frequency', 'achieved_frequency',
+    # 物理实现指标
+    'mbb_ratio', 'clock_gating_ratio', 'utilization',
+    'congestion', 'congestion_h', 'congestion_v', 'congestion_b',
 ])
 
 # 整数字段列表
@@ -387,7 +401,7 @@ def parse_csv_file(file_content_bytes, default_project=None, default_module=None
             if std_field not in field_map:
                 field_map[std_field] = idx
         else:
-            # 检测多时钟列: {CLOCKNAME}_{period|wns|tns|path}
+            # 检测多时钟列: {CLOCKNAME}_{period|wns|tns|path} (header 大小写不敏感)
             m = CLOCK_FIELD_PATTERN.match(header.strip())
             if m:
                 clock_name = m.group(1)
@@ -396,8 +410,9 @@ def parse_csv_file(file_content_bytes, default_project=None, default_module=None
                     clock_cols[clock_name] = {}
                 clock_cols[clock_name][field_type] = idx
             else:
-                if header not in extra_cols:
-                    extra_cols[header] = idx
+                # 额外列: 用标准化名做 key (大小写/空格/下划线不敏感), 避免重复
+                if norm and norm not in extra_cols:
+                    extra_cols[norm] = (header.strip(), idx)
 
     stats['field_map'] = {std: headers[idx] for std, idx in field_map.items()}
     stats['extra_columns'] = list(extra_cols.keys())
@@ -447,7 +462,7 @@ def parse_csv_file(file_content_bytes, default_project=None, default_module=None
                     record[std_field] = None
 
             # 提取额外字段
-            for col_name, col_idx in extra_cols.items():
+            for col_norm, (col_name, col_idx) in extra_cols.items():
                 if col_idx < len(row):
                     value = row[col_idx]
                     if value is not None and str(value).strip() and not is_null_value(value):
@@ -474,8 +489,10 @@ def parse_csv_file(file_content_bytes, default_project=None, default_module=None
                                     elif ftype == 'tns':
                                         all_tns.append(parsed)
                             elif ftype == 'path':
-                                if raw_val and not is_null_value(raw_val):
-                                    cd[ftype] = raw_val
+                                # path 实际是违例路径数量 (>=0 的整数)
+                                parsed = parse_int(raw_val)
+                                if parsed is not None:
+                                    cd[ftype] = parsed
                     if cd:
                         clock_data[clock_name] = cd
 
@@ -707,3 +724,118 @@ def parse_violation_csv(content, timing_group=None, filename=None):
             continue
 
     return {'records': records, 'stats': stats, 'timing_group': timing_group}
+
+
+# =========================================================================
+# Run 备注表 CSV 解析 (2 列: item, description)
+# =========================================================================
+
+def parse_notes_csv(content, filename=None, default_full_dir=None):
+    """解析 Run 备注 CSV 文件
+
+    参数:
+      content: 文件内容 (bytes 或 str)
+      filename: 文件名 (仅用于日志)
+      default_full_dir: 默认 full_dir (当 CSV 不含 full_dir 列时, 所有行都用此值)
+
+    返回:
+      {
+        'records': [{item, description, full_dir}, ...],
+        'stats': {total_rows, skipped_empty, errors}
+      }
+
+    CSV 格式 (2~3 列, 列名不区分大小写, 忽略空格/下划线/连字符):
+      item,description[,full_dir]
+      综合策略,compile_ultra
+      目标频率,500
+      修改内容,优化了关键路径 retiming
+
+    若 CSV 含 full_dir 列, 则按行取值; 否则统一用 default_full_dir 参数。
+    """
+    stats = {'total_rows': 0, 'skipped_empty': 0, 'errors': 0}
+    records = []
+
+    # 解码
+    if isinstance(content, bytes):
+        text = None
+        for enc in ('utf-8-sig', 'utf-8', 'gbk', 'latin-1'):
+            try:
+                text = content.decode(enc)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        if text is None:
+            text = content.decode('utf-8', errors='replace')
+    else:
+        text = content
+
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+
+    reader = csv.reader(text.splitlines())
+    rows = list(reader)
+    if len(rows) < 1:
+        return {'records': [], 'stats': stats}
+
+    # 解析表头, 识别 item / description / full_dir 列
+    headers = [h.strip() if h else '' for h in rows[0]]
+    item_col = None
+    desc_col = None
+    fulldir_col = None
+
+    for i, h in enumerate(headers):
+        nh = _normalize_col_name(h)
+        if nh in ('item', 'name', 'key', 'parameter', 'param', '参数', '项目', '名称'):
+            if item_col is None:
+                item_col = i
+        elif nh in ('description', 'desc', 'value', 'val', 'note', 'notes', 'comment',
+                    'detail', 'content', '说明', '描述', '内容', '备注', '值'):
+            if desc_col is None:
+                desc_col = i
+        elif nh in ('full_dir', 'fulldir', 'full_dir_path', 'dir', 'directory', 'path',
+                    '目录', '路径', 'run_dir', 'rundir'):
+            if fulldir_col is None:
+                fulldir_col = i
+
+    # 若未识别到列名, 按位置映射: 第 1 列 item, 第 2 列 description, 第 3 列 full_dir
+    if item_col is None:
+        item_col = 0
+    if desc_col is None:
+        desc_col = 1 if len(headers) > 1 else 0
+    # fulldir_col 保持 None, 后续用 default_full_dir 兜底
+
+    start_idx = 1 if len(rows) > 1 else 0
+    # 若只有数据行无表头 (单行), 从 0 开始
+    if len(rows) == 1:
+        start_idx = 0
+
+    for row_idx, row in enumerate(rows[start_idx:], start=start_idx + 1):
+        stats['total_rows'] += 1
+
+        if not row or all(cell is None or str(cell).strip() == '' for cell in row):
+            stats['skipped_empty'] += 1
+            continue
+
+        try:
+            item = str(row[item_col]).strip() if item_col < len(row) else ''
+            desc = str(row[desc_col]).strip() if desc_col < len(row) else ''
+
+            # full_dir: 优先 CSV 列, 其次 default_full_dir
+            full_dir = None
+            if fulldir_col is not None and fulldir_col < len(row):
+                fd_val = str(row[fulldir_col]).strip()
+                if fd_val:
+                    full_dir = fd_val
+            if not full_dir and default_full_dir:
+                full_dir = str(default_full_dir).strip() or None
+
+            if not item and not desc:
+                stats['skipped_empty'] += 1
+                continue
+
+            records.append({'item': item, 'description': desc, 'full_dir': full_dir})
+        except Exception as e:
+            logger.warning('备注 CSV 第 %d 行解析失败: %s', row_idx, e)
+            stats['errors'] += 1
+            continue
+
+    return {'records': records, 'stats': stats}

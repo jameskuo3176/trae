@@ -132,6 +132,13 @@ Project ──< Module ──< QorRecord ──< ViolationPath
 - 每用户可保存多份 Dashboard 配置（JSON），支持 `is_default`
 - 配置内容包括选中的项目、模块、图表类型、指标等
 
+#### User.theme (JSON)
+- 每用户独立的界面主题，存储为 JSON 字符串于 `users.theme` 字段
+- 字段包括 `primary / primary_gradient_end / background / surface / surface_hover / text / text_secondary / border / navbar_text / navbar_text_active`
+- `get_theme()` 自动与 `DEFAULT_THEME` 合并，保证字段完整性，兼容历史数据
+- 通过 `THEME_PRESETS` 提供 classic / dark / green / purple / orange 5 套预设
+- 颜色值在后端用正则校验（`#hex` / `rgb()` / `rgba()` / `hsl()` / `hsla()`），写入前经 `_validate_theme` 清洗
+
 ### 4.3 设计权衡：固定列 vs JSON
 早期方案曾考虑把所有指标都存 JSON，但这样无法用 SQL 高效过滤/排序。最终采用**混合方案**：
 - 高频查询字段（area_total、wns_setup 等）建为固定列，可索引
@@ -246,7 +253,7 @@ python init_db.py --demo
 
 # 4. 启动
 python app.py
-# 访问 http://localhost:5000，admin/admin123
+# 访问 http://localhost:5000，admin/admin@2026
 ```
 
 ### 6.2 开发迭代节奏
@@ -289,10 +296,14 @@ python app.py
 - 数值范围校验防止脏数据污染
 - 字符串截断防止超长输入破坏 DB/JSON
 
-### 7.3 已知限制
-- `SECRET_KEY` 硬编码为默认值，生产环境应通过环境变量覆盖
-- SQLite 单文件，无并发写入保护（团队级可接受）
-- 无 CSRF Token（内部工具，风险可控）
+### 7.3 安全增强 (已实现)
+- `SECRET_KEY` 默认值仅在 `DEBUG=1` 模式下生效, 生产环境 (`DEBUG=0`) 必须通过环境变量覆盖, 否则启动会被拒绝 (`ENFORCE_SECRET_KEY=1`)
+- SQLite 采用 WAL 模式 + busy_timeout + 重试装饰器缓解写并发; 团队级 (< 20 人) 足够, 大规模团队可切换 MySQL
+- CSRF 保护: 所有 POST/PUT/DELETE/PATCH 端点强制校验 CSRF Token (API Key 认证的请求豁免)
+- 登录限流: 每 IP 每分钟最多 5 次 `/login` 请求
+- Session Cookie: `HttpOnly=True`, `SameSite='Lax'`, HTTPS 部署时启用 `Secure`
+- 角色权限: admin / user / release 三级, release 仅可查看已发布数据 (`is_released=True`)
+- API 认证: 支持 Session + X-API-Key 双轨认证, 适用于 DC 流程自动化
 
 ## 8. 性能考量
 
@@ -343,4 +354,4 @@ if bus_grouping:
 
 ---
 
-*文档版本：1.0 | 最后更新：2026-07-14*
+*文档版本：2.0 | 最后更新：2026-07-23*

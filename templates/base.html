@@ -4,9 +4,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>{% block title %}QoR Recorder{% endblock %}</title>
     <script src="{{ url_for('static', filename='vendor/echarts.min.js') }}"></script>
     <style>
+        :root {
+            /* 默认主题变量 (neon 霓虹科技风) */
+            --color-primary: #00d4ff;
+            --color-primary-gradient-end: #7b2ff7;
+            --color-background: #0a0e1a;
+            --color-surface: #131829;
+            --color-surface-hover: #1a2138;
+            --color-text: #e6f1ff;
+            --color-text-secondary: #8b9bb4;
+            --color-border: #1f2a44;
+            --color-navbar-text: rgba(230, 241, 255, 0.75);
+            --color-navbar-text-active: #00d4ff;
+            --theme-name: neon;
+
+            /* 霓虹增强变量 */
+            --glow-primary: 0 0 20px rgba(0, 212, 255, 0.35);
+            --glow-primary-strong: 0 0 28px rgba(0, 212, 255, 0.55), 0 0 60px rgba(123, 47, 247, 0.25);
+            --glass-bg: rgba(19, 24, 41, 0.72);
+            --glass-border: rgba(0, 212, 255, 0.18);
+            --grid-line: rgba(0, 212, 255, 0.04);
+            --neon-cyan: #00d4ff;
+            --neon-purple: #7b2ff7;
+            --neon-pink: #ff2d95;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -15,12 +41,12 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-            background: #f0f2f5;
-            color: #333;
+            background: var(--color-background);
+            color: var(--color-text);
         }
 
         .navbar {
-            background: linear-gradient(135deg, #1a237e 0%, #283593 100%);
+            background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-gradient-end) 100%);
             color: white;
             padding: 0 24px;
             height: 56px;
@@ -49,19 +75,19 @@
             padding: 6px 16px;
             border-radius: 4px;
             text-decoration: none;
-            color: rgba(255, 255, 255, 0.85);
+            color: var(--color-navbar-text);
             font-size: 14px;
             transition: all 0.2s;
         }
 
         .nav-item:hover {
             background: rgba(255, 255, 255, 0.1);
-            color: white;
+            color: var(--color-navbar-text-active);
         }
 
         .nav-item.active {
             background: rgba(255, 255, 255, 0.2);
-            color: white;
+            color: var(--color-navbar-text-active);
         }
 
         .navbar-user {
@@ -82,6 +108,26 @@
             background: #ff7043;
         }
 
+        .theme-btn {
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            padding: 0;
+            transition: background 0.2s;
+        }
+
+        .theme-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
         .btn {
             display: inline-block;
             padding: 8px 20px;
@@ -91,7 +137,7 @@
             cursor: pointer;
             text-decoration: none;
             transition: all 0.2s;
-            background: #1a237e;
+            background: var(--color-primary);
             color: white;
         }
 
@@ -113,14 +159,14 @@
         }
 
         .btn-default {
-            background: #fff;
-            color: #333;
-            border: 1px solid #d9d9d9;
+            background: var(--color-surface);
+            color: var(--color-text);
+            border: 1px solid var(--color-border);
         }
 
         .btn-default:hover {
-            border-color: #1a237e;
-            color: #1a237e;
+            border-color: var(--color-primary);
+            color: var(--color-primary);
         }
 
         .container {
@@ -130,7 +176,7 @@
         }
 
         .card {
-            background: white;
+            background: var(--color-surface);
             border-radius: 8px;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
             margin-bottom: 16px;
@@ -139,7 +185,7 @@
 
         .card-header {
             padding: 16px 20px;
-            border-bottom: 1px solid #e8e8e8;
+            border-bottom: 1px solid var(--color-border);
             font-size: 16px;
             font-weight: 600;
             display: flex;
@@ -176,17 +222,19 @@
         input[type="number"],
         textarea {
             padding: 8px 12px;
-            border: 1px solid #d9d9d9;
+            border: 1px solid var(--color-border);
             border-radius: 4px;
             font-size: 14px;
             outline: none;
             transition: border-color 0.2s;
+            background: var(--color-surface);
+            color: var(--color-text);
         }
 
         select:focus,
         input:focus,
         textarea:focus {
-            border-color: #1a237e;
+            border-color: var(--color-primary);
         }
 
         label {
@@ -230,8 +278,123 @@
             }
         }
 
+        /* 自由拖拽布局容器 */
+        .chart-layout-root {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+            align-items: start;
+        }
+
+        .chart-layout-root .chart-card[data-span="2"] {
+            grid-column: span 2;
+        }
+
+        @media (max-width: 1024px) {
+            .chart-layout-root {
+                grid-template-columns: 1fr;
+            }
+
+            .chart-layout-root .chart-card[data-span="2"] {
+                grid-column: span 1;
+            }
+        }
+
+        /* 拖拽编辑模式样式 */
+        .chart-layout-root.layout-editing .chart-card {
+            cursor: grab;
+            border: 2px dashed transparent;
+            transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+            position: relative;
+        }
+
+        .chart-layout-root.layout-editing .chart-card:hover {
+            border-color: var(--color-primary);
+            box-shadow: 0 4px 12px rgba(26, 35, 126, 0.18);
+        }
+
+        .chart-layout-root.layout-editing .chart-card:active {
+            cursor: grabbing;
+        }
+
+        .chart-layout-root.layout-editing .chart-card::before {
+            content: '⋮⋮ 拖拽';
+            position: absolute;
+            top: -10px;
+            left: 8px;
+            background: var(--color-primary);
+            color: #fff;
+            font-size: 11px;
+            padding: 1px 8px;
+            border-radius: 3px;
+            z-index: 10;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+
+        .chart-layout-root.layout-editing .chart-card:hover::before {
+            opacity: 1;
+        }
+
+        .chart-card.dragging {
+            opacity: 0.4;
+            transform: scale(0.98);
+        }
+
+        .chart-card.drag-over {
+            border-color: #e91e63 !important;
+            box-shadow: 0 0 0 3px rgba(233, 30, 99, 0.25) !important;
+        }
+
+        .chart-card.drag-over-before {
+            box-shadow: -4px 0 0 0 #e91e63 !important;
+        }
+
+        .chart-card.drag-over-after {
+            box-shadow: 4px 0 0 0 #e91e63 !important;
+        }
+
+        /* 拖拽占位指示线 */
+        .chart-card.drop-indicator-before {
+            border-left: 4px solid #e91e63;
+        }
+
+        .chart-card.drop-indicator-after {
+            border-right: 4px solid #e91e63;
+        }
+
+        /* 卡片尺寸调整工具条 (编辑模式下显示) */
+        .chart-card .resize-toolbar {
+            position: absolute;
+            bottom: 6px;
+            right: 6px;
+            display: none;
+            gap: 4px;
+            background: var(--color-surface, #fff);
+            padding: 3px 6px;
+            border-radius: 4px;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+            z-index: 20;
+            align-items: center;
+        }
+
+        .chart-layout-root.layout-editing .chart-card .resize-toolbar {
+            display: flex;
+        }
+
+        .resize-toolbar span {
+            font-size: 10px;
+            color: var(--color-text-secondary);
+        }
+
+        .resize-toolbar select {
+            font-size: 11px;
+            padding: 1px 4px;
+            height: 22px;
+        }
+
         .stat-card {
-            background: white;
+            background: var(--color-surface);
             border-radius: 8px;
             padding: 20px;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -241,12 +404,12 @@
         .stat-value {
             font-size: 28px;
             font-weight: 700;
-            color: #1a237e;
+            color: var(--color-primary);
         }
 
         .stat-label {
             font-size: 13px;
-            color: #666;
+            color: var(--color-text-secondary);
             margin-top: 4px;
         }
 
@@ -260,16 +423,16 @@
         .table td {
             padding: 10px 12px;
             text-align: left;
-            border-bottom: 1px solid #e8e8e8;
+            border-bottom: 1px solid var(--color-border);
         }
 
         .table th {
-            background: #fafafa;
+            background: var(--color-surface-hover);
             font-weight: 600;
         }
 
         .table tr:hover {
-            background: #fafafa;
+            background: var(--color-surface-hover);
         }
 
         .tag {
@@ -277,8 +440,9 @@
             padding: 2px 8px;
             border-radius: 10px;
             font-size: 12px;
-            background: #e3f2fd;
-            color: #1565c0;
+            background: var(--color-surface-hover);
+            color: var(--color-primary);
+            border: 1px solid var(--color-border);
         }
 
         .tag-success {
@@ -306,7 +470,7 @@
         .empty-state {
             text-align: center;
             padding: 40px;
-            color: #999;
+            color: var(--color-text-secondary);
         }
 
         .empty-state i {
@@ -314,22 +478,545 @@
             margin-bottom: 12px;
             display: block;
         }
+
+        /* ===== 主题设置弹窗 ===== */
+        .theme-modal-mask {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .theme-modal-mask.show {
+            display: flex;
+        }
+
+        .theme-modal {
+            background: var(--color-surface);
+            color: var(--color-text);
+            border-radius: 8px;
+            width: 560px;
+            max-width: 92vw;
+            max-height: 88vh;
+            overflow-y: auto;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+        }
+
+        .theme-modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--color-border);
+            font-size: 16px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .theme-modal-close {
+            background: transparent;
+            border: none;
+            font-size: 22px;
+            cursor: pointer;
+            color: var(--color-text-secondary);
+            line-height: 1;
+            padding: 0 4px;
+        }
+
+        .theme-modal-close:hover {
+            color: var(--color-text);
+        }
+
+        .theme-modal-body {
+            padding: 20px;
+        }
+
+        .theme-modal-footer {
+            padding: 12px 20px;
+            border-top: 1px solid var(--color-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .theme-section-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--color-text-secondary);
+            margin: 4px 0 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .theme-preset-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .theme-preset-card {
+            border: 2px solid var(--color-border);
+            border-radius: 6px;
+            padding: 8px;
+            cursor: pointer;
+            text-align: center;
+            font-size: 12px;
+            transition: all 0.15s;
+            background: var(--color-surface);
+        }
+
+        .theme-preset-card:hover {
+            border-color: var(--color-primary);
+        }
+
+        .theme-preset-card.active {
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 2px rgba(26, 35, 126, 0.15);
+        }
+
+        .theme-preset-swatch {
+            height: 36px;
+            border-radius: 4px;
+            margin-bottom: 6px;
+            border: 1px solid rgba(0, 0, 0, 0.08);
+        }
+
+        .theme-color-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px 16px;
+        }
+
+        .theme-color-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .theme-color-item label {
+            flex: 1;
+            margin: 0;
+            font-size: 13px;
+            font-weight: normal;
+        }
+
+        .theme-color-item input[type="color"] {
+            width: 36px;
+            height: 28px;
+            padding: 0;
+            border: 1px solid var(--color-border);
+            border-radius: 4px;
+            background: transparent;
+            cursor: pointer;
+        }
+
+        .theme-color-item input[type="text"] {
+            width: 90px;
+            padding: 4px 8px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* ============================================================
+           NEON 霓虹科技风增强 (仅 neon 主题生效)
+           ============================================================ */
+        body[data-theme="neon"] {
+            background:
+                radial-gradient(ellipse 80% 50% at 20% -10%, rgba(0, 212, 255, 0.12), transparent 60%),
+                radial-gradient(ellipse 60% 50% at 100% 0%, rgba(123, 47, 247, 0.14), transparent 55%),
+                radial-gradient(ellipse 70% 60% at 50% 110%, rgba(255, 45, 149, 0.06), transparent 60%),
+                var(--color-background);
+            background-attachment: fixed;
+            min-height: 100vh;
+        }
+
+        /* 微妙网格背景叠加 */
+        body[data-theme="neon"]::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image:
+                linear-gradient(var(--grid-line) 1px, transparent 1px),
+                linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+            background-size: 48px 48px;
+            pointer-events: none;
+            z-index: 0;
+            mask-image: radial-gradient(ellipse 100% 80% at 50% 30%, #000 30%, transparent 80%);
+            -webkit-mask-image: radial-gradient(ellipse 100% 80% at 50% 30%, #000 30%, transparent 80%);
+        }
+
+        body[data-theme="neon"] .container {
+            position: relative;
+            z-index: 1;
+        }
+
+        /* 导航栏: 玻璃拟态 + 底部霓虹光带 */
+        body[data-theme="neon"] .navbar {
+            background: linear-gradient(135deg, rgba(0, 212, 255, 0.92) 0%, rgba(123, 47, 247, 0.92) 100%);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(0, 212, 255, 0.4) inset;
+            border-bottom: 1px solid rgba(0, 212, 255, 0.5);
+        }
+
+        body[data-theme="neon"] .navbar::after {
+            content: '';
+            position: absolute;
+            left: 0; right: 0; bottom: -1px;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--neon-cyan) 30%, var(--neon-purple) 70%, transparent);
+            box-shadow: 0 0 12px var(--neon-cyan), 0 0 20px var(--neon-purple);
+        }
+
+        body[data-theme="neon"] .navbar-brand {
+            text-shadow: 0 0 18px rgba(0, 212, 255, 0.7);
+            letter-spacing: 1px;
+        }
+
+        body[data-theme="neon"] .nav-item {
+            border-radius: 6px;
+            transition: all 0.25s ease;
+        }
+
+        body[data-theme="neon"] .nav-item:hover {
+            background: rgba(255, 255, 255, 0.12);
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
+        }
+
+        body[data-theme="neon"] .nav-item.active {
+            background: rgba(255, 255, 255, 0.18);
+            box-shadow: 0 0 16px rgba(0, 212, 255, 0.4), inset 0 0 0 1px rgba(0, 212, 255, 0.5);
+            text-shadow: 0 0 12px rgba(255, 255, 255, 0.9);
+        }
+
+        body[data-theme="neon"] .role-badge.admin {
+            background: linear-gradient(135deg, #ff2d95, #ff7043);
+            box-shadow: 0 0 12px rgba(255, 45, 149, 0.5);
+        }
+
+        body[data-theme="neon"] .theme-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(0, 212, 255, 0.4);
+            box-shadow: 0 0 10px rgba(0, 212, 255, 0.2);
+        }
+
+        body[data-theme="neon"] .theme-btn:hover {
+            background: rgba(0, 212, 255, 0.25);
+            box-shadow: 0 0 18px rgba(0, 212, 255, 0.5);
+        }
+
+        /* 卡片: 玻璃拟态 + 霓虹边框 + 悬停浮起 */
+        body[data-theme="neon"] .card,
+        body[data-theme="neon"] .stat-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid var(--glass-border);
+            box-shadow:
+                0 4px 24px rgba(0, 0, 0, 0.4),
+                inset 0 1px 0 rgba(255, 255, 255, 0.04);
+            transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+            position: relative;
+        }
+
+        body[data-theme="neon"] .card:hover,
+        body[data-theme="neon"] .stat-card:hover {
+            transform: translateY(-3px);
+            border-color: rgba(0, 212, 255, 0.45);
+            box-shadow:
+                0 8px 32px rgba(0, 0, 0, 0.5),
+                0 0 24px rgba(0, 212, 255, 0.18),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        }
+
+        body[data-theme="neon"] .card-header {
+            border-bottom: 1px solid rgba(0, 212, 255, 0.15);
+            background: linear-gradient(90deg, rgba(0, 212, 255, 0.06), transparent 70%);
+        }
+
+        body[data-theme="neon"] .card-header > span:first-child {
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-purple));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: 0.5px;
+        }
+
+        /* 统计卡片数字发光 */
+        body[data-theme="neon"] .stat-value {
+            background: linear-gradient(135deg, var(--neon-cyan), var(--neon-purple));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 30px rgba(0, 212, 255, 0.3);
+            filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.4));
+        }
+
+        body[data-theme="neon"] .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--neon-cyan), var(--neon-purple), transparent);
+            opacity: 0.6;
+        }
+
+        /* 按钮: 霓虹渐变 + 发光 */
+        body[data-theme="neon"] .btn {
+            background: linear-gradient(135deg, var(--neon-cyan), var(--neon-purple));
+            border: 1px solid rgba(0, 212, 255, 0.4);
+            box-shadow: 0 0 12px rgba(0, 212, 255, 0.25);
+            transition: all 0.2s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        body[data-theme="neon"] .btn::before {
+            content: '';
+            position: absolute;
+            top: 0; left: -100%;
+            width: 100%; height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+            transition: left 0.5s ease;
+        }
+
+        body[data-theme="neon"] .btn:hover {
+            box-shadow: 0 0 22px rgba(0, 212, 255, 0.55), 0 0 40px rgba(123, 47, 247, 0.3);
+            transform: translateY(-1px);
+            opacity: 1;
+        }
+
+        body[data-theme="neon"] .btn:hover::before {
+            left: 100%;
+        }
+
+        body[data-theme="neon"] .btn-default {
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--color-text);
+            border: 1px solid var(--color-border);
+            box-shadow: none;
+        }
+
+        body[data-theme="neon"] .btn-default::before { display: none; }
+
+        body[data-theme="neon"] .btn-default:hover {
+            background: rgba(0, 212, 255, 0.1);
+            border-color: var(--neon-cyan);
+            color: var(--neon-cyan);
+            box-shadow: 0 0 14px rgba(0, 212, 255, 0.25);
+        }
+
+        body[data-theme="neon"] .btn-danger {
+            background: linear-gradient(135deg, #ff2d95, #d32f2f);
+            box-shadow: 0 0 12px rgba(255, 45, 149, 0.3);
+        }
+
+        body[data-theme="neon"] .btn-success {
+            background: linear-gradient(135deg, #00e676, #00b248);
+            box-shadow: 0 0 12px rgba(0, 230, 118, 0.3);
+        }
+
+        /* 输入框 / 下拉框: 深色玻璃 + 聚焦发光 */
+        body[data-theme="neon"] select,
+        body[data-theme="neon"] input[type="text"],
+        body[data-theme="neon"] input[type="password"],
+        body[data-theme="neon"] input[type="number"],
+        body[data-theme="neon"] textarea {
+            background: rgba(10, 14, 26, 0.6);
+            border: 1px solid var(--color-border);
+            color: var(--color-text);
+            transition: all 0.2s ease;
+        }
+
+        body[data-theme="neon"] select:focus,
+        body[data-theme="neon"] input:focus,
+        body[data-theme="neon"] textarea:focus {
+            border-color: var(--neon-cyan);
+            box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.15), 0 0 14px rgba(0, 212, 255, 0.2);
+            outline: none;
+        }
+
+        body[data-theme="neon"] select option {
+            background: #131829;
+            color: var(--color-text);
+        }
+
+        /* 表格: 深色 + 霓虹表头 */
+        body[data-theme="neon"] .table th {
+            background: rgba(0, 212, 255, 0.08);
+            border-bottom: 1px solid rgba(0, 212, 255, 0.25);
+            color: var(--neon-cyan);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 12px;
+        }
+
+        body[data-theme="neon"] .table tr:hover {
+            background: rgba(0, 212, 255, 0.05);
+        }
+
+        body[data-theme="neon"] .table td {
+            border-bottom: 1px solid rgba(31, 42, 68, 0.6);
+        }
+
+        /* 标签: 霓虹变体 */
+        body[data-theme="neon"] .tag {
+            background: rgba(0, 212, 255, 0.1);
+            color: var(--neon-cyan);
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            box-shadow: 0 0 8px rgba(0, 212, 255, 0.15);
+        }
+
+        body[data-theme="neon"] .tag-success {
+            background: rgba(0, 230, 118, 0.12);
+            color: #00e676;
+            border-color: rgba(0, 230, 118, 0.35);
+        }
+
+        body[data-theme="neon"] .tag-danger {
+            background: rgba(255, 45, 149, 0.12);
+            color: var(--neon-pink);
+            border-color: rgba(255, 45, 149, 0.35);
+        }
+
+        /* Flash 消息: 玻璃 + 霓虹边 */
+        body[data-theme="neon"] .flash-success {
+            background: rgba(0, 230, 118, 0.1);
+            color: #00e676;
+            border: 1px solid rgba(0, 230, 118, 0.4);
+            box-shadow: 0 0 16px rgba(0, 230, 118, 0.15);
+        }
+
+        body[data-theme="neon"] .flash-error {
+            background: rgba(255, 45, 149, 0.1);
+            color: var(--neon-pink);
+            border: 1px solid rgba(255, 45, 149, 0.4);
+            box-shadow: 0 0 16px rgba(255, 45, 149, 0.15);
+        }
+
+        /* 主题/CSV 弹窗: 玻璃拟态 */
+        body[data-theme="neon"] .theme-modal,
+        body[data-theme="neon"] #csvModal .card,
+        body[data-theme="neon"] #saveConfigModal .card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6), 0 0 40px rgba(0, 212, 255, 0.12);
+        }
+
+        body[data-theme="neon"] .theme-modal-header,
+        body[data-theme="neon"] .theme-modal-footer {
+            border-color: rgba(0, 212, 255, 0.15);
+        }
+
+        body[data-theme="neon"] .theme-preset-card {
+            background: rgba(10, 14, 26, 0.5);
+            border-color: var(--color-border);
+        }
+
+        body[data-theme="neon"] .theme-preset-card.active {
+            border-color: var(--neon-cyan);
+            box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.25), 0 0 16px rgba(0, 212, 255, 0.2);
+        }
+
+        /* 滚动条: 深色 + 霓虹滑块 */
+        body[data-theme="neon"] ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+
+        body[data-theme="neon"] ::-webkit-scrollbar-track {
+            background: rgba(10, 14, 26, 0.5);
+        }
+
+        body[data-theme="neon"] ::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, var(--neon-cyan), var(--neon-purple));
+            border-radius: 5px;
+            border: 2px solid rgba(10, 14, 26, 0.5);
+        }
+
+        body[data-theme="neon"] ::-webkit-scrollbar-thumb:hover {
+            background: linear-gradient(180deg, var(--neon-purple), var(--neon-cyan));
+        }
+
+        /* 链接发光 */
+        body[data-theme="neon"] a {
+            color: var(--neon-cyan);
+            transition: text-shadow 0.2s;
+        }
+
+        body[data-theme="neon"] a:hover {
+            text-shadow: 0 0 8px rgba(0, 212, 255, 0.6);
+        }
+
+        /* 入场动画 */
+        @keyframes neonFadeUp {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        body[data-theme="neon"] .card,
+        body[data-theme="neon"] .stat-card {
+            animation: neonFadeUp 0.5s ease-out backwards;
+        }
+
+        body[data-theme="neon"] .stat-card:nth-child(1) { animation-delay: 0.05s; }
+        body[data-theme="neon"] .stat-card:nth-child(2) { animation-delay: 0.1s; }
+        body[data-theme="neon"] .stat-card:nth-child(3) { animation-delay: 0.15s; }
+
+        /* 标题渐变 */
+        body[data-theme="neon"] h2 {
+            background: linear-gradient(135deg, var(--neon-cyan), var(--neon-purple));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 30px rgba(0, 212, 255, 0.2);
+        }
     </style>
+    {% if current_user.is_authenticated %}
+    {% set _t = current_user.get_theme() %}
+    <style id="user-theme-style">
+        :root {
+            --color-primary: {{ _t.primary }};
+            --color-primary-gradient-end: {{ _t.primary_gradient_end }};
+            --color-background: {{ _t.background }};
+            --color-surface: {{ _t.surface }};
+            --color-surface-hover: {{ _t.surface_hover }};
+            --color-text: {{ _t.text }};
+            --color-text-secondary: {{ _t.text_secondary }};
+            --color-border: {{ _t.border }};
+            --color-navbar-text: {{ _t.navbar_text }};
+            --color-navbar-text-active: {{ _t.navbar_text_active }};
+            --theme-name: {{ _t.name }};
+        }
+    </style>
+    {% endif %}
     {% block extra_head %}{% endblock %}
 </head>
 
-<body>
+<body data-theme="{{ (current_user.get_theme().name if current_user.is_authenticated else 'neon') }}">
     {% if current_user.is_authenticated %}
     <nav class="navbar">
         <div class="navbar-brand">QoR Recorder</div>
         <div class="navbar-nav">
             <a href="{{ url_for('dashboard') }}"
                 class="nav-item {% if request.endpoint == 'dashboard' %}active{% endif %}">Dashboard</a>
+            {% if not current_user.is_release %}
             <a href="{{ url_for('compare') }}"
                 class="nav-item {% if request.endpoint == 'compare' %}active{% endif %}">数据对比</a>
+            {% endif %}
             {% if current_user.is_admin %}
-            <a href="{{ url_for('admin_page') }}"
-                class="nav-item {% if request.endpoint == 'admin_page' %}active{% endif %}">数据管理</a>
+            <a href="{{ url_for('admin_page') }}#projects"
+                class="nav-item {% if request.endpoint == 'admin_page' %}active{% endif %}">项目管理</a>
+            <a href="{{ url_for('admin_page') }}#users"
+                class="nav-item {% if request.endpoint == 'admin_page' %}active{% endif %}">用户管理</a>
+            <a href="{{ url_for('admin_page') }}#upload"
+                class="nav-item {% if request.endpoint == 'admin_page' %}active{% endif %}">数据上传</a>
             {% if config.ENABLE_DB_ADMIN %}
             <a href="{{ url_for('db_admin') }}"
                 class="nav-item {% if request.endpoint == 'db_admin' %}active{% endif %}">DB 可视化</a>
@@ -337,9 +1024,17 @@
             {% endif %}
         </div>
         <div class="navbar-user">
+            <button class="theme-btn" onclick="openThemeModal()" title="主题设置" aria-label="主题设置">◐</button>
             <span>{{ current_user.display_name or current_user.username }}</span>
-            <span class="role-badge {% if current_user.is_admin %}admin{% endif %}">{{ '管理员' if current_user.is_admin
-                else '用户' }}</span>
+            {% if current_user.is_admin %}
+            <span class="role-badge admin">管理员</span>
+            {% elif current_user.is_release %}
+            <span class="role-badge" style="background:#3aa655;color:#fff;">Release</span>
+            {% else %}
+            <span class="role-badge">用户</span>
+            {% endif %}
+            <a href="javascript:void(0)" class="nav-item" onclick="openChangePasswordModal()"
+                style="padding: 4px 12px;">修改密码</a>
             <a href="{{ url_for('logout') }}" class="nav-item" style="padding: 4px 12px;">退出</a>
         </div>
     </nav>
@@ -353,6 +1048,380 @@
         {% endwith %}
         {% block content %}{% endblock %}
     </div>
+
+    {% if current_user.is_authenticated %}
+    <!-- 主题设置弹窗 -->
+    <div class="theme-modal-mask" id="themeModalMask" onclick="if(event.target===this)closeThemeModal()">
+        <div class="theme-modal">
+            <div class="theme-modal-header">
+                <span>主题设置</span>
+                <button class="theme-modal-close" onclick="closeThemeModal()" aria-label="关闭">×</button>
+            </div>
+            <div class="theme-modal-body">
+                <div class="theme-section-title">预设主题</div>
+                <div class="theme-preset-grid" id="themePresetGrid"></div>
+
+                <div class="theme-section-title">自定义颜色</div>
+                <div class="theme-color-grid" id="themeColorGrid"></div>
+            </div>
+            <div class="theme-modal-footer">
+                <button class="btn btn-default btn-sm" onclick="resetTheme()">重置为默认</button>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn btn-default btn-sm" onclick="closeThemeModal()">取消</button>
+                    <button class="btn btn-sm" onclick="saveTheme()">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 修改密码弹窗 -->
+    <div class="theme-modal-mask" id="changePasswordModalMask"
+        onclick="if(event.target===this)closeChangePasswordModal()">
+        <div class="theme-modal" style="max-width: 400px;">
+            <div class="theme-modal-header">
+                <span>修改密码</span>
+                <button class="theme-modal-close" onclick="closeChangePasswordModal()" aria-label="关闭">×</button>
+            </div>
+            <div class="theme-modal-body">
+                <div class="form-group">
+                    <label>旧密码</label>
+                    <input type="password" id="oldPasswordInput" style="width: 100%;" autocomplete="current-password">
+                </div>
+                <div class="form-group">
+                    <label>新密码（至少 4 位）</label>
+                    <input type="password" id="newPasswordInput" style="width: 100%;" autocomplete="new-password">
+                </div>
+                <div class="form-group">
+                    <label>确认新密码</label>
+                    <input type="password" id="confirmPasswordInput" style="width: 100%;" autocomplete="new-password">
+                </div>
+                <div id="changePasswordMsg" style="font-size: 13px; margin-top: 4px;"></div>
+            </div>
+            <div class="theme-modal-footer">
+                <div style="display:flex; gap:8px; justify-content:flex-end;">
+                    <button class="btn btn-default btn-sm" onclick="closeChangePasswordModal()">取消</button>
+                    <button class="btn btn-sm" onclick="submitChangePassword()">确认修改</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        // 主题配置: 字段名 / 显示标签 / 是否颜色字段
+        const THEME_FIELDS = [
+            { key: 'primary', label: '主色', color: true },
+            { key: 'primary_gradient_end', label: '主色(渐变终点)', color: true },
+            { key: 'background', label: '页面背景', color: true },
+            { key: 'surface', label: '卡片背景', color: true },
+            { key: 'surface_hover', label: '卡片悬停', color: true },
+            { key: 'text', label: '主文字', color: true },
+            { key: 'text_secondary', label: '次要文字', color: true },
+            { key: 'border', label: '边框', color: true },
+            { key: 'navbar_text', label: '导航文字', color: false },
+            { key: 'navbar_text_active', label: '导航激活文字', color: false },
+        ];
+
+        // 当前编辑中的主题 (从根 CSS 变量读取, 避免再请求一次)
+        let editingTheme = {};
+        let themePresets = {};
+        let themeDefault = {};
+
+        function _readVar(name) {
+            return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        }
+
+        function _applyTheme(theme) {
+            const root = document.documentElement;
+            root.style.setProperty('--color-primary', theme.primary);
+            root.style.setProperty('--color-primary-gradient-end', theme.primary_gradient_end);
+            root.style.setProperty('--color-background', theme.background);
+            root.style.setProperty('--color-surface', theme.surface);
+            root.style.setProperty('--color-surface-hover', theme.surface_hover);
+            root.style.setProperty('--color-text', theme.text);
+            root.style.setProperty('--color-text-secondary', theme.text_secondary);
+            root.style.setProperty('--color-border', theme.border);
+            root.style.setProperty('--color-navbar-text', theme.navbar_text);
+            root.style.setProperty('--color-navbar-text-active', theme.navbar_text_active);
+            root.style.setProperty('--theme-name', theme.name || 'custom');
+            // 同步 body[data-theme] 以便 neon 增强样式按主题生效
+            document.body.dataset.theme = theme.name || 'custom';
+        }
+
+        function _presetSwatchStyle(preset) {
+            // 用主色渐变 + 背景色预览
+            return `background: linear-gradient(135deg, ${preset.primary} 0%, ${preset.primary_gradient_end} 60%, ${preset.background} 60%, ${preset.background} 100%);`;
+        }
+
+        function _normalizeHex(val) {
+            // <input type=color> 只接受 #rrggbb, 把 rgba/hsl 等转成兜底色
+            if (/^#[0-9a-fA-F]{6}$/.test(val)) return val;
+            if (/^#[0-9a-fA-F]{3}$/.test(val)) {
+                return '#' + val.slice(1).split('').map(c => c + c).join('');
+            }
+            return '#1a237e';
+        }
+
+        function renderPresets() {
+            const grid = document.getElementById('themePresetGrid');
+            grid.innerHTML = '';
+            Object.entries(themePresets).forEach(([key, preset]) => {
+                const card = document.createElement('div');
+                card.className = 'theme-preset-card' + (editingTheme.name === key ? ' active' : '');
+                card.onclick = () => {
+                    editingTheme = { ...preset };
+                    renderColorGrid();
+                    renderPresets();
+                    _applyTheme(editingTheme);
+                };
+                card.innerHTML = `
+                    <div class="theme-preset-swatch" style="${_presetSwatchStyle(preset)}"></div>
+                    <div>${key}</div>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        function renderColorGrid() {
+            const grid = document.getElementById('themeColorGrid');
+            grid.innerHTML = '';
+            THEME_FIELDS.forEach(f => {
+                const val = editingTheme[f.key] || '';
+                const wrap = document.createElement('div');
+                wrap.className = 'theme-color-item';
+                const colorInput = f.color
+                    ? `<input type="color" data-key="${f.key}" value="${_normalizeHex(val)}" oninput="onColorInput(this, '${f.key}')">`
+                    : '';
+                wrap.innerHTML = `
+                    <label>${f.label}</label>
+                    ${colorInput}
+                    <input type="text" data-key="${f.key}" value="${val}" oninput="onTextInput(this, '${f.key}')">
+                `;
+                grid.appendChild(wrap);
+            });
+        }
+
+        function onColorInput(el, key) {
+            editingTheme[key] = el.value;
+            editingTheme.name = 'custom';
+            // 同步文本框
+            const txt = document.querySelector(`input[type=text][data-key="${key}"]`);
+            if (txt) txt.value = el.value;
+            renderPresets();
+            _applyTheme(editingTheme);
+        }
+
+        function onTextInput(el, key) {
+            editingTheme[key] = el.value;
+            editingTheme.name = 'custom';
+            // 同步颜色选择器 (仅 hex)
+            const color = document.querySelector(`input[type=color][data-key="${key}"]`);
+            if (color && /^#[0-9a-fA-F]{3,8}$/.test(el.value)) {
+                color.value = _normalizeHex(el.value);
+            }
+            renderPresets();
+            _applyTheme(editingTheme);
+        }
+
+        function openThemeModal() {
+            document.getElementById('themeModalMask').classList.add('show');
+            // 加载主题 (含预设)
+            fetch('/api/user/theme', { credentials: 'same-origin' })
+                .then(r => r.json())
+                .then(data => {
+                    themePresets = data.presets || {};
+                    themeDefault = data.default || {};
+                    editingTheme = { ...(data.theme || themeDefault) };
+                    renderPresets();
+                    renderColorGrid();
+                })
+                .catch(err => {
+                    console.error('[theme] 加载失败', err);
+                    editingTheme = {
+                        primary: _readVar('--color-primary'),
+                        primary_gradient_end: _readVar('--color-primary-gradient-end'),
+                        background: _readVar('--color-background'),
+                        surface: _readVar('--color-surface'),
+                        surface_hover: _readVar('--color-surface-hover'),
+                        text: _readVar('--color-text'),
+                        text_secondary: _readVar('--color-text-secondary'),
+                        border: _readVar('--color-border'),
+                        navbar_text: _readVar('--color-navbar-text'),
+                        navbar_text_active: _readVar('--color-navbar-text-active'),
+                        name: 'custom',
+                    };
+                    renderColorGrid();
+                });
+        }
+
+        function closeThemeModal() {
+            document.getElementById('themeModalMask').classList.remove('show');
+        }
+
+        function resetTheme() {
+            if (!confirm('确定重置为默认主题?')) return;
+            fetch('/api/user/theme', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reset: true })
+            })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) return alert(data.error);
+                    editingTheme = { ...(data.theme || themeDefault) };
+                    _applyTheme(editingTheme);
+                    renderPresets();
+                    renderColorGrid();
+                })
+                .catch(err => alert('重置失败: ' + err));
+        }
+
+        function saveTheme() {
+            fetch('/api/user/theme', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ theme: editingTheme })
+            })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) return alert(data.error);
+                    editingTheme = { ...(data.theme || editingTheme) };
+                    _applyTheme(editingTheme);
+                    // 同步内联 <style id=user-theme-style>, 避免刷新前回归
+                    const styleEl = document.getElementById('user-theme-style');
+                    if (styleEl) {
+                        const t = editingTheme;
+                        styleEl.textContent = `
+                            :root {
+                                --color-primary: ${t.primary};
+                                --color-primary-gradient-end: ${t.primary_gradient_end};
+                                --color-background: ${t.background};
+                                --color-surface: ${t.surface};
+                                --color-surface-hover: ${t.surface_hover};
+                                --color-text: ${t.text};
+                                --color-text-secondary: ${t.text_secondary};
+                                --color-border: ${t.border};
+                                --color-navbar-text: ${t.navbar_text};
+                                --color-navbar-text-active: ${t.navbar_text_active};
+                                --theme-name: ${t.name || 'custom'};
+                            }
+                        `;
+                    }
+                    closeThemeModal();
+                })
+                .catch(err => alert('保存失败: ' + err));
+        }
+
+        // Esc 关闭
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeThemeModal();
+                closeChangePasswordModal();
+            }
+        });
+
+        // ===================== 用户修改自己密码 =====================
+        function openChangePasswordModal() {
+            document.getElementById('oldPasswordInput').value = '';
+            document.getElementById('newPasswordInput').value = '';
+            document.getElementById('confirmPasswordInput').value = '';
+            document.getElementById('changePasswordMsg').innerHTML = '';
+            document.getElementById('changePasswordModalMask').classList.add('show');
+        }
+
+        function closeChangePasswordModal() {
+            document.getElementById('changePasswordModalMask').classList.remove('show');
+        }
+
+        async function submitChangePassword() {
+            const oldP = document.getElementById('oldPasswordInput').value;
+            const newP = document.getElementById('newPasswordInput').value;
+            const confirmP = document.getElementById('confirmPasswordInput').value;
+            const msg = document.getElementById('changePasswordMsg');
+
+            if (!oldP || !newP || !confirmP) {
+                msg.innerHTML = '<span style="color:#c62828;">请填写所有字段</span>';
+                return;
+            }
+            if (newP.length < 4) {
+                msg.innerHTML = '<span style="color:#c62828;">新密码至少 4 位</span>';
+                return;
+            }
+            if (newP !== confirmP) {
+                msg.innerHTML = '<span style="color:#c62828;">两次输入的新密码不一致</span>';
+                return;
+            }
+
+            msg.innerHTML = '<span style="color:var(--color-text-secondary);">提交中...</span>';
+            try {
+                const resp = await fetch('/api/user/password', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_password: oldP, new_password: newP })
+                });
+                const data = await resp.json();
+                if (resp.ok && data.ok) {
+                    msg.innerHTML = '<span style="color:#2e7d32;">密码修改成功</span>';
+                    setTimeout(closeChangePasswordModal, 1000);
+                } else {
+                    msg.innerHTML = `<span style="color:#c62828;">${data.error || '修改失败'}</span>`;
+                }
+            } catch (e) {
+                msg.innerHTML = `<span style="color:#c62828;">修改失败: ${e.message}</span>`;
+            }
+        }
+    </script>
+    {% endif %}
+
+    <!-- CSRF: 全局 fetch/XHR 拦截器, 自动注入 X-CSRF-Token -->
+    <script>
+        (function () {
+            function getCsrfToken() {
+                const meta = document.querySelector('meta[name="csrf-token"]');
+                return meta ? meta.getAttribute('content') : '';
+            }
+            const CSRF_HEADER = 'X-CSRF-Token';
+
+            // 拦截 fetch
+            const origFetch = window.fetch;
+            window.fetch = function (input, init) {
+                init = init || {};
+                const method = (init.method || 'GET').toUpperCase();
+                // 仅对不安全方法注入
+                if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+                    // 跳过已带 Authorization / X-API-Key 的请求 (API Key 调用豁免)
+                    const headers = new Headers(init.headers || {});
+                    if (!headers.get('Authorization') && !headers.get('X-API-Key') && !headers.get(CSRF_HEADER)) {
+                        headers.set(CSRF_HEADER, getCsrfToken());
+                        init.headers = headers;
+                    }
+                }
+                return origFetch.call(this, input, init);
+            };
+
+            // 拦截 XMLHttpRequest
+            const origOpen = XMLHttpRequest.prototype.open;
+            const origSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function (method, url) {
+                this._method = (method || 'GET').toUpperCase();
+                return origOpen.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function (body) {
+                if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(this._method)) {
+                    if (!this.getRequestHeader('Authorization') && !this.getRequestHeader('X-API-Key')) {
+                        try { this.setRequestHeader(CSRF_HEADER, getCsrfToken()); } catch (e) { }
+                    }
+                }
+                return origSend.apply(this, arguments);
+            };
+
+            // 401 自动跳登录
+            window.addEventListener('unhandledrejection', function (event) {
+                // 留给具体业务处理, 此处不打断
+            });
+        })();
+    </script>
 
     {% block extra_scripts %}{% endblock %}
 </body>

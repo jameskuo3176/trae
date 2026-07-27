@@ -5,26 +5,27 @@
 <div class="card">
     <div class="card-header">
         <span>数据库可视化面板</span>
-        <span style="margin-left:16px;font-size:12px;color:#888;">类型: {{ data.db_type | upper }}</span>
+        <span style="margin-left:16px;font-size:12px;color:var(--color-text-secondary);">类型: {{ data.db_type | upper
+            }}</span>
     </div>
     <div class="card-body" style="display:flex;gap:16px;align-items:flex-start;">
 
         <!-- 左侧: 表列表 -->
         <div style="width:220px;border-right:1px solid #eee;padding-right:16px;">
-            <h4 style="margin-bottom:8px;font-size:14px;color:#666;">表列表</h4>
+            <h4 style="margin-bottom:8px;font-size:14px;color:var(--color-text-secondary);">表列表</h4>
             {% if data.tables %}
             <ul style="list-style:none;">
                 {% for t in data.tables %}
                 <li style="margin:2px 0;">
                     <a href="{{ url_for('db_admin', action='schema', table=t) }}"
-                       style="display:block;padding:6px 10px;border-radius:4px;text-decoration:none;color:{% if data.current_table == t %}#fff{% else %}#333{% endif %};background:{% if data.current_table == t %}#1a237e{% else %}transparent{% endif %};">
+                        style="display:block;padding:6px 10px;border-radius:4px;text-decoration:none;color:{% if data.current_table == t %}#fff{% else %}#333{% endif %};background:{% if data.current_table == t %}#1a237e{% else %}transparent{% endif %};">
                         {{ t }}
                     </a>
                 </li>
                 {% endfor %}
             </ul>
             {% else %}
-            <p style="color:#999;font-size:12px;">无表</p>
+            <p style="color:var(--color-text-secondary);font-size:12px;">无表</p>
             {% endif %}
         </div>
 
@@ -37,95 +38,110 @@
             {% endif %}
 
             {% if data.action == 'tables' %}
-                <h3 style="margin-bottom:12px;">数据库表</h3>
-                <p style="color:#666;">点击左侧表名查看结构与数据。</p>
+            <h3 style="margin-bottom:12px;">数据库表</h3>
+            <p style="color:var(--color-text-secondary);">点击左侧表名查看结构与数据。</p>
             {% endif %}
 
             {% if data.action == 'schema' %}
-                <h3 style="margin-bottom:12px;">表结构: {{ data.current_table }}</h3>
-                <div style="margin-bottom:12px;">
-                    <span style="background:#e3f2fd;padding:4px 10px;border-radius:12px;font-size:12px;">
-                        总行数: {{ data.row_count }}
-                    </span>
+            <h3 style="margin-bottom:12px;">表结构: {{ data.current_table }}</h3>
+            <div style="margin-bottom:12px;">
+                <span style="background:#e3f2fd;padding:4px 10px;border-radius:12px;font-size:12px;">
+                    总行数: {{ data.row_count }}
+                </span>
+            </div>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>字段名</th>
+                        <th>类型</th>
+                        <th>非空</th>
+                        <th>默认值</th>
+                        <th>主键</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in data.columns %}
+                    <tr>
+                        <td><strong>{{ c.name }}</strong>{% if c.pk %} <span style="color:#ffc107;">PK</span>{% endif %}
+                        </td>
+                        <td>{{ c.type }}</td>
+                        <td>{{ '是' if c.notnull else '否' }}</td>
+                        <td>{{ c.default if c.default else '' }}</td>
+                        <td>{{ '是' if c.pk else '' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <a href="{{ url_for('db_admin', action='browse', table=data.current_table) }}" class="btn">浏览数据 →</a>
+            {% endif %}
+
+            {% if data.action == 'browse' %}
+            <h3 style="margin-bottom:12px;">数据浏览: {{ data.current_table }}</h3>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <span style="color:var(--color-text-secondary);font-size:13px;">
+                    第 {{ data.page }} / {{ data.total_pages }} 页, 共 {{ data.total }} 行
+                </span>
+                <div>
+                    {% if data.page > 1 %}
+                    <a href="{{ url_for('db_admin', action='browse', table=data.current_table, page=data.page-1) }}"
+                        class="btn-sm">上一页</a>
+                    {% endif %}
+                    {% if data.page < data.total_pages %} <a
+                        href="{{ url_for('db_admin', action='browse', table=data.current_table, page=data.page+1) }}"
+                        class="btn-sm">下一页</a>
+                        {% endif %}
+                        <a href="{{ url_for('db_admin', action='schema', table=data.current_table) }}"
+                            class="btn-sm">结构</a>
                 </div>
-                <table class="table">
-                    <thead><tr>
-                        <th>字段名</th><th>类型</th><th>非空</th><th>默认值</th><th>主键</th>
-                    </tr></thead>
-                    <tbody>
-                        {% for c in data.columns %}
+            </div>
+            {% if data.rows %}
+            <div style="overflow:auto;max-height:600px;">
+                <table class="table" style="font-size:12px;">
+                    <thead>
                         <tr>
-                            <td><strong>{{ c.name }}</strong>{% if c.pk %} <span style="color:#ffc107;">PK</span>{% endif %}</td>
-                            <td>{{ c.type }}</td>
-                            <td>{{ '是' if c.notnull else '否' }}</td>
-                            <td>{{ c.default if c.default else '' }}</td>
-                            <td>{{ '是' if c.pk else '' }}</td>
+                            {% for col in data.columns %}<th>{{ col }}</th>{% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in data.rows %}
+                        <tr>
+                            {% for cell in row %}<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">{{
+                                cell }}</td>{% endfor %}
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
-                <a href="{{ url_for('db_admin', action='browse', table=data.current_table) }}" class="btn">浏览数据 →</a>
+            </div>
+            {% else %}
+            <p style="color:var(--color-text-secondary);">表中无数据</p>
             {% endif %}
-
-            {% if data.action == 'browse' %}
-                <h3 style="margin-bottom:12px;">数据浏览: {{ data.current_table }}</h3>
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <span style="color:#666;font-size:13px;">
-                        第 {{ data.page }} / {{ data.total_pages }} 页, 共 {{ data.total }} 行
-                    </span>
-                    <div>
-                        {% if data.page > 1 %}
-                        <a href="{{ url_for('db_admin', action='browse', table=data.current_table, page=data.page-1) }}" class="btn-sm">上一页</a>
-                        {% endif %}
-                        {% if data.page < data.total_pages %}
-                        <a href="{{ url_for('db_admin', action='browse', table=data.current_table, page=data.page+1) }}" class="btn-sm">下一页</a>
-                        {% endif %}
-                        <a href="{{ url_for('db_admin', action='schema', table=data.current_table) }}" class="btn-sm">结构</a>
-                    </div>
-                </div>
-                {% if data.rows %}
-                <div style="overflow:auto;max-height:600px;">
-                    <table class="table" style="font-size:12px;">
-                        <thead><tr>
-                            {% for col in data.columns %}<th>{{ col }}</th>{% endfor %}
-                        </tr></thead>
-                        <tbody>
-                            {% for row in data.rows %}
-                            <tr>
-                                {% for cell in row %}<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">{{ cell }}</td>{% endfor %}
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-                {% else %}
-                <p style="color:#999;">表中无数据</p>
-                {% endif %}
             {% endif %}
 
             {% if data.action == 'query' %}
-                <h3 style="margin-bottom:12px;">SQL 查询</h3>
-                <form method="get" action="{{ url_for('db_admin') }}" style="margin-bottom:16px;">
-                    <input type="hidden" name="action" value="query">
-                    <textarea name="sql" rows="4" style="width:100%;font-family:monospace;padding:8px;"
-                              placeholder="SELECT * FROM qor_records LIMIT 10">{{ data.sql }}</textarea>
-                    <button type="submit" class="btn" style="margin-top:8px;">执行 (仅 SELECT)</button>
-                </form>
-                {% if data.rows is defined and data.rows %}
-                <div style="overflow:auto;max-height:500px;">
-                    <table class="table" style="font-size:12px;">
-                        <thead><tr>{% for col in data.columns %}<th>{{ col }}</th>{% endfor %}</tr></thead>
-                        <tbody>
-                            {% for row in data.rows %}
-                            <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-                {% if data.truncated %}
-                <p style="color:#ff9800;font-size:12px;margin-top:8px;">结果超过 200 行, 已截断显示。请添加 LIMIT。</p>
-                {% endif %}
-                {% endif %}
+            <h3 style="margin-bottom:12px;">SQL 查询</h3>
+            <form method="get" action="{{ url_for('db_admin') }}" style="margin-bottom:16px;">
+                <input type="hidden" name="action" value="query">
+                <textarea name="sql" rows="4" style="width:100%;font-family:monospace;padding:8px;"
+                    placeholder="SELECT * FROM qor_records LIMIT 10">{{ data.sql }}</textarea>
+                <button type="submit" class="btn" style="margin-top:8px;">执行 (仅 SELECT)</button>
+            </form>
+            {% if data.rows is defined and data.rows %}
+            <div style="overflow:auto;max-height:500px;">
+                <table class="table" style="font-size:12px;">
+                    <thead>
+                        <tr>{% for col in data.columns %}<th>{{ col }}</th>{% endfor %}</tr>
+                    </thead>
+                    <tbody>
+                        {% for row in data.rows %}
+                        <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% if data.truncated %}
+            <p style="color:#ff9800;font-size:12px;margin-top:8px;">结果超过 200 行, 已截断显示。请添加 LIMIT。</p>
+            {% endif %}
+            {% endif %}
             {% endif %}
 
             <!-- 快速 SQL 查询入口 -->
@@ -138,17 +154,37 @@
 </div>
 
 <style>
-.btn-sm {
-    display:inline-block; padding:4px 10px; font-size:12px;
-    background:#e3f2fd; color:#1565c0; border-radius:4px;
-    text-decoration:none; margin-right:4px;
-}
-.btn-sm:hover { background:#bbdefb; }
-.btn {
-    display:inline-block; padding:6px 14px; font-size:13px;
-    background:#1a237e; color:#fff; border-radius:4px;
-    text-decoration:none; border:none; cursor:pointer;
-}
-.btn:hover { background:#283593; }
+    .btn-sm {
+        display: inline-block;
+        padding: 4px 10px;
+        font-size: 12px;
+        background: var(--color-surface-hover);
+        color: var(--color-primary);
+        border: 1px solid var(--color-border);
+        border-radius: 4px;
+        text-decoration: none;
+        margin-right: 4px;
+    }
+
+    .btn-sm:hover {
+        background: var(--color-surface);
+        border-color: var(--color-primary);
+    }
+
+    .btn {
+        display: inline-block;
+        padding: 6px 14px;
+        font-size: 13px;
+        background: var(--color-primary);
+        color: #fff;
+        border-radius: 4px;
+        text-decoration: none;
+        border: none;
+        cursor: pointer;
+    }
+
+    .btn:hover {
+        background: var(--color-primary-gradient-end);
+    }
 </style>
 {% endblock %}

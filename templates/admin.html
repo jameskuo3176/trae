@@ -5,7 +5,7 @@
 <h2 style="font-size: 22px; margin-bottom: 16px;">数据管理 <span class="tag tag-danger">管理员</span></h2>
 
 <!-- 标签切换 -->
-<div style="display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 2px solid #e8e8e8;">
+<div style="display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 2px solid var(--color-border);">
     <button class="tab-btn active" onclick="switchTab('upload')" id="tab-upload">上传数据</button>
     <button class="tab-btn" onclick="switchTab('projects')" id="tab-projects">项目管理</button>
     <button class="tab-btn" onclick="switchTab('records')" id="tab-records">记录管理</button>
@@ -41,12 +41,54 @@
                         <option value="qor">QoR 数据（综合结果，新建记录）</option>
                         <option value="power">功耗数据（合并到已有记录，按 模块+版本 匹配）</option>
                         <option value="violation">违例路径（关联到已有 QoR 记录，按 模块+版本 匹配）</option>
+                        <option value="notes">Run 备注（2~3 列 item,description[,full_dir]，关联到已有记录）</option>
+                    </select>
+                </div>
+                <div class="form-group" id="uploadFullDirGroup" style="display:none;">
+                    <label>full_dir（Run 目录路径，可选，用于区分同 module+version 下的不同 run）</label>
+                    <input type="text" id="uploadFullDir"
+                        placeholder="如: /scratch/runs/run_20260722_v2 (留空则按 CSV 内 full_dir 列或 module+version 匹配)"
+                        style="width: 100%;">
+                    <div style="margin-top:4px; font-size:12px; color: var(--color-text-secondary);">
+                        Makefile 自动上传时建议传入当前 run 目录的 <code>$(PWD)</code>，便于按目录区分多 corner / 多子目录 run
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>模块名来源（批量上传历史数据时用）</label>
+                    <select id="uploadModuleNameSource" style="width: 100%;">
+                        <option value="csv">从 CSV 列读取（默认）</option>
+                        <option value="filename">从文件名提取（去 _qor 后缀，如 module_a_qor.csv → module_a）</option>
+                        <option value="dirname">从父目录名提取（如 module_a/module_a_qor.csv → module_a）</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>CSV 文件 *（可多选）</label>
-                    <input type="file" id="uploadFile" accept=".csv" multiple required style="width: 100%;">
-                    <div id="fileList" style="margin-top: 4px; font-size: 12px; color: #666;"></div>
+                    <label>文件名后缀去除规则（仅"从文件名提取"模式生效，逗号分隔）</label>
+                    <input type="text" id="uploadFilenameSuffixes" value="_qor,qor,_qor_report"
+                        placeholder="如: _qor,qor" style="width: 100%;">
+                </div>
+                <div class="form-group">
+                    <label>CSV 文件 *（可多选，支持整目录上传）</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="file" id="uploadFile" accept=".csv" multiple required style="flex:1;">
+                        <label style="font-size:12px; display:flex; align-items:center; gap:4px;">
+                            <input type="checkbox" id="uploadDirMode"> 整目录上传
+                        </label>
+                    </div>
+                    <div id="fileList" style="margin-top: 4px; font-size: 12px; color: var(--color-text-secondary);">
+                    </div>
+                    <div id="moduleHint"
+                        style="margin-top: 4px; font-size: 12px; color: var(--color-text-secondary); display:none;">
+                    </div>
+                </div>
+                <div class="form-group"
+                    style="background: var(--color-surface-hover); padding: 8px 12px; border-radius: 4px;">
+                    <label style="display:flex; align-items:center; gap:8px; font-weight:normal; cursor:pointer;">
+                        <input type="checkbox" id="uploadMarkReleased" style="width:auto;">
+                        <span>上传后立即标记为 <strong>已发布</strong>（对 release 账号可见）</span>
+                    </label>
+                    <div style="margin-top:4px; font-size:12px; color: var(--color-text-secondary);">
+                        勾选后本次上传的所有记录将自动对外可见，无需再去「记录管理」手动发布
+                    </div>
                 </div>
                 <button type="submit" class="btn">上传并导入</button>
                 <button type="button" class="btn btn-secondary" id="previewBtn" style="margin-left: 8px;">预览校验
@@ -55,7 +97,7 @@
             <div id="uploadResult" style="margin-top: 12px;"></div>
 
             <div
-                style="margin-top: 20px; padding: 16px; background: #f5f5f5; border-radius: 4px; font-size: 13px; color: #555;">
+                style="margin-top: 20px; padding: 16px; background: var(--color-surface-hover); border-radius: 4px; font-size: 13px; color: var(--color-text-secondary);">
                 <strong>支持的 CSV 字段说明:</strong><br>
                 解析器自动识别列名（不区分大小写，忽略空格/下划线/连字符差异）。常见列名:<br>
                 <code>tag, full_dir, comment, reg_count, comb_count, macro_count, total_count,
@@ -65,7 +107,55 @@
                 <code>tag</code> 会作为图表上的标签。<br>
                 多时钟数据中，最负 WNS 会作为整体 WNS，所有 TNS 之和作为整体 TNS。<br>
                 <strong>功耗合并:</strong> 选择"功耗数据"时，系统按 模块+版本 匹配已有记录，仅更新功耗字段，不会覆盖 QoR 数据。<br>
-                <strong>容错能力:</strong> 跳过空行、处理列数不一致、支持科学计数法/千分位/带单位数值、识别多种空值表示(-, N/A, NULL 等)。
+                <strong>容错能力:</strong> 跳过空行、处理列数不一致、支持科学计数法/千分位/带单位数值、识别多种空值表示(-, N/A, NULL 等)。<br>
+                <strong>批量上传历史数据:</strong> 勾选"整目录上传"选择整个项目目录，模块名来源选"从文件名提取"或"从父目录名提取"。
+                例如目录结构 <code>proj_dir/module_a/module_a_qor.csv</code>，选"从父目录名提取"会自动把 <code>module_a</code> 作为模块名，每个 CSV
+                的多行作为该模块的不同 run 版本（用 tag 列区分）。建议先用"预览校验"确认模块名提取正确。
+            </div>
+        </div>
+    </div>
+
+    <!-- 补充 FlopCount 数据 (block_qor.csv) -->
+    <div class="card">
+        <div class="card-header">补充 FlopCount 数据 (block_qor.csv)</div>
+        <div class="card-body">
+            <p style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 12px;">
+                通过 <code>Fulldir</code> 列匹配已有 QoR 记录，仅补充 <code>FlopCount</code> 和 <code>FlopCount_incr</code> 字段。
+                不新建记录，不覆盖已有 QoR 数据。
+            </p>
+            <form id="blockQorForm">
+                <div class="form-group">
+                    <label>项目 (可选，用于权限校验；留空则跨项目匹配)</label>
+                    <select id="blockQorProject" style="width: 100%;">
+                        <option value="">跨项目全局匹配</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>block_qor.csv 文件 *（可多选，支持整目录上传）</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="file" id="blockQorFile" accept=".csv" multiple required style="flex:1;">
+                        <label style="font-size:12px; display:flex; align-items:center; gap:4px;">
+                            <input type="checkbox" id="blockQorDirMode"> 整目录上传
+                        </label>
+                    </div>
+                    <div id="blockQorFileList"
+                        style="margin-top: 4px; font-size: 12px; color: var(--color-text-secondary);">
+                    </div>
+                </div>
+                <button type="submit" class="btn">补充 FlopCount</button>
+            </form>
+            <div id="blockQorResult" style="margin-top: 12px;"></div>
+            <div
+                style="margin-top: 20px; padding: 16px; background: var(--color-surface-hover); border-radius: 4px; font-size: 13px; color: var(--color-text-secondary);">
+                <strong>说明:</strong><br>
+                - CSV 需包含 <code>Fulldir</code> 列（匹配键，对应已有记录的 <code>full_dir</code>），以及 <code>FlopCount</code> /
+                <code>FlopCount_incr</code> 列。<br>
+                - Header 大小写不敏感，支持别名:
+                <code>Fulldir</code>/<code>full_dir</code>/<code>fuldir</code>、<code>FlopCount</code>/<code>flop_count</code>/<code>flops</code>
+                等。<br>
+                - 匹配规则: <code>Fulldir</code> 唯一匹配已有记录。命中多条则跳过(冲突)，命中 0 条则跳过(未匹配)。<br>
+                - 仅 <code>FlopCount</code> 或 <code>FlopCount_incr</code> 至少有一个非空才会更新。<br>
+                - 幂等: 重复上传相同数据不会重复计数。
             </div>
         </div>
     </div>
@@ -123,6 +213,8 @@
                 <table class="table" id="recordTable">
                     <thead>
                         <tr>
+                            <th><input type="checkbox" id="releaseSelectAll" onchange="toggleReleaseSelectAll(this)"
+                                    title="全选/反选"></th>
                             <th>ID</th>
                             <th>项目</th>
                             <th>模块</th>
@@ -133,11 +225,19 @@
                             <th>总功耗</th>
                             <th>单元数</th>
                             <th>记录时间</th>
+                            <th>Release</th>
                             <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="recordTableBody"></tbody>
                 </table>
+                <div
+                    style="margin-top: 12px; padding: 10px; background: var(--color-surface, #f8f9fa); border-radius: 6px; display: flex; gap: 10px; align-items: center;">
+                    <button class="btn btn-success btn-sm" onclick="batchRelease(true)">批量发布</button>
+                    <button class="btn btn-default btn-sm" onclick="batchRelease(false)">批量撤回</button>
+                    <span id="releaseSelectionInfo"
+                        style="color: var(--color-text-secondary, #666); font-size: 13px;">已选 0 条</span>
+                </div>
             </div>
         </div>
     </div>
@@ -148,7 +248,10 @@
     <div class="card">
         <div class="card-header">
             <span>用户列表</span>
-            <button class="btn btn-sm" onclick="showAddUser()">+ 添加用户</button>
+            <div style="display:flex; gap:8px;">
+                <button class="btn btn-default btn-sm" onclick="showBatchAddUser()">批量创建</button>
+                <button class="btn btn-sm" onclick="showAddUser()">+ 添加用户</button>
+            </div>
         </div>
         <div class="card-body">
             <table class="table">
@@ -159,6 +262,7 @@
                         <th>角色</th>
                         <th>显示名</th>
                         <th>创建时间</th>
+                        <th>操作</th>
                     </tr>
                 </thead>
                 <tbody id="userTableBody"></tbody>
@@ -227,6 +331,7 @@
                 <select id="newUserRole" style="width: 100%;">
                     <option value="user">普通用户</option>
                     <option value="admin">管理员</option>
+                    <option value="release">Release (只读外部)</option>
                 </select>
             </div>
             <div class="form-group">
@@ -241,6 +346,63 @@
     </div>
 </div>
 
+<!-- 批量创建用户弹窗 -->
+<div id="batchAddUserModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 480px;">
+        <div class="card-header">批量创建用户</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>用户名列表 *（每行一个，或用逗号/空格分隔）</label>
+                <textarea id="batchUsernames" rows="8" placeholder="alice&#10;bob&#10;charlie&#10;..."
+                    style="width: 100%; font-family: monospace;"></textarea>
+            </div>
+            <div class="form-group">
+                <label>默认密码</label>
+                <input type="text" id="batchDefaultPassword" value="123456" style="width: 100%;">
+                <div style="font-size: 12px; color: var(--color-text-secondary); margin-top: 4px;">
+                    所有用户使用同一默认密码，用户登录后可自行修改。
+                </div>
+            </div>
+            <div class="form-group">
+                <label>角色</label>
+                <select id="batchUserRole" style="width: 100%;">
+                    <option value="user">普通用户</option>
+                    <option value="admin">管理员</option>
+                </select>
+            </div>
+            <div id="batchUserResult" style="margin-top: 12px;"></div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('batchAddUserModal')">关闭</button>
+                <button class="btn btn-sm" onclick="batchCreateUsers()">批量创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 重置密码弹窗 -->
+<div id="resetPasswordModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 400px;">
+        <div class="card-header">重置密码</div>
+        <div class="card-body">
+            <div style="margin-bottom: 12px;">
+                用户: <strong id="resetPasswordUsername"></strong>
+                <input type="hidden" id="resetPasswordUserId">
+            </div>
+            <div class="form-group">
+                <label>新密码</label>
+                <input type="text" id="resetPasswordValue" value="123456" style="width: 100%;">
+                <div style="font-size: 12px; color: var(--color-text-secondary); margin-top: 4px;">
+                    默认重置为 123456，用户登录后可自行修改。
+                </div>
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('resetPasswordModal')">取消</button>
+                <button class="btn btn-sm" onclick="confirmResetPassword()">重置</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <style>
     .tab-btn {
         padding: 8px 20px;
@@ -248,19 +410,19 @@
         background: transparent;
         cursor: pointer;
         font-size: 14px;
-        color: #666;
+        color: var(--color-text-secondary);
         border-bottom: 2px solid transparent;
         margin-bottom: -2px;
     }
 
     .tab-btn.active {
-        color: #1a237e;
-        border-bottom-color: #1a237e;
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
         font-weight: 600;
     }
 
     .tab-btn:hover {
-        color: #1a237e;
+        color: var(--color-primary);
     }
 
     .modal-overlay {
@@ -278,7 +440,7 @@
 
     .project-item {
         padding: 12px;
-        border: 1px solid #e8e8e8;
+        border: 1px solid var(--color-border);
         border-radius: 4px;
         margin-bottom: 8px;
     }
@@ -294,7 +456,7 @@
         padding: 6px 12px;
         margin-left: 16px;
         font-size: 13px;
-        color: #555;
+        color: var(--color-text-secondary);
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -311,6 +473,17 @@
         loadUsers();
         loadRecords();
         setupUploadForm();
+        setupBlockQorForm();
+        // 数据类型切换: 仅 notes 显示 full_dir 输入框
+        document.getElementById('uploadDataType').addEventListener('change', function () {
+            const isNotes = (this.value === 'notes');
+            document.getElementById('uploadFullDirGroup').style.display = isNotes ? '' : 'none';
+        });
+        // 支持 URL hash 自动切 tab: /admin#projects / #records / #users
+        const hash = (window.location.hash || '').replace('#', '');
+        if (['projects', 'records', 'users', 'upload'].includes(hash)) {
+            switchTab(hash);
+        }
     });
 
     function switchTab(tab) {
@@ -332,12 +505,17 @@
         if (batchProj) {
             batchProj.innerHTML = '<option value="">请选择项目</option>';
         }
+        const blockProj = document.getElementById('blockQorProject');
+        if (blockProj) {
+            blockProj.innerHTML = '<option value="">跨项目全局匹配</option>';
+        }
         const recordFilter = document.getElementById('recordFilterProject');
         recordFilter.innerHTML = '<option value="">全部</option>';
 
         allProjects.forEach(p => {
             uploadProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
             if (batchProj) batchProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+            if (blockProj) blockProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
             recordFilter.innerHTML += `<option value="${p.id}">${p.name}</option>`;
         });
 
@@ -356,6 +534,12 @@
                 });
             }
         });
+        // 模块选择变化时刷新提示 (是否仍需要从文件名/目录名提取)
+        const fileList = document.getElementById('fileList');
+        if (fileList.children.length > 0) {
+            // 模拟触发 showFileList (this 绑定问题, 直接用 fileInput)
+            document.getElementById('uploadFile').onchange && document.getElementById('uploadFile').onchange();
+        }
     }
 
     function renderProjectList() {
@@ -383,7 +567,7 @@
             <div class="project-item-header">
                 <div>
                     <strong>${p.name}</strong>
-                    ${p.description ? `<span style="color:#999; margin-left:8px;">${p.description}</span>` : ''}
+                    ${p.description ? `<span style="color:var(--color-text-secondary); margin-left:8px;">${p.description}</span>` : ''}
                     <span class="tag">${p.module_count} 个模块</span>
                 </div>
                 <div style="display:flex; gap:8px;">
@@ -464,22 +648,114 @@
     }
 
     // ---- 上传 ----
+    // 文件名 -> 模块名 提取 (与后端逻辑保持一致, 用于预览显示)
+    function extractModuleNameFromFile(fname, suffixesStr) {
+        if (!fname) return null;
+        const base = fname.split(/[\\/]/).pop();
+        const name = base.replace(/\.csv$/i, '');
+        const tokens = (suffixesStr || '_qor,qor,_qor_report')
+            .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        let result = name;
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const tok of tokens) {
+                if (result.toLowerCase().endsWith(tok) && result.length > tok.length) {
+                    result = result.slice(0, -tok.length);
+                    changed = true;
+                }
+            }
+        }
+        return result.trim() || null;
+    }
+    function extractModuleNameFromDir(fname) {
+        if (!fname) return null;
+        const parts = fname.split(/[\\/]/).filter(Boolean);
+        if (parts.length >= 2) return parts[parts.length - 2];
+        return null;
+    }
+
     function setupUploadForm() {
-        // 显示已选文件列表
-        document.getElementById('uploadFile').onchange = function () {
+        const fileInput = document.getElementById('uploadFile');
+        const dirCheckbox = document.getElementById('uploadDirMode');
+
+        // 整目录上传模式切换: 动态切换 webkitdirectory 属性
+        dirCheckbox.onchange = function () {
+            // 重建 input 元素以应用 webkitdirectory (属性不能动态增删)
+            const newInput = document.createElement('input');
+            newInput.type = 'file';
+            newInput.id = 'uploadFile';
+            newInput.accept = '.csv';
+            newInput.multiple = true;
+            newInput.required = true;
+            newInput.style.flex = '1';
+            if (this.checked) {
+                newInput.setAttribute('webkitdirectory', '');
+                newInput.setAttribute('directory', '');
+            }
+            newInput.onchange = fileInput.onchange;
+            fileInput.parentNode.replaceChild(newInput, fileInput);
+        };
+
+        // 显示已选文件列表 + 模块名提取预览
+        function showFileList() {
             const fileList = document.getElementById('fileList');
+            const hint = document.getElementById('moduleHint');
             const files = this.files;
-            if (files.length === 0) {
+            if (!files || files.length === 0) {
                 fileList.innerHTML = '';
+                hint.style.display = 'none';
                 return;
             }
-            let html = `已选择 ${files.length} 个文件:<ul style="margin:4px 0; padding-left:20px;">`;
+            const src = document.getElementById('uploadModuleNameSource').value;
+            const suffixes = document.getElementById('uploadFilenameSuffixes').value;
+            const modId = document.getElementById('uploadModule').value;
+            // 仅显示 .csv 文件
+            const csvFiles = [];
             for (let f of files) {
-                html += `<li>${f.name} <span style="color:#999;">(${(f.size / 1024).toFixed(1)} KB)</span></li>`;
+                if (f.name.toLowerCase().endsWith('.csv')) csvFiles.push(f);
+            }
+            let html = `已选择 ${files.length} 个文件 (其中 ${csvFiles.length} 个 CSV):<ul style="margin:4px 0; padding-left:20px; max-height:240px; overflow-y:auto;">`;
+            const extractedNames = [];
+            for (let f of csvFiles.slice(0, 100)) {
+                let modHint = '';
+                if (src === 'filename') {
+                    const m = extractModuleNameFromFile(f.webkitRelativePath || f.name, suffixes);
+                    modHint = m ? ` → <span style="color:var(--color-primary);">模块: ${m}</span>` : '';
+                    if (m) extractedNames.push(m);
+                } else if (src === 'dirname') {
+                    const path = f.webkitRelativePath || f.name;
+                    const m = extractModuleNameFromDir(path) || extractModuleNameFromFile(path, suffixes);
+                    modHint = m ? ` → <span style="color:var(--color-primary);">模块: ${m}</span>` : '';
+                    if (m) extractedNames.push(m);
+                }
+                html += `<li>${f.webkitRelativePath || f.name} <span style="color:var(--color-text-secondary);">(${(f.size / 1024).toFixed(1)} KB)</span>${modHint}</li>`;
+            }
+            if (csvFiles.length > 100) {
+                html += `<li>... 还有 ${csvFiles.length - 100} 个文件</li>`;
             }
             html += '</ul>';
             fileList.innerHTML = html;
-        };
+
+            // 提示模块名来源: csv 模式有自动回退 (dirname/filename), 不会 0 条
+            if (!modId && src === 'csv') {
+                hint.style.display = 'block';
+                hint.style.color = '#1565c0';
+                hint.innerHTML = 'ℹ 当前"模块名来源"为「从 CSV 列读取」。若 CSV 无 module_name 列，' +
+                    '将自动回退到父目录名/文件名提取模块名。建议批量目录上传改选「从父目录名提取」以获得更准确的结果。';
+            } else if (!modId && (src === 'filename' || src === 'dirname') && extractedNames.length === 0) {
+                hint.style.display = 'block';
+                hint.style.color = '#e65100';
+                hint.innerHTML = '⚠ 未能从任何文件提取出模块名，请检查「文件名后缀去除规则」或改用其他来源。';
+            } else {
+                hint.style.display = 'none';
+            }
+        }
+
+        fileInput.onchange = showFileList;
+        // 切换模块名来源时刷新预览
+        document.getElementById('uploadModuleNameSource').onchange = showFileList;
+        document.getElementById('uploadFilenameSuffixes').oninput = showFileList;
 
         document.getElementById('uploadForm').onsubmit = async (e) => {
             e.preventDefault();
@@ -495,14 +771,36 @@
             const files = fileInput.files;
             if (files.length === 0) { alert('请选择至少一个 CSV 文件'); return; }
 
-            const formData = new FormData();
+            // 目录上传时, 只挑 .csv 文件 (会带 webkitRelativePath)
+            const csvFiles = [];
             for (let f of files) {
+                if (f.name.toLowerCase().endsWith('.csv')) csvFiles.push(f);
+            }
+            if (csvFiles.length === 0) { alert('请选择至少一个 CSV 文件'); return; }
+
+            const formData = new FormData();
+            for (let f of csvFiles) {
                 formData.append('files', f);
+                // webkitdirectory 模式下 file.filename 会被 Werkzeug 截为 basename,
+                // 需单独传递相对路径用于 dirname 提取
+                formData.append('file_paths', f.webkitRelativePath || f.name);
             }
             formData.append('project_id', document.getElementById('uploadProject').value);
             formData.append('module_id', document.getElementById('uploadModule').value);
             formData.append('version', document.getElementById('uploadVersion').value);
             formData.append('data_type', document.getElementById('uploadDataType').value);
+            formData.append('module_name_source', document.getElementById('uploadModuleNameSource').value);
+            formData.append('filename_suffixes', document.getElementById('uploadFilenameSuffixes').value);
+            // Run 备注: 附带 full_dir (区分同 module+version 下的不同 run 目录)
+            if (document.getElementById('uploadDataType').value === 'notes') {
+                const fd = document.getElementById('uploadFullDir').value.trim();
+                if (fd) formData.append('full_dir', fd);
+            }
+            // 上传时是否立即标记为已发布
+            const markReleased = document.getElementById('uploadMarkReleased');
+            if (markReleased && markReleased.checked) {
+                formData.append('mark_released', '1');
+            }
 
             const result = document.getElementById('uploadResult');
             const url = isPreview ? '/api/admin/upload_csv_preview' : '/api/admin/upload';
@@ -527,7 +825,7 @@
                             <td>${fr.total_rows || '-'}</td>
                             <td>${fr.parsed || '-'}</td>
                             <td style="color:#2e7d32;">${fr.would_create || 0}</td>
-                            <td style="color:#1565c0;">${fr.would_update || 0}</td>
+                            <td style="color:var(--color-primary);">${fr.would_update || 0}</td>
                             <td style="color:#c62828;">${fr.would_skip || 0}</td>
                             <td style="color:${fr.warning_count > 0 ? '#e65100' : '#2e7d32'};">${fr.warning_count || 0}</td>
                         </tr>`;
@@ -554,7 +852,7 @@
                         });
                         html += '</tbody></table></div>';
                     }
-                    html += `<div style="margin-top:12px;color:#666;font-size:12px;">确认无误后，点击"上传并导入"正式写入数据库。</div>`;
+                    html += `<div style="margin-top:12px;color:var(--color-text-secondary);font-size:12px;">确认无误后，点击"上传并导入"正式写入数据库。</div>`;
                 } else if (data.file_results && data.file_results.length > 0) {
                     const isPower = data.data_type === 'power';
                     const headerCols = isPower
@@ -586,58 +884,175 @@
                 result.innerHTML = `<div class="flash-message flash-error">${data.error || '上传失败'}</div>`;
             }
         }
+    }
 
-        // ---- 批量创建模块 ----
-        async function batchCreateModules() {
-            const projectId = document.getElementById('batchProject').value;
-            const moduleListText = document.getElementById('batchModuleList').value.trim();
+    // ---- 批量创建模块 ----
+    async function batchCreateModules() {
+        const projectId = document.getElementById('batchProject').value;
+        const moduleListText = document.getElementById('batchModuleList').value.trim();
 
-            if (!projectId) { alert('请选择项目'); return; }
-            if (!moduleListText) { alert('请输入模块名称列表'); return; }
+        if (!projectId) { alert('请选择项目'); return; }
+        if (!moduleListText) { alert('请输入模块名称列表'); return; }
 
-            const result = document.getElementById('batchResult');
-            result.innerHTML = '<div class="flash-message">创建中...</div>';
+        const result = document.getElementById('batchResult');
+        result.innerHTML = '<div class="flash-message">创建中...</div>';
 
-            const resp = await fetch('/api/admin/modules/batch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `project_id=${projectId}&module_list=${encodeURIComponent(moduleListText)}`
-            });
-            const data = await resp.json();
+        const resp = await fetch('/api/admin/modules/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `project_id=${projectId}&module_list=${encodeURIComponent(moduleListText)}`
+        });
+        const data = await resp.json();
 
-            if (resp.ok && data.ok) {
-                let html = `<div class="flash-message flash-success">${data.message}</div>`;
-                if (data.created && data.created.length > 0) {
-                    html += `<div style="margin-top:8px; font-size:13px;"><strong>已创建:</strong> ${data.created.join(', ')}</div>`;
-                }
-                if (data.skipped && data.skipped.length > 0) {
-                    html += `<div style="margin-top:4px; font-size:13px; color:#999;"><strong>已跳过(已存在):</strong> ${data.skipped.join(', ')}</div>`;
-                }
-                result.innerHTML = html;
-                document.getElementById('batchModuleList').value = '';
-                await loadProjects();
-            } else {
-                result.innerHTML = `<div class="flash-message flash-error">${data.error || '创建失败'}</div>`;
+        if (resp.ok && data.ok) {
+            let html = `<div class="flash-message flash-success">${data.message}</div>`;
+            if (data.created && data.created.length > 0) {
+                html += `<div style="margin-top:8px; font-size:13px;"><strong>已创建:</strong> ${data.created.join(', ')}</div>`;
             }
+            if (data.skipped && data.skipped.length > 0) {
+                html += `<div style="margin-top:4px; font-size:13px; color:var(--color-text-secondary);"><strong>已跳过(已存在):</strong> ${data.skipped.join(', ')}</div>`;
+            }
+            result.innerHTML = html;
+            document.getElementById('batchModuleList').value = '';
+            await loadProjects();
+        } else {
+            result.innerHTML = `<div class="flash-message flash-error">${data.error || '创建失败'}</div>`;
         }
+    }
 
-        // ---- 记录管理 ----
-        async function loadRecords() {
-            const projId = document.getElementById('recordFilterProject').value;
-            let url = '/api/qor_data?';
-            if (projId) url += `project_ids=${projId}&`;
+    // ---- 补充 FlopCount (block_qor.csv) ----
+    function setupBlockQorForm() {
+        const fileInput = document.getElementById('blockQorFile');
+        const dirCheckbox = document.getElementById('blockQorDirMode');
+        const fileListDiv = document.getElementById('blockQorFileList');
 
-            const resp = await fetch(url);
-            const records = await resp.json();
-            const tbody = document.getElementById('recordTableBody');
+        // 整目录上传切换
+        dirCheckbox.onchange = function () {
+            const newInput = document.createElement('input');
+            newInput.type = 'file';
+            newInput.id = 'blockQorFile';
+            newInput.accept = '.csv';
+            newInput.multiple = true;
+            newInput.required = true;
+            newInput.style.flex = '1';
+            if (this.checked) {
+                newInput.setAttribute('webkitdirectory', '');
+                newInput.setAttribute('directory', '');
+            }
+            newInput.onchange = fileInput.onchange;
+            fileInput.parentNode.replaceChild(newInput, fileInput);
+        };
 
-            if (records.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="11" class="empty-state">暂无数据</td></tr>';
+        // 文件列表显示
+        fileInput.onchange = function () {
+            const files = this.files;
+            if (!files || files.length === 0) {
+                fileListDiv.innerHTML = '';
+                return;
+            }
+            const csvFiles = [];
+            for (let f of files) {
+                if (f.name.toLowerCase().endsWith('.csv')) csvFiles.push(f);
+            }
+            let html = `已选择 ${files.length} 个文件 (其中 ${csvFiles.length} 个 CSV):<ul style="margin:4px 0; padding-left:20px; max-height:180px; overflow-y:auto;">`;
+            for (let f of csvFiles.slice(0, 50)) {
+                html += `<li>${f.webkitRelativePath || f.name} <span style="color:var(--color-text-secondary);">(${(f.size / 1024).toFixed(1)} KB)</span></li>`;
+            }
+            if (csvFiles.length > 50) {
+                html += `<li>... 还有 ${csvFiles.length - 50} 个文件</li>`;
+            }
+            html += '</ul>';
+            fileListDiv.innerHTML = html;
+        };
+
+        // 表单提交
+        document.getElementById('blockQorForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const result = document.getElementById('blockQorResult');
+            const activeInput = document.getElementById('blockQorFile');
+            const projId = document.getElementById('blockQorProject').value;
+
+            const files = activeInput.files;
+            if (!files || files.length === 0) {
+                result.innerHTML = '<div class="flash-message flash-error">请选择 CSV 文件</div>';
                 return;
             }
 
-            tbody.innerHTML = records.map(r => `
+            const formData = new FormData();
+            let csvCount = 0;
+            const filePaths = [];
+            for (let f of files) {
+                if (f.name.toLowerCase().endsWith('.csv')) {
+                    formData.append('files', f);
+                    filePaths.push(f.webkitRelativePath || f.name);
+                    csvCount++;
+                }
+            }
+            if (csvCount === 0) {
+                result.innerHTML = '<div class="flash-message flash-error">未选择 CSV 文件</div>';
+                return;
+            }
+            filePaths.forEach(p => formData.append('file_paths', p));
+            if (projId) formData.append('project_id', projId);
+
+            result.innerHTML = '<div class="flash-message">补充中，请稍候...</div>';
+            try {
+                const resp = await fetch('/api/admin/upload_block_qor', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const data = await resp.json();
+                if (resp.ok && data.ok) {
+                    let html = `<div class="flash-message flash-success">${data.message}</div>`;
+                    html += `<div style="margin-top:8px; font-size:13px;">`;
+                    html += `文件数: ${data.file_count}，更新: ${data.updated_count}，未匹配: ${data.missed_count}，冲突: ${data.conflict_count}`;
+                    html += `</div>`;
+                    // 每个文件的详情
+                    for (let fr of (data.file_results || [])) {
+                        html += `<div style="margin-top:8px; padding:8px; background:var(--color-surface-hover); border-radius:4px; font-size:12px;">`;
+                        html += `<strong>${fr.filename}</strong>`;
+                        if (!fr.ok) {
+                            html += ` <span style="color:#c62828;">错误: ${fr.error}</span>`;
+                        } else {
+                            html += ` 更新:${fr.updated} 未匹配:${fr.missed} 冲突:${fr.conflict} 跳过(无Flop):${fr.skipped_no_flop} 总行:${fr.total_rows}`;
+                            if (fr.missed_samples && fr.missed_samples.length > 0) {
+                                html += `<br><span style="color:var(--color-text-secondary);">未匹配示例: ${fr.missed_samples.join(', ')}</span>`;
+                            }
+                            if (fr.conflict_samples && fr.conflict_samples.length > 0) {
+                                html += `<br><span style="color:#e65100;">冲突示例(同 full_dir 多条): ${fr.conflict_samples.join(', ')}</span>`;
+                            }
+                        }
+                        html += `</div>`;
+                    }
+                    result.innerHTML = html;
+                } else {
+                    result.innerHTML = `<div class="flash-message flash-error">${data.error || '补充失败'}</div>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<div class="flash-message flash-error">请求失败: ${err.message}</div>`;
+            }
+        };
+    }
+
+    // ---- 记录管理 ----
+    async function loadRecords() {
+        const projId = document.getElementById('recordFilterProject').value;
+        let url = '/api/qor_data?';
+        if (projId) url += `project_ids=${projId}&`;
+
+        const resp = await fetch(url);
+        const records = await resp.json();
+        const tbody = document.getElementById('recordTableBody');
+
+        if (records.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="13" class="empty-state">暂无数据</td></tr>';
+            updateReleaseSelectionInfo();
+            return;
+        }
+
+        tbody.innerHTML = records.map(r => `
         <tr>
+            <td><input type="checkbox" class="release-checkbox" value="${r.id}" onchange="updateReleaseSelectionInfo()"></td>
             <td>${r.id}</td>
             <td>${r.project_name || '-'}</td>
             <td>${r.module_name || '-'}</td>
@@ -648,64 +1063,200 @@
             <td>${r.power_total != null ? r.power_total.toFixed(3) : '-'}</td>
             <td>${r.cell_count || '-'}</td>
             <td>${r.recorded_at ? new Date(r.recorded_at).toLocaleString('zh-CN') : '-'}</td>
-            <td><button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button></td>
+            <td>
+                ${r.is_released
+                ? '<span class="tag tag-success">已发布</span>'
+                : '<span class="tag" style="background:#999;color:#fff;">未发布</span>'}
+            </td>
+            <td>
+                <button class="btn ${r.is_released ? 'btn-default' : 'btn-success'} btn-sm" onclick="toggleRelease(${r.id})">${r.is_released ? '撤回' : '发布'}</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button>
+            </td>
         </tr>
     `).join('');
-        }
+        updateReleaseSelectionInfo();
+    }
 
-        async function deleteRecord(id) {
-            if (!confirm('确认删除此记录？')) return;
-            const resp = await fetch(`/api/admin/records/${id}`, { method: 'DELETE' });
-            if (resp.ok) loadRecords();
-            else alert('删除失败');
-        }
+    async function deleteRecord(id) {
+        if (!confirm('确认删除此记录？')) return;
+        const resp = await fetch(`/api/admin/records/${id}`, { method: 'DELETE' });
+        if (resp.ok) loadRecords();
+        else alert('删除失败');
+    }
 
-        // ---- 用户管理 ----
-        async function loadUsers() {
-            const resp = await fetch('/api/admin/users');
-            const users = await resp.json();
-            const tbody = document.getElementById('userTableBody');
-            tbody.innerHTML = users.map(u => `
+    // ---- Release 管理 ----
+    async function toggleRelease(id) {
+        const resp = await fetch(`/api/admin/qor/${id}/release`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}'
+        });
+        if (resp.ok) loadRecords();
+        else {
+            const err = await resp.json().catch(() => ({}));
+            alert('操作失败: ' + (err.error || resp.status));
+        }
+    }
+
+    function toggleReleaseSelectAll(checkbox) {
+        document.querySelectorAll('.release-checkbox').forEach(cb => cb.checked = checkbox.checked);
+        updateReleaseSelectionInfo();
+    }
+
+    function getSelectedRecordIds() {
+        return Array.from(document.querySelectorAll('.release-checkbox:checked'))
+            .map(cb => parseInt(cb.value));
+    }
+
+    function updateReleaseSelectionInfo() {
+        const n = getSelectedRecordIds().length;
+        const el = document.getElementById('releaseSelectionInfo');
+        if (el) el.textContent = `已选 ${n} 条`;
+    }
+
+    async function batchRelease(released) {
+        const ids = getSelectedRecordIds();
+        if (ids.length === 0) {
+            alert('请先勾选要' + (released ? '发布' : '撤回') + '的记录');
+            return;
+        }
+        if (!confirm(`确认${released ? '发布' : '撤回'}选中的 ${ids.length} 条记录？`)) return;
+        const resp = await fetch('/api/admin/qor/batch_release', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ record_ids: ids, released: released })
+        });
+        if (resp.ok) {
+            const r = await resp.json();
+            alert(`成功${released ? '发布' : '撤回'} ${r.updated} 条`);
+            document.getElementById('releaseSelectAll').checked = false;
+            loadRecords();
+        } else {
+            const err = await resp.json().catch(() => ({}));
+            alert('批量操作失败: ' + (err.error || resp.status));
+        }
+    }
+
+    // ---- 用户管理 ----
+    async function loadUsers() {
+        const resp = await fetch('/api/admin/users');
+        const users = await resp.json();
+        const tbody = document.getElementById('userTableBody');
+        tbody.innerHTML = users.map(u => `
         <tr>
             <td>${u.id}</td>
             <td>${u.username}</td>
-            <td>${u.role === 'admin' ? '<span class="tag tag-danger">管理员</span>' : '<span class="tag tag-success">普通用户</span>'}</td>
+            <td>${u.role === 'admin' ? '<span class="tag tag-danger">管理员</span>' : (u.role === 'release' ? '<span class="tag" style="background:#3aa655;color:#fff;">Release</span>' : '<span class="tag tag-success">普通用户</span>')}</td>
             <td>${u.display_name || '-'}</td>
             <td>${u.created_at}</td>
+            <td>
+                <button class="btn btn-default btn-sm" onclick="showResetPassword(${u.id}, '${u.username.replace(/'/g, "\\'")}')">重置密码</button>
+            </td>
         </tr>
     `).join('');
+    }
+
+    function showAddUser() {
+        document.getElementById('newUsername').value = '';
+        document.getElementById('newPassword').value = '';
+        document.getElementById('newDisplayName').value = '';
+        document.getElementById('addUserModal').style.display = 'flex';
+    }
+
+    async function createUser() {
+        const username = document.getElementById('newUsername').value.trim();
+        const password = document.getElementById('newPassword').value;
+        const role = document.getElementById('newUserRole').value;
+        const display_name = document.getElementById('newDisplayName').value.trim();
+        if (!username || !password) { alert('用户名和密码不能为空'); return; }
+
+        const resp = await fetch('/api/admin/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, role, display_name })
+        });
+        if (resp.ok) {
+            closeModal('addUserModal');
+            loadUsers();
+        } else {
+            const err = await resp.json();
+            alert(err.error || '创建失败');
+        }
+    }
+
+    // ===================== 批量创建用户 =====================
+    function showBatchAddUser() {
+        document.getElementById('batchUsernames').value = '';
+        document.getElementById('batchDefaultPassword').value = '123456';
+        document.getElementById('batchUserResult').innerHTML = '';
+        document.getElementById('batchAddUserModal').style.display = 'flex';
+    }
+
+    async function batchCreateUsers() {
+        const usernames = document.getElementById('batchUsernames').value;
+        const password = document.getElementById('batchDefaultPassword').value;
+        const role = document.getElementById('batchUserRole').value;
+        if (!usernames.trim()) { alert('请输入用户名列表'); return; }
+
+        const resultDiv = document.getElementById('batchUserResult');
+        resultDiv.innerHTML = '<span style="color:var(--color-text-secondary);">创建中...</span>';
+
+        const resp = await fetch('/api/admin/users/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ usernames, password, role })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            resultDiv.innerHTML = `<div style="color:#c62828;">${data.error || '创建失败'}</div>`;
+            return;
         }
 
-        function showAddUser() {
-            document.getElementById('newUsername').value = '';
-            document.getElementById('newPassword').value = '';
-            document.getElementById('newDisplayName').value = '';
-            document.getElementById('addUserModal').style.display = 'flex';
+        const created = data.created || [];
+        const skipped = data.skipped || [];
+        let html = `<div style="padding:8px 12px;background:var(--color-surface-hover);border-radius:4px;font-size:13px;">
+            <b>完成:</b> 共 ${data.total} 个, 成功 ${created.length} 个, 跳过 ${skipped.length} 个, 默认密码: <code>${data.default_password}</code>
+        </div>`;
+        if (created.length > 0) {
+            html += `<div style="margin-top:6px;font-size:12px;color:var(--color-text-secondary);">已创建: ${created.map(u => u.username).join(', ')}</div>`;
         }
-
-        async function createUser() {
-            const username = document.getElementById('newUsername').value.trim();
-            const password = document.getElementById('newPassword').value;
-            const role = document.getElementById('newUserRole').value;
-            const display_name = document.getElementById('newDisplayName').value.trim();
-            if (!username || !password) { alert('用户名和密码不能为空'); return; }
-
-            const resp = await fetch('/api/admin/users', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password, role, display_name })
-            });
-            if (resp.ok) {
-                closeModal('addUserModal');
-                loadUsers();
-            } else {
-                const err = await resp.json();
-                alert(err.error || '创建失败');
-            }
+        if (skipped.length > 0) {
+            html += `<div style="margin-top:4px;font-size:12px;color:#c62828;">已跳过: ${skipped.map(s => `${s.username}(${s.reason})`).join(', ')}</div>`;
         }
+        resultDiv.innerHTML = html;
+        loadUsers();
+    }
 
-        function closeModal(id) {
-            document.getElementById(id).style.display = 'none';
+    // ===================== 管理员重置用户密码 =====================
+    function showResetPassword(userId, username) {
+        document.getElementById('resetPasswordUserId').value = userId;
+        document.getElementById('resetPasswordUsername').textContent = username;
+        document.getElementById('resetPasswordValue').value = '123456';
+        document.getElementById('resetPasswordModal').style.display = 'flex';
+    }
+
+    async function confirmResetPassword() {
+        const userId = document.getElementById('resetPasswordUserId').value;
+        const password = document.getElementById('resetPasswordValue').value;
+        if (!password) { alert('密码不能为空'); return; }
+        if (!confirm('确定重置该用户密码?')) return;
+
+        const resp = await fetch(`/api/admin/users/${userId}/reset-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.ok) {
+            closeModal('resetPasswordModal');
+            alert(`已重置 ${data.username} 的密码为: ${data.reset_to}`);
+        } else {
+            alert(data.error || '重置失败');
         }
+    }
+
+    function closeModal(id) {
+        document.getElementById(id).style.display = 'none';
+    }
 </script>
 {% endblock %}

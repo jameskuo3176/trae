@@ -1,0 +1,19 @@
+Fulldir,RunVersion,TagName,TotalArea,StdArea,MemoryArea,MacroArea,TotCellCount,StdCelCount,MemCount,MacroCount,TotalArea_bloat,StdArea_bloat,MemoryArea_bloat,TotalCount_bloat,StdCount_bloat,MemoryCount_bloat,No_Clock,FlopCount,FlopCount_incr,Comment
+/proj/decoder/module_alu/v1,run_20260101,run_20260101,542.0,492.0,0.0,50.0,702,700,0,2,600.0,540.0,0.0,750,740,0,0,120,0,initial version
+/proj/decoder/module_alu/v2,run_20260110,run_20260110,584.0,534.0,0.0,50.0,757,755,0,2,640.0,580.0,0.0,810,800,0,0,135,15,pipeline optimization
+/proj/decoder/module_alu/v3,run_20260120,run_20260120,574.4,524.4,0.0,50.0,744,742,0,2,630.0,570.0,0.0,800,790,0,0,132,-3,fixed timing
+/proj/decoder/module_alu/v4,run_20260201,run_20260201,560.6,510.6,0.0,50.0,725,723,0,2,615.0,555.0,0.0,780,770,0,0,128,-4,area reduction
+/proj/decoder/module_alu/v5,run_20260215,run_20260215,566.0,516.0,0.0,50.0,732,730,0,2,620.0,560.0,0.0,785,775,0,0,130,2,final release
+/proj/decoder/module_ctrl/v1,run_20260102,run_20260102,348.0,348.0,0.0,0.0,500,500,0,0,385.0,385.0,0.0,540,540,0,0,80,0,baseline
+/proj/decoder/module_ctrl/v2,run_20260112,run_20260112,369.6,369.6,0.0,0.0,528,528,0,0,405.0,405.0,0.0,570,570,0,0,88,8,added enable
+/proj/decoder/module_ctrl/v3,run_20260122,run_20260122,362.4,362.4,0.0,0.0,518,518,0,0,398.0,398.0,0.0,560,560,0,0,86,-2,cleanup
+/proj/decoder/module_ctrl/v4,run_20260202,run_20260202,360.0,360.0,0.0,0.0,515,515,0,0,395.0,395.0,0.0,555,555,0,0,85,-1,final
+/proj/decoder/module_mem/v1,run_20260103,run_20260103,1580.0,1380.0,200.0,0.0,1908,1500,8,0,1740.0,1520.0,200.0,2050,1610,8,0,400,0,initial
+/proj/decoder/module_mem/v2,run_20260113,run_20260113,1700.0,1500.0,200.0,0.0,2068,1620,8,0,1870.0,1640.0,200.0,2210,1740,8,0,440,40,added sram
+/proj/decoder/module_mem/v3,run_20260123,run_20260123,1685.0,1485.0,200.0,0.0,2048,1605,8,0,1850.0,1625.0,200.0,2190,1720,8,0,435,-5,timing fix
+/proj/decoder/module_misc/v1,run_20260106,run_20260106,265.0,240.0,0.0,25.0,351,350,0,1,295.0,265.0,0.0,380,378,0,0,50,0,mixed-case header test
+/proj/decoder/module_misc/v2,run_20260116,run_20260116,277.0,252.0,0.0,25.0,366,365,0,1,305.0,277.0,0.0,395,393,0,0,55,5,final
+/proj/decoder/module_rf/v1,run_20260105,run_20260105,820.0,720.0,0.0,100.0,1004,1000,0,4,905.0,790.0,0.0,1080,1070,0,0,200,0,rf baseline
+/proj/decoder/module_rf/v2,run_20260115,run_20260115,844.0,744.0,0.0,100.0,1034,1030,0,4,930.0,810.0,0.0,1110,1100,0,0,210,10,partial run missing area
+/proj/decoder/module_rf/v3,run_20260125,run_20260125,844.0,744.0,0.0,100.0,1034,1030,0,4,930.0,810.0,0.0,1110,1100,0,0,210,0,retimed
+/proj/decoder/module_notexist/v1,run_20260101,run_20260101,100.0,100.0,0.0,0.0,100,100,0,0,110.0,110.0,0.0,110,110,0,0,10,0,should be missed

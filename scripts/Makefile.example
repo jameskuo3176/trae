@@ -1,0 +1,141 @@
+# =========================================================================
+# QoR Recorder - DC 流程 Makefile 示例
+#
+# 用途: 在 Design Compiler 综合流程结束后, 自动提取 QoR 数据并上传
+#
+# 配置步骤:
+#   1. 复制本文件到你的 DC run 目录 (或项目根目录)
+#   2. 编辑下方 "用户配置" 区块的变量
+#   3. 把 API Key 存到 ~/.qor_api_key 文件 (chmod 600):
+#        echo "qor_xxxxxxxxxxxxxxxx" > ~/.qor_api_key
+#        chmod 600 ~/.qor_api_key
+#   4. 在 DC 综合结束后调用:
+#        make upload        # 仅上传 QoR 数据
+#        make upload-all    # 上传 QoR + 功耗 + 违例 + 备注
+#        make release       # 上传并标记为已发布 (对 release 账号可见)
+#
+# 依赖:
+#   - curl (上传数据)
+#   - bash + upload_qor.sh 脚本 (放在 PATH 或本目录的 scripts/)
+#   - Python (可选, 用于从 DC 报告提取 CSV)
+# =========================================================================
+
+# ---- 用户配置 (按需修改) ----
+# 服务器地址
+QOR_SERVER ?= http://localhost:5000
+
+# 项目 ID (在 Web 界面 "管理 → 项目" 中查看)
+PROJECT_ID ?= 1
+
+# 模块 ID (可选, 留空则从 CSV 的 module_name 列识别)
+MODULE_ID ?=
+
+# 版本标签: 默认用日期 + git short commit, 也可手动覆盖
+#   例: make upload VERSION=v1.0
+VERSION ?= $(shell date +%Y%m%d)_$(shell git rev-parse --short HEAD 2>/dev/null || echo nogit)
+
+# API Key 文件路径 (推荐用文件而非环境变量, 避免泄漏)
+API_KEY_FILE ?= $(HOME)/.qor_api_key
+
+# upload_qor.sh 脚本路径 (相对本 Makefile)
+UPLOAD_SCRIPT ?= ./scripts/upload_qor.sh
+
+# DC 报告生成的 CSV 文件名 (按实际流程调整)
+QOR_CSV      ?= qor_report.csv
+POWER_CSV    ?= power_report.csv
+NOTES_CSV    ?= run_notes.csv
+# 违例路径 CSV: 多个 timing group 用空格分隔, 文件名建议含 group 名
+VIOLATION_CSVS ?= $(wildcard violations/*_violations.csv)
+
+# 当前 run 目录 (用于 notes 的 full_dir, 区分多目录 run)
+RUN_DIR ?= $(PWD)
+
+# ---- 内部变量 (一般无需修改) ----
+# 从文件读取 API Key (若文件存在)
+API_KEY := $(shell test -f $(API_KEY_FILE) && cat $(API_KEY_FILE) 2>/dev/null)
+
+# 公共参数
+UPLOAD_BASE = $(UPLOAD_SCRIPT) $(PROJECT_ID) $(VERSION)
+UPLOAD_ENV = QOR_API_KEY=$(API_KEY) QOR_SERVER=$(QOR_SERVER)
+ifneq ($(MODULE_ID),)
+    UPLOAD_ENV += QOR_MODULE_ID=$(MODULE_ID)
+endif
+
+# 默认目标
+.DEFAULT_GOAL := help
+
+# ---- 伪目标 ----
+.PHONY: help upload upload-qor upload-power upload-violations upload-notes upload-all release check-api-key
+
+# ---- 帮助 ----
+help:
+	@echo "QoR Recorder 自动上传 Makefile"
+	@echo ""
+	@echo "目标:"
+	@echo "  upload           上传 QoR 数据 (默认)"
+	@echo "  upload-qor       同 upload"
+	@echo "  upload-power     上传功耗数据"
+	@echo "  upload-violations 上传违例路径 (所有 violations/*_violations.csv)"
+	@echo "  upload-notes     上传 Run 备注 (含 full_dir=$(RUN_DIR))"
+	@echo "  upload-all       上传以上全部 (按依赖顺序)"
+	@echo "  release          上传 QoR 并立即标记为已发布"
+	@echo "  check-api-key    检查 API Key 是否已配置"
+	@echo ""
+	@echo "可覆盖的变量 (用 make VAR=value 覆盖):"
+	@echo "  VERSION=$(VERSION)"
+	@echo "  PROJECT_ID=$(PROJECT_ID)"
+	@echo "  MODULE_ID=$(MODULE_ID)"
+	@echo "  QOR_SERVER=$(QOR_SERVER)"
+	@echo "  QOR_CSV=$(QOR_CSV)"
+	@echo "  POWER_CSV=$(POWER_CSV)"
+	@echo "  NOTES_CSV=$(NOTES_CSV)"
+	@echo "  RUN_DIR=$(RUN_DIR)"
+
+# ---- 检查 API Key ----
+check-api-key:
+	@if [ -z "$(API_KEY)" ]; then \
+	    echo "[ERROR] API Key 未配置"; \
+	    echo "  请执行: echo 'qor_xxxxxxxx' > $(API_KEY_FILE) && chmod 600 $(API_KEY_FILE)"; \
+	    exit 1; \
+	else \
+	    echo "[OK] API Key 已加载 ($(API_KEY_FILE))"; \
+	fi
+
+# ---- 上传 QoR 数据 ----
+# 依赖: qor_report.csv 文件必须存在
+upload: upload-qor
+upload-qor: $(QOR_CSV)
+	$(UPLOAD_ENV) $(UPLOAD_BASE) $(QOR_CSV) qor
+
+# ---- 上传功耗数据 ----
+upload-power: $(POWER_CSV)
+	$(UPLOAD_ENV) $(UPLOAD_BASE) $(POWER_CSV) power
+
+# ---- 上传违例路径 (多个 timing group) ----
+# 每个 CSV 文件单独上传, 文件名建议 <group>_violations.csv
+upload-violations: $(VIOLATION_CSVS)
+	@for f in $(VIOLATION_CSVS); do \
+	    echo "[INFO] 上传违例路径: $$f"; \
+	    $(UPLOAD_ENV) $(UPLOAD_BASE) "$$f" violation || exit 1; \
+	done
+
+# ---- 上传 Run 备注 ----
+# full_dir=$(RUN_DIR) 用于区分同 module+version 下的不同 run 目录
+# 重复 make upload-notes 会覆盖该 full_dir 的旧备注, 不会累积
+upload-notes: $(NOTES_CSV)
+	$(UPLOAD_ENV) $(UPLOAD_BASE) $(NOTES_CSV) notes --full-dir $(RUN_DIR)
+
+# ---- 上传全部 (推荐) ----
+# 顺序: QoR → 功耗 → 违例 → 备注
+# QoR 必须先上传 (其他类型按 module+version 关联到 QorRecord)
+upload-all: upload-qor upload-power upload-violations upload-notes
+	@echo "[OK] 全部上传完成: version=$(VERSION) dir=$(RUN_DIR)"
+
+# ---- 上传并标记为已发布 ----
+# release 账号 (对外团队) 立即可见
+release: $(QOR_CSV)
+	$(UPLOAD_ENV) $(UPLOAD_BASE) $(QOR_CSV) qor --release
+	@echo "[OK] 已上传并标记为已发布 (version=$(VERSION))"
+
+# ---- 文件存在性检查 (隐式规则) ----
+# 若 CSV 不存在, make 会因依赖失败并给出清晰错误

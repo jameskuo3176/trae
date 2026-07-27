@@ -16,7 +16,13 @@
 <div class="grid-3" style="margin-bottom: 16px;">
     <div class="stat-card">
         <div class="stat-value" id="statProjects">0</div>
-        <div class="stat-label">项目数</div>
+        <div class="stat-label">
+            项目数
+            {% if current_user.is_admin %}
+            <a href="{{ url_for('admin_page') }}#projects"
+                style="margin-left: 8px; font-size: 12px; color: var(--color-primary);">+ 管理</a>
+            {% endif %}
+        </div>
     </div>
     <div class="stat-card">
         <div class="stat-value" id="statModules">0</div>
@@ -108,12 +114,29 @@
                 <option value="line">折线图</option>
             </select>
         </div>
+        <div class="form-group" style="margin: 0;">
+            <label style="font-size: 12px; display: block;">布局</label>
+            <button id="layoutEditBtn" type="button" onclick="toggleLayoutEdit()"
+                style="font-size: 13px; padding: 4px 12px;">编辑布局</button>
+            <button id="layoutResetBtn" type="button" onclick="resetLayout()"
+                style="font-size: 13px; padding: 4px 12px; margin-left: 4px; display: none;">重置</button>
+        </div>
+        <div class="form-group" style="margin: 0;">
+            <label style="font-size: 12px; display: block;">主题</label>
+            <button id="resetThemeBtn" type="button" onclick="resetThemeToClassic()"
+                style="font-size: 13px; padding: 4px 12px;">恢复默认</button>
+        </div>
+        <div class="form-group" style="margin: 0;">
+            <label style="font-size: 12px; display: block;">CSV 导出</label>
+            <button id="mergeCsvBtn" type="button" onclick="viewMergedCsv()"
+                style="font-size: 13px; padding: 4px 12px;">合并导出 CSV</button>
+        </div>
     </div>
 </div>
 
-<!-- 图表区域 -->
-<div class="grid-2">
-    <div class="card">
+<!-- 图表区域 (自由拖拽布局) -->
+<div id="chartLayoutRoot" class="chart-layout-root">
+    <div class="card chart-card" data-chart-id="area">
         <div class="card-header">
             <span>面积对比</span>
             <select id="chartAreaMetric" multiple onchange="renderAreaChart()" class="btn-sm"
@@ -129,7 +152,7 @@
             <div id="chartArea" class="chart-container-small"></div>
         </div>
     </div>
-    <div class="card">
+    <div class="card chart-card" data-chart-id="timing">
         <div class="card-header">
             <span>时序分析 (按时钟)</span>
             <select id="chartTimingMetric" onchange="renderTimingChart()" class="btn-sm" style="font-size: 12px;">
@@ -142,10 +165,7 @@
             <div id="chartTiming" class="chart-container-small"></div>
         </div>
     </div>
-</div>
-
-<div class="grid-2">
-    <div class="card">
+    <div class="card chart-card" data-chart-id="power">
         <div class="card-header">
             <span>功耗分析 (多选对比)</span>
             <select id="chartPowerMetric" multiple onchange="renderPowerChart()" class="btn-sm"
@@ -160,23 +180,21 @@
             <div id="chartPower" class="chart-container-small"></div>
         </div>
     </div>
-    <div class="card">
+    <div class="card chart-card" data-chart-id="cell">
         <div class="card-header">
             <span>Cell 数量对比</span>
             <select id="chartCellMetric" multiple onchange="renderCellChart()" class="btn-sm"
                 style="font-size: 12px; min-width: 180px; min-height: 90px;">
                 <option value="cell_count" selected>总单元数</option>
                 <option value="sequential_cell_count" selected>时序单元数</option>
+                <option value="flop_count">寄存器数</option>
             </select>
         </div>
         <div class="card-body">
             <div id="chartCell" class="chart-container-small"></div>
         </div>
     </div>
-</div>
-
-<div class="grid-2">
-    <div class="card">
+    <div class="card chart-card" data-chart-id="pie" data-span="2">
         <div class="card-header">
             <span>面积构成 (饼图 - 多选对比)</span>
             <select id="chartPieTarget" multiple onchange="renderPieChart()" class="btn-sm"
@@ -187,11 +205,7 @@
             <div id="chartPie" class="chart-container-small" style="height: 380px;"></div>
         </div>
     </div>
-</div>
-
-<!-- 物理实现指标 -->
-<div class="grid-2">
-    <div class="card">
+    <div class="card chart-card" data-chart-id="mbb">
         <div class="card-header">
             <span>MBB 合并率 (%)</span>
         </div>
@@ -199,7 +213,7 @@
             <div id="chartMBB" class="chart-container-small"></div>
         </div>
     </div>
-    <div class="card">
+    <div class="card chart-card" data-chart-id="clock_gating">
         <div class="card-header">
             <span>时钟门控覆盖率 (%)</span>
         </div>
@@ -207,10 +221,7 @@
             <div id="chartClockGating" class="chart-container-small"></div>
         </div>
     </div>
-</div>
-
-<div class="grid-2">
-    <div class="card">
+    <div class="card chart-card" data-chart-id="utilization">
         <div class="card-header">
             <span>布局利用率 (%)</span>
         </div>
@@ -218,7 +229,7 @@
             <div id="chartUtilization" class="chart-container-small"></div>
         </div>
     </div>
-    <div class="card">
+    <div class="card chart-card" data-chart-id="congestion">
         <div class="card-header">
             <span>拥塞指数</span>
         </div>
@@ -226,104 +237,129 @@
             <div id="chartCongestion" class="chart-container-small"></div>
         </div>
     </div>
-</div>
+    <div class="card chart-card" data-chart-id="violations" data-span="2">
+        <div class="card-header">
+            <span>违例路径分析</span>
+            <div style="display: inline-block; font-size: 12px;">
+                <label>模式:</label>
+                <select id="violationMode" onchange="onViolationModeChange()" class="btn-sm" style="font-size: 12px;">
+                    <option value="single">单 run 查看</option>
+                    <option value="diff">两 run 对比</option>
+                </select>
+            </div>
+        </div>
+        <div class="card-body">
+            <!-- 模式切换区域 -->
+            <div id="vioSinglePanel">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
+                    <label>模块:</label>
+                    <select id="vioModule" onchange="onVioModuleChange()" class="btn-sm"
+                        style="font-size:12px;min-width:140px;">
+                        <option value="">选择模块</option>
+                    </select>
+                    <label>版本:</label>
+                    <select id="vioVersion" onchange="onVioVersionChange()" class="btn-sm"
+                        style="font-size:12px;min-width:120px;">
+                        <option value="">选择版本</option>
+                    </select>
+                    <label>Timing Group:</label>
+                    <select id="vioGroup" onchange="onVioGroupChange()" class="btn-sm"
+                        style="font-size:12px;min-width:140px;">
+                        <option value="">全部</option>
+                    </select>
+                    <label>CSV 文件:</label>
+                    <select id="vioSourceFile" onchange="loadViolations()" class="btn-sm"
+                        style="font-size:12px;min-width:160px;">
+                        <option value="">全部</option>
+                    </select>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
+                    <label>排序:</label>
+                    <select id="violationSortBy" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
+                        <option value="slack">Slack</option>
+                        <option value="depth">Depth</option>
+                        <option value="cell_delay">Cell Delay</option>
+                        <option value="net_delay">Net Delay</option>
+                    </select>
+                    <select id="violationSortOrder" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
+                        <option value="asc">升序(最差优先)</option>
+                        <option value="desc">降序</option>
+                    </select>
+                    <label style="margin-left:8px;">条数:</label>
+                    <select id="violationLimit" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
+                        <option value="100">100</option>
+                        <option value="500" selected>500</option>
+                        <option value="1000">1000</option>
+                        <option value="2000">2000</option>
+                    </select>
+                    <label style="margin-left:8px;">
+                        <input type="checkbox" id="violationBusGrouping" checked onchange="loadViolations()"> Bus 合并
+                    </label>
+                    <button class="btn btn-sm" onclick="loadViolations()">刷新</button>
+                </div>
+                <div id="violationSummary" style="margin-bottom: 12px;"></div>
+                <div id="violationTable" style="max-height: 500px; overflow: auto;"></div>
+            </div>
 
-<!-- 违例路径分析面板 -->
-<div class="card" style="margin-top: 16px;">
+            <!-- 对比模式 -->
+            <div id="vioDiffPanel" style="display:none;">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
+                    <label>模块:</label>
+                    <select id="diffModule" onchange="onDiffModuleChange()" class="btn-sm"
+                        style="font-size:12px;min-width:140px;">
+                        <option value="">选择模块</option>
+                    </select>
+                    <label>Timing Group:</label>
+                    <select id="diffGroup" onchange="loadViolationDiff()" class="btn-sm"
+                        style="font-size:12px;min-width:140px;">
+                        <option value="">全部</option>
+                    </select>
+                    <label>版本 A:</label>
+                    <select id="diffVersionA" onchange="loadViolationDiff()" class="btn-sm"
+                        style="font-size:12px;min-width:120px;">
+                        <option value="">选择版本A</option>
+                    </select>
+                    <label>版本 B:</label>
+                    <select id="diffVersionB" onchange="loadViolationDiff()" class="btn-sm"
+                        style="font-size:12px;min-width:120px;">
+                        <option value="">选择版本B</option>
+                    </select>
+                    <label style="margin-left:8px;">
+                        <input type="checkbox" id="diffBusGrouping" checked onchange="loadViolationDiff()"> Bus 合并
+                    </label>
+                    <button class="btn btn-sm" onclick="loadViolationDiff()">对比</button>
+                </div>
+                <div id="diffSummary" style="margin-bottom: 12px;"></div>
+                <div id="diffTable" style="max-height: 500px; overflow: auto;"></div>
+            </div>
+        </div>
+    </div>
+</div><!-- /chartLayoutRoot -->
+
+<!-- Run 备注表 -->
+<div id="notesCard" class="card chart-card" data-chart-id="notes" data-span="2">
     <div class="card-header">
-        <span>违例路径分析</span>
+        <span>Run 备注 / 参数</span>
         <div style="display: inline-block; font-size: 12px;">
-            <label>模式:</label>
-            <select id="violationMode" onchange="onViolationModeChange()" class="btn-sm" style="font-size: 12px;">
-                <option value="single">单 run 查看</option>
-                <option value="diff">两 run 对比</option>
+            <label>模块:</label>
+            <select id="notesModule" onchange="onNotesModuleChange()" class="btn-sm"
+                style="font-size:12px;min-width:140px;">
+                <option value="">选择模块</option>
             </select>
+            <label>版本:</label>
+            <select id="notesVersion" onchange="onNotesVersionChange()" class="btn-sm"
+                style="font-size:12px;min-width:120px;">
+                <option value="">选择版本</option>
+            </select>
+            <label>full_dir:</label>
+            <select id="notesFullDir" onchange="loadRunNotes()" class="btn-sm" style="font-size:12px;min-width:160px;">
+                <option value="">全部</option>
+            </select>
+            <button class="btn btn-sm" onclick="loadRunNotes()">刷新</button>
         </div>
     </div>
     <div class="card-body">
-        <!-- 模式切换区域 -->
-        <div id="vioSinglePanel">
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
-                <label>模块:</label>
-                <select id="vioModule" onchange="onVioModuleChange()" class="btn-sm"
-                    style="font-size:12px;min-width:140px;">
-                    <option value="">选择模块</option>
-                </select>
-                <label>版本:</label>
-                <select id="vioVersion" onchange="onVioVersionChange()" class="btn-sm"
-                    style="font-size:12px;min-width:120px;">
-                    <option value="">选择版本</option>
-                </select>
-                <label>Timing Group:</label>
-                <select id="vioGroup" onchange="onVioGroupChange()" class="btn-sm"
-                    style="font-size:12px;min-width:140px;">
-                    <option value="">全部</option>
-                </select>
-                <label>CSV 文件:</label>
-                <select id="vioSourceFile" onchange="loadViolations()" class="btn-sm"
-                    style="font-size:12px;min-width:160px;">
-                    <option value="">全部</option>
-                </select>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
-                <label>排序:</label>
-                <select id="violationSortBy" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
-                    <option value="slack">Slack</option>
-                    <option value="depth">Depth</option>
-                    <option value="cell_delay">Cell Delay</option>
-                    <option value="net_delay">Net Delay</option>
-                </select>
-                <select id="violationSortOrder" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
-                    <option value="asc">升序(最差优先)</option>
-                    <option value="desc">降序</option>
-                </select>
-                <label style="margin-left:8px;">条数:</label>
-                <select id="violationLimit" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
-                    <option value="100">100</option>
-                    <option value="500" selected>500</option>
-                    <option value="1000">1000</option>
-                    <option value="2000">2000</option>
-                </select>
-                <label style="margin-left:8px;">
-                    <input type="checkbox" id="violationBusGrouping" checked onchange="loadViolations()"> Bus 合并
-                </label>
-                <button class="btn btn-sm" onclick="loadViolations()">刷新</button>
-            </div>
-            <div id="violationSummary" style="margin-bottom: 12px;"></div>
-            <div id="violationTable" style="max-height: 500px; overflow: auto;"></div>
-        </div>
-
-        <!-- 对比模式 -->
-        <div id="vioDiffPanel" style="display:none;">
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
-                <label>模块:</label>
-                <select id="diffModule" onchange="onDiffModuleChange()" class="btn-sm"
-                    style="font-size:12px;min-width:140px;">
-                    <option value="">选择模块</option>
-                </select>
-                <label>Timing Group:</label>
-                <select id="diffGroup" onchange="loadViolationDiff()" class="btn-sm"
-                    style="font-size:12px;min-width:140px;">
-                    <option value="">全部</option>
-                </select>
-                <label>版本 A:</label>
-                <select id="diffVersionA" onchange="loadViolationDiff()" class="btn-sm"
-                    style="font-size:12px;min-width:120px;">
-                    <option value="">选择版本A</option>
-                </select>
-                <label>版本 B:</label>
-                <select id="diffVersionB" onchange="loadViolationDiff()" class="btn-sm"
-                    style="font-size:12px;min-width:120px;">
-                    <option value="">选择版本B</option>
-                </select>
-                <label style="margin-left:8px;">
-                    <input type="checkbox" id="diffBusGrouping" checked onchange="loadViolationDiff()"> Bus 合并
-                </label>
-                <button class="btn btn-sm" onclick="loadViolationDiff()">对比</button>
-            </div>
-            <div id="diffSummary" style="margin-bottom: 12px;"></div>
-            <div id="diffTable" style="max-height: 500px; overflow: auto;"></div>
-        </div>
+        <div id="notesTable" style="max-height: 500px; overflow: auto;"></div>
     </div>
 </div>
 
@@ -347,10 +383,42 @@
         </div>
     </div>
 </div>
+
+<!-- CSV 查看/导出弹窗 (单图 CSV + 合并 CSV 共用) -->
+<div id="csvModal"
+    style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:2000; justify-content:center; align-items:center;">
+    <div class="card" style="width: 90%; max-width: 1100px; max-height: 85vh; display:flex; flex-direction:column;">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span id="csvModalTitle">CSV 数据</span>
+            <span id="csvModalMeta" style="font-size:12px; color: var(--color-text-secondary);"></span>
+        </div>
+        <div class="card-body" style="flex:1; overflow:auto; padding:12px;">
+            <!-- 合并模式: 显示图表多选 -->
+            <div id="csvMergePicker"
+                style="display:none; margin-bottom:10px; padding:8px; background:var(--color-bg-secondary); border-radius:4px;">
+                <div style="font-size:12px; margin-bottom:6px;">选择要合并的图表 (按相同 Label 行对齐, 缺失值留空):</div>
+                <div id="csvMergeCheckboxes" style="display:flex; flex-wrap:wrap; gap:8px; font-size:12px;"></div>
+                <div style="margin-top:6px;">
+                    <button class="btn btn-sm" onclick="regenerateMergedCsv()">重新生成</button>
+                </div>
+            </div>
+            <textarea id="csvModalText" readonly
+                style="width:100%; height:420px; font-family:Consolas,'Courier New',monospace; font-size:12px; resize:vertical; padding:8px; box-sizing:border-box;"></textarea>
+        </div>
+        <div style="display: flex; gap: 8px; justify-content: flex-end; padding: 0 16px 12px;">
+            <button class="btn btn-default btn-sm" onclick="closeCsvModal()">关闭</button>
+            <button class="btn btn-sm" onclick="copyCsvFromModal()">复制</button>
+            <button class="btn btn-sm" onclick="downloadCsvFromModal()">下载 .csv</button>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
+    // 注入当前用户名, 用于 localStorage 布局按用户隔离
+    window.__currentUser__ = '{{ user.username if user else "default" }}';
+
     let allProjects = [];
     let currentData = [];
     let charts = {};
@@ -359,11 +427,353 @@
 
     // 初始化
     document.addEventListener('DOMContentLoaded', async () => {
+        // 先恢复用户保存的图表布局和卡片尺寸, 再渲染图表
+        restoreLayoutOrder();
+        restoreCardSizes();
+        injectCsvButtons();  // 给每个图表卡片头部注入 CSV 按钮
         await loadProjects();
         await refreshVersions();
         await loadDashboardList();
         loadDashboardData();
     });
+
+    // ===================== 图表自由拖拽布局 =====================
+    // 布局存储: localStorage 中按用户名隔离, 每个用户保存自己的卡片顺序
+    // 存储格式: ['area','timing','power',...]
+    let _layoutEditing = false;
+    let _draggedCard = null;
+
+    function _layoutStorageKey() {
+        // 当前用户名由 base.html 通过 current_user 注入, 见 saveConfig 实现
+        // 此处从 dashboardConfigSelect 的 data 或全局变量取
+        const user = (window.__currentUser__) || 'default';
+        return `qor_dashboard_layout_${user}`;
+    }
+
+    function _getCardOrder() {
+        const root = document.getElementById('chartLayoutRoot');
+        if (!root) return [];
+        return Array.from(root.querySelectorAll('.chart-card[data-chart-id]'))
+            .map(c => c.getAttribute('data-chart-id'));
+    }
+
+    function _setCardOrder(order) {
+        const root = document.getElementById('chartLayoutRoot');
+        if (!root || !order || order.length === 0) return;
+        const cards = {};
+        root.querySelectorAll('.chart-card[data-chart-id]').forEach(c => {
+            cards[c.getAttribute('data-chart-id')] = c;
+        });
+        // 按 order 顺序重新 append, 未在 order 中的卡片追加到末尾
+        order.forEach(id => {
+            if (cards[id]) {
+                root.appendChild(cards[id]);
+                delete cards[id];
+            }
+        });
+        Object.keys(cards).forEach(id => root.appendChild(cards[id]));
+    }
+
+    function saveLayout() {
+        try {
+            const order = _getCardOrder();
+            localStorage.setItem(_layoutStorageKey(), JSON.stringify(order));
+        } catch (e) {
+            console.error('saveLayout failed', e);
+        }
+    }
+
+    function restoreLayoutOrder() {
+        try {
+            const raw = localStorage.getItem(_layoutStorageKey());
+            if (!raw) return;
+            const order = JSON.parse(raw);
+            if (Array.isArray(order)) _setCardOrder(order);
+        } catch (e) {
+            console.error('restoreLayoutOrder failed', e);
+        }
+    }
+
+    function resetLayout() {
+        if (!confirm('确定要重置图表布局和尺寸为默认?')) return;
+        try {
+            localStorage.removeItem(_layoutStorageKey());
+            localStorage.removeItem(_sizesStorageKey());
+        } catch (e) { /* ignore */ }
+        // 刷新页面恢复默认顺序
+        location.reload();
+    }
+
+    function toggleLayoutEdit() {
+        _layoutEditing = !_layoutEditing;
+        const root = document.getElementById('chartLayoutRoot');
+        const btn = document.getElementById('layoutEditBtn');
+        const resetBtn = document.getElementById('layoutResetBtn');
+        if (!root || !btn) return;
+
+        if (_layoutEditing) {
+            root.classList.add('layout-editing');
+            btn.textContent = '完成布局';
+            btn.style.background = 'var(--color-primary)';
+            btn.style.color = '#fff';
+            if (resetBtn) resetBtn.style.display = '';
+            _attachDragHandlers();
+        } else {
+            root.classList.remove('layout-editing');
+            btn.textContent = '编辑布局';
+            btn.style.background = '';
+            btn.style.color = '';
+            if (resetBtn) resetBtn.style.display = 'none';
+            _detachDragHandlers();
+            saveLayout();
+            // 重新渲染所有图表以适应新尺寸
+            rerenderAllCharts();
+            // 重绘违例面板
+            if (typeof loadViolations === 'function') loadViolations();
+            if (typeof loadViolationDiff === 'function') loadViolationDiff();
+        }
+    }
+
+    function _attachDragHandlers() {
+        const root = document.getElementById('chartLayoutRoot');
+        if (!root) return;
+        root.querySelectorAll('.chart-card[data-chart-id]').forEach(card => {
+            card.setAttribute('draggable', 'true');
+            card.addEventListener('dragstart', _onDragStart);
+            card.addEventListener('dragend', _onDragEnd);
+            card.addEventListener('dragover', _onDragOver);
+            card.addEventListener('dragleave', _onDragLeave);
+            card.addEventListener('drop', _onDrop);
+            // 同步注入尺寸调整工具条 (编辑模式下 CSS 控制其显示)
+            _ensureResizeToolbar(card);
+        });
+    }
+
+    function _detachDragHandlers() {
+        const root = document.getElementById('chartLayoutRoot');
+        if (!root) return;
+        root.querySelectorAll('.chart-card[data-chart-id]').forEach(card => {
+            card.removeAttribute('draggable');
+            card.removeEventListener('dragstart', _onDragStart);
+            card.removeEventListener('dragend', _onDragEnd);
+            card.removeEventListener('dragover', _onDragOver);
+            card.removeEventListener('dragleave', _onDragLeave);
+            card.removeEventListener('drop', _onDrop);
+        });
+    }
+
+    function _onDragStart(e) {
+        _draggedCard = e.currentTarget;
+        e.currentTarget.classList.add('dragging');
+        // Firefox 需要 setData 才能触发 drag
+        if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', _draggedCard.getAttribute('data-chart-id')); } catch (_) { }
+        }
+    }
+
+    function _onDragEnd(e) {
+        e.currentTarget.classList.remove('dragging');
+        // 清理所有 drag-over 状态
+        document.querySelectorAll('.chart-card.drag-over, .chart-card.drop-indicator-before, .chart-card.drop-indicator-after')
+            .forEach(c => c.classList.remove('drag-over', 'drop-indicator-before', 'drop-indicator-after'));
+        _draggedCard = null;
+    }
+
+    function _onDragOver(e) {
+        if (!_draggedCard) return;
+        e.preventDefault(); // 允许 drop
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        const target = e.currentTarget;
+        if (target === _draggedCard) return;
+
+        // 判断鼠标位置在目标卡片的左半边还是右半边, 决定插入到之前还是之后
+        const rect = target.getBoundingClientRect();
+        const midX = rect.left + rect.width / 2;
+        const before = e.clientX < midX;
+
+        target.classList.remove('drop-indicator-before', 'drop-indicator-after');
+        target.classList.add('drag-over');
+        target.classList.add(before ? 'drop-indicator-before' : 'drop-indicator-after');
+    }
+
+    function _onDragLeave(e) {
+        const target = e.currentTarget;
+        // 仅当鼠标真正离开时清理 (避免子元素事件干扰)
+        if (!target.contains(e.relatedTarget)) {
+            target.classList.remove('drag-over', 'drop-indicator-before', 'drop-indicator-after');
+        }
+    }
+
+    function _onDrop(e) {
+        e.preventDefault();
+        const target = e.currentTarget;
+        if (!_draggedCard || target === _draggedCard) {
+            target.classList.remove('drag-over', 'drop-indicator-before', 'drop-indicator-after');
+            return;
+        }
+        const rect = target.getBoundingClientRect();
+        const midX = rect.left + rect.width / 2;
+        const before = e.clientX < midX;
+        const root = document.getElementById('chartLayoutRoot');
+        if (before) {
+            root.insertBefore(_draggedCard, target);
+        } else {
+            root.insertBefore(_draggedCard, target.nextSibling);
+        }
+        target.classList.remove('drag-over', 'drop-indicator-before', 'drop-indicator-after');
+    }
+    // ===================== /图表自由拖拽布局 =====================
+
+    // ===================== 卡片尺寸调整 (宽度/高度) =====================
+    // data-chart-id → echarts dom id 映射 (用于触发对应图表 resize)
+    const CHART_ID_TO_DOM = {
+        area: 'chartArea', timing: 'chartTiming', power: 'chartPower', cell: 'chartCell',
+        pie: 'chartPie', mbb: 'chartMBB', clock_gating: 'chartClockGating',
+        utilization: 'chartUtilization', congestion: 'chartCongestion',
+        // violations 是表格面板, 无 echarts 实例
+    };
+    const CARD_HEIGHT_OPTIONS = [280, 380, 500, 650];
+
+    // cardSizes: { chartId: { span: 1|2, height: number } }
+    let cardSizes = {};
+
+    function _sizesStorageKey() {
+        const user = (window.__currentUser__) || 'default';
+        return `qor_dashboard_sizes_${user}`;
+    }
+
+    function saveCardSizes() {
+        try {
+            localStorage.setItem(_sizesStorageKey(), JSON.stringify(cardSizes));
+        } catch (e) { console.error('saveCardSizes failed', e); }
+    }
+
+    function restoreCardSizes() {
+        try {
+            const raw = localStorage.getItem(_sizesStorageKey());
+            if (!raw) return;
+            cardSizes = JSON.parse(raw) || {};
+            // 应用到 DOM
+            Object.keys(cardSizes).forEach(id => {
+                const card = document.querySelector(`.chart-card[data-chart-id="${id}"]`);
+                if (card) _applyCardSize(card, cardSizes[id]);
+            });
+        } catch (e) {
+            console.error('restoreCardSizes failed', e);
+            cardSizes = {};
+        }
+    }
+
+    function _applyCardSize(card, size) {
+        if (!card || !size) return;
+        if (size.span === 2) {
+            card.setAttribute('data-span', '2');
+        } else {
+            card.removeAttribute('data-span');
+        }
+        // 高度只作用于 echarts 容器, 不影响违例面板的表格高度
+        const domId = CHART_ID_TO_DOM[card.getAttribute('data-chart-id')];
+        if (domId && size.height) {
+            const el = document.getElementById(domId);
+            if (el) el.style.height = size.height + 'px';
+        }
+    }
+
+    function _ensureResizeToolbar(card) {
+        if (card.querySelector('.resize-toolbar')) return;
+        const id = card.getAttribute('data-chart-id');
+        const tb = document.createElement('div');
+        tb.className = 'resize-toolbar';
+        tb.innerHTML = `
+            <span>宽</span>
+            <select onchange="_setCardSpan('${id}', this.value)" title="切换卡片宽度">
+                <option value="1">1列</option>
+                <option value="2">2列</option>
+            </select>
+            <span>高</span>
+            <select onchange="_setCardHeight('${id}', this.value)" title="切换卡片高度">
+                ${CARD_HEIGHT_OPTIONS.map(h => `<option value="${h}">${h}px</option>`).join('')}
+            </select>
+        `;
+        card.appendChild(tb);
+        // 阻止工具条上的交互触发卡片拖拽
+        tb.addEventListener('mousedown', e => e.stopPropagation());
+        tb.addEventListener('dragstart', e => e.preventDefault());
+        _syncResizeToolbar(card);
+    }
+
+    function _syncResizeToolbar(card) {
+        const id = card.getAttribute('data-chart-id');
+        const size = cardSizes[id] || { span: card.hasAttribute('data-span') ? 2 : 1, height: 380 };
+        const spanSel = card.querySelector('.resize-toolbar select:nth-of-type(1)');
+        const hSel = card.querySelector('.resize-toolbar select:nth-of-type(2)');
+        if (spanSel) spanSel.value = String(size.span);
+        if (hSel) hSel.value = String(size.height);
+    }
+
+    function _setCardSpan(id, span) {
+        const card = document.querySelector(`.chart-card[data-chart-id="${id}"]`);
+        if (!card) return;
+        span = parseInt(span, 10) === 2 ? 2 : 1;
+        cardSizes[id] = Object.assign({}, cardSizes[id] || {}, { span });
+        _applyCardSize(card, cardSizes[id]);
+        saveCardSizes();
+        // 跨列变化后 echarts 需要重新计算尺寸
+        _resizeCardChart(id);
+    }
+
+    function _setCardHeight(id, h) {
+        const card = document.querySelector(`.chart-card[data-chart-id="${id}"]`);
+        if (!card) return;
+        h = parseInt(h, 10) || 380;
+        cardSizes[id] = Object.assign({}, cardSizes[id] || {}, { height: h });
+        _applyCardSize(card, cardSizes[id]);
+        saveCardSizes();
+        _resizeCardChart(id);
+    }
+
+    function _resizeCardChart(id) {
+        const domId = CHART_ID_TO_DOM[id];
+        if (!domId) return;
+        // echarts 实例可能尚未渲染, 用 try/catch 包裹
+        try {
+            if (charts[domId] && charts[domId].resize) charts[domId].resize();
+        } catch (e) { /* ignore */ }
+    }
+    // ===================== /卡片尺寸调整 =====================
+
+    // ===================== 主题一键恢复默认 =====================
+    async function resetThemeToClassic() {
+        if (!confirm('确定将主题恢复为默认经典模式?')) return;
+        try {
+            const resp = await fetch('/api/user/theme', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reset: true })
+            });
+            const data = await resp.json();
+            if (resp.ok && data.ok) {
+                // 应用默认主题
+                if (typeof _applyTheme === 'function' && data.theme) {
+                    _applyTheme(data.theme);
+                }
+                // 同步内联 style 标签, 避免刷新前回归
+                const styleEl = document.getElementById('user-theme-style');
+                if (styleEl && data.theme) {
+                    const t = data.theme;
+                    styleEl.textContent = `:root{--color-primary:${t.primary};--color-primary-gradient-end:${t.primary_gradient_end};--color-background:${t.background};--color-surface:${t.surface};--color-surface-hover:${t.surface_hover};--color-text:${t.text};--color-text-secondary:${t.text_secondary};--color-border:${t.border};--color-navbar-text:${t.navbar_text};--color-navbar-text-active:${t.navbar_text_active};--theme-name:${t.name || 'classic'};}`;
+                }
+                alert('已恢复默认主题');
+            } else {
+                alert(data.error || '恢复失败');
+            }
+        } catch (e) {
+            console.error('resetThemeToClassic failed', e);
+            alert('恢复失败: ' + e.message);
+        }
+    }
+    // ===================== /主题一键恢复默认 =====================
 
     async function loadProjects() {
         const resp = await fetch('/api/projects');
@@ -492,17 +902,19 @@
         currentData = await resp.json();
         console.log('Dashboard data loaded:', currentData.length, 'records');
 
-        try { renderAreaChart(); } catch(e) { console.error('renderAreaChart error:', e); }
-        try { renderTimingChart(); } catch(e) { console.error('renderTimingChart error:', e); }
-        try { renderPowerChart(); } catch(e) { console.error('renderPowerChart error:', e); }
-        try { renderCellChart(); } catch(e) { console.error('renderCellChart error:', e); }
-        try { renderPieChart(); } catch(e) { console.error('renderPieChart error:', e); }
-        try { renderMBBChart(); } catch(e) { console.error('renderMBBChart error:', e); }
-        try { renderClockGatingChart(); } catch(e) { console.error('renderClockGatingChart error:', e); }
-        try { renderUtilizationChart(); } catch(e) { console.error('renderUtilizationChart error:', e); }
-        try { renderCongestionChart(); } catch(e) { console.error('renderCongestionChart error:', e); }
+        try { renderAreaChart(); } catch (e) { console.error('renderAreaChart error:', e); }
+        try { renderTimingChart(); } catch (e) { console.error('renderTimingChart error:', e); }
+        try { renderPowerChart(); } catch (e) { console.error('renderPowerChart error:', e); }
+        try { renderCellChart(); } catch (e) { console.error('renderCellChart error:', e); }
+        try { renderPieChart(); } catch (e) { console.error('renderPieChart error:', e); }
+        try { renderMBBChart(); } catch (e) { console.error('renderMBBChart error:', e); }
+        try { renderClockGatingChart(); } catch (e) { console.error('renderClockGatingChart error:', e); }
+        try { renderUtilizationChart(); } catch (e) { console.error('renderUtilizationChart error:', e); }
+        try { renderCongestionChart(); } catch (e) { console.error('renderCongestionChart error:', e); }
         // 加载违例路径
         initViolationPanels();
+        // 加载 Run 备注面板
+        initNotesPanel();
     }
 
     function getFilteredData() {
@@ -518,21 +930,25 @@
     }
 
     // 初始化违例面板的下拉框（使用顶部已加载的数据）
-    function initViolationPanels() {
-        // 同步模块列表到两个面板
-        const modules = currentData.map(r => ({ id: r.module_id, name: r.module_name }));
-        const uniqueMods = [];
-        const seen = new Set();
-        modules.forEach(m => {
-            if (m.id && !seen.has(m.id)) { seen.add(m.id); uniqueMods.push(m); }
-        });
+    // violationSummaryCache: 缓存 /api/violations/summary, 用于过滤空 module/version
+    let violationSummaryCache = { modules: [], versions_by_module: {} };
 
-        const vioMod = document.getElementById('vioModule');
-        const diffMod = document.getElementById('diffModule');
+    async function initViolationPanels() {
+        // 拉取违例按 module/version 聚合数据, 用于过滤空项
+        try {
+            const resp = await fetch('/api/violations/summary');
+            violationSummaryCache = await resp.json();
+        } catch (e) {
+            console.error('initViolationPanels: load summary failed', e);
+            violationSummaryCache = { modules: [], versions_by_module: {} };
+        }
+
+        // 只保留有违例数据的 module (count > 0)
+        const nonEmptyMods = violationSummaryCache.modules.filter(m => m.count > 0);
         const modOptions = '<option value="">选择模块</option>' +
-            uniqueMods.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
-        vioMod.innerHTML = modOptions;
-        diffMod.innerHTML = modOptions;
+            nonEmptyMods.map(m => `<option value="${m.module_id}">${m.module_name} (${m.count})</option>`).join('');
+        document.getElementById('vioModule').innerHTML = modOptions;
+        document.getElementById('diffModule').innerHTML = modOptions;
     }
 
     async function onVioModuleChange() {
@@ -545,11 +961,18 @@
         fileSel.innerHTML = '<option value="">全部</option>';
         if (!modId) { loadViolations(); return; }
 
-        // 加载该模块的版本列表
-        const resp = await fetch('/api/versions?module_ids=' + modId);
-        const versions = await resp.json();
+        // 用缓存的 summary 数据过滤空版本, 只显示有违例数据的版本
+        const allVersions = violationSummaryCache.versions_by_module[modId] || [];
+        const nonEmptyVersions = allVersions.filter(v => v.count > 0);
+        const totalCnt = allVersions.reduce((s, v) => s + v.count, 0);
         verSel.innerHTML = '<option value="">选择版本</option>' +
-            versions.map(v => `<option value="${v}">${v}</option>`).join('');
+            nonEmptyVersions.map(v => `<option value="${v.version}">${v.version} (${v.count})</option>`).join('');
+        // 若只有 1 个非空版本, 自动选中并加载下一级
+        if (nonEmptyVersions.length === 1) {
+            verSel.value = nonEmptyVersions[0].version;
+            await onVioVersionChange();
+            return;
+        }
         loadViolations();
     }
 
@@ -562,12 +985,20 @@
         fileSel.innerHTML = '<option value="">全部</option>';
         if (!modId || !ver) { loadViolations(); return; }
 
-        // 加载该模块+版本的 timing group 列表
+        // 加载该模块+版本的 timing group 列表 (新格式: [{name, count}])
         const params = new URLSearchParams({ module_ids: modId, versions: ver });
         const resp = await fetch('/api/violations/timing_groups?' + params.toString());
         const groups = await resp.json();
-        grpSel.innerHTML = '<option value="">全部</option>' +
-            groups.map(g => `<option value="${g}">${g}</option>`).join('');
+        // 自动过滤 count=0, 显示条数, 自动选中第一个非空项
+        const nonEmpty = groups.filter(g => g.count > 0);
+        grpSel.innerHTML = '<option value="">全部 (' + groups.reduce((s, g) => s + g.count, 0) + ')</option>' +
+            nonEmpty.map(g => `<option value="${g.name}">${g.name} (${g.count})</option>`).join('');
+        // 若只有 1 个非空 group, 自动选中, 减少用户切换
+        if (nonEmpty.length === 1) {
+            grpSel.value = nonEmpty[0].name;
+            await onVioGroupChange();
+            return;
+        }
         loadViolations();
     }
 
@@ -583,8 +1014,14 @@
         if (grp) params.set('timing_group', grp);
         const resp = await fetch('/api/violations/source_files?' + params.toString());
         const files = await resp.json();
-        fileSel.innerHTML = '<option value="">全部</option>' +
-            files.map(f => `<option value="${f}">${f}</option>`).join('');
+        // 新格式: [{name, count}], 已经过滤空名+按 count 倒序
+        const total = files.reduce((s, f) => s + f.count, 0);
+        fileSel.innerHTML = '<option value="">全部 (' + total + ')</option>' +
+            files.map(f => `<option value="${f.name}">${f.name} (${f.count})</option>`).join('');
+        // 若只有 1 个文件, 自动选中
+        if (files.length === 1) {
+            fileSel.value = files[0].name;
+        }
         loadViolations();
     }
 
@@ -593,7 +1030,7 @@
         const ver = document.getElementById('vioVersion').value;
 
         if (!modId) {
-            document.getElementById('violationSummary').innerHTML = '<span style="color:#999;font-size:12px;">请先选择模块</span>';
+            document.getElementById('violationSummary').innerHTML = '<span style="color:var(--color-text-secondary);font-size:12px;">请先选择模块</span>';
             document.getElementById('violationTable').innerHTML = '';
             return;
         }
@@ -616,7 +1053,7 @@
         // 渲染汇总
         let summaryHtml = '<div style="display:flex;gap:12px;flex-wrap:wrap;">';
         const totalShown = data.bus_grouping ? data.returned : data.total;
-        summaryHtml += `<div style="padding:8px 12px;background:#f0f4f8;border-radius:4px;font-size:13px;">
+        summaryHtml += `<div style="padding:8px 12px;background:var(--color-surface-hover);border-radius:4px;font-size:13px;">
             <b>总违例:</b> ${data.total} 条
             ${data.bus_grouping ? ` (Bus 合并后显示 ${data.returned})` : ''}
             ${data.total > data.limit ? ` <span style="color:#c62828;">(显示前 ${data.limit})</span>` : ''}
@@ -626,7 +1063,7 @@
 
         // 渲染表格
         if (!data.paths || data.paths.length === 0) {
-            document.getElementById('violationTable').innerHTML = '<div style="color:#999;padding:16px;">暂无违例路径数据</div>';
+            document.getElementById('violationTable').innerHTML = '<div style="color:var(--color-text-secondary);padding:16px;">暂无违例路径数据</div>';
             return;
         }
 
@@ -671,17 +1108,19 @@
         vbSel.innerHTML = '<option value="">选择版本B</option>';
         if (!modId) { loadViolationDiff(); return; }
 
-        // 加载版本和 timing group
-        const verResp = await fetch('/api/versions?module_ids=' + modId);
-        const versions = await verResp.json();
-        const verOpts = versions.map(v => `<option value="${v}">${v}</option>`).join('');
+        // 用缓存的 summary 数据过滤空版本, 只显示有违例数据的版本
+        const allVersions = violationSummaryCache.versions_by_module[modId] || [];
+        const nonEmptyVersions = allVersions.filter(v => v.count > 0);
+        const verOpts = nonEmptyVersions.map(v => `<option value="${v.version}">${v.version} (${v.count})</option>`).join('');
         vaSel.innerHTML = '<option value="">选择版本A</option>' + verOpts;
         vbSel.innerHTML = '<option value="">选择版本B</option>' + verOpts;
 
         const grpResp = await fetch('/api/violations/timing_groups?module_ids=' + modId);
         const groups = await grpResp.json();
+        // 新格式: [{name, count}], 只显示非空
+        const nonEmpty = groups.filter(g => g.count > 0);
         grpSel.innerHTML = '<option value="">全部</option>' +
-            groups.map(g => `<option value="${g}">${g}</option>`).join('');
+            nonEmpty.map(g => `<option value="${g.name}">${g.name} (${g.count})</option>`).join('');
         loadViolationDiff();
     }
 
@@ -692,7 +1131,7 @@
         const vb = document.getElementById('diffVersionB').value;
 
         if (!modId || !va || !vb) {
-            document.getElementById('diffSummary').innerHTML = '<span style="color:#999;font-size:12px;">请选择模块和两个版本</span>';
+            document.getElementById('diffSummary').innerHTML = '<span style="color:var(--color-text-secondary);font-size:12px;">请选择模块和两个版本</span>';
             document.getElementById('diffTable').innerHTML = '';
             return;
         }
@@ -722,13 +1161,13 @@
         const sa = s.version_a || {};
         const sb = s.version_b || {};
         let html = '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:13px;">';
-        html += `<div style="padding:8px 12px;background:#e3f2fd;border-radius:4px;">
+        html += `<div style="padding:8px 12px;background:var(--color-surface-hover);border:1px solid var(--color-border);border-radius:4px;">
             <b>${data.module_name}</b> | TG: ${data.timing_group || '全部'}
         </div>`;
-        html += `<div style="padding:8px 12px;background:#f0f4f8;border-radius:4px;">
+        html += `<div style="padding:8px 12px;background:var(--color-surface-hover);border-radius:4px;">
             <b>A (${va}):</b> ${sa.count || 0} 条, 最差 ${sa.worst_slack ?? '-'}, 均值 ${sa.avg_slack ?? '-'}
         </div>`;
-        html += `<div style="padding:8px 12px;background:#f0f4f8;border-radius:4px;">
+        html += `<div style="padding:8px 12px;background:var(--color-surface-hover);border-radius:4px;">
             <b>B (${vb}):</b> ${sb.count || 0} 条, 最差 ${sb.worst_slack ?? '-'}, 均值 ${sb.avg_slack ?? '-'}
         </div>`;
         html += `<div style="padding:8px 12px;background:#e8f5e9;border-radius:4px;color:#2e7d32;">
@@ -745,7 +1184,7 @@
 
         // 表格
         if (!data.paths || data.paths.length === 0) {
-            document.getElementById('diffTable').innerHTML = '<div style="color:#999;padding:16px;">暂无对比数据</div>';
+            document.getElementById('diffTable').innerHTML = '<div style="color:var(--color-text-secondary);padding:16px;">暂无对比数据</div>';
             return;
         }
 
@@ -842,8 +1281,8 @@
             if (tag) html += ` / ${tag}`;
             const displayVal = formatValue(p.value, unit);
             html += `<br/>${metricLabel}: <b>${displayVal}${unit ? ' ' + unit : ''}</b>`;
-            if (r.comment) html += `<br/><span style="color:#999;font-size:11px;">${r.comment}</span>`;
-            if (r.project_name) html += `<br/><span style="color:#999;font-size:11px;">项目: ${r.project_name}</span>`;
+            if (r.comment) html += `<br/><span style="color:var(--color-text-secondary);font-size:11px;">${r.comment}</span>`;
+            if (r.project_name) html += `<br/><span style="color:var(--color-text-secondary);font-size:11px;">项目: ${r.project_name}</span>`;
             return html;
         };
     }
@@ -992,7 +1431,7 @@
                 const v = p.value == null ? '-' : Math.round(p.value);
                 html += `<br/><span style="color:${p.color}">●</span> ${p.seriesName}: <b>${v} um2</b>`;
             });
-            if (r.comment) html += `<br/><span style="color:#999;font-size:11px;">${r.comment}</span>`;
+            if (r.comment) html += `<br/><span style="color:var(--color-text-secondary);font-size:11px;">${r.comment}</span>`;
             return html;
         };
 
@@ -1017,7 +1456,17 @@
     const CELL_METRIC_LABELS = {
         cell_count: '总单元数', sequential_cell_count: '时序单元数',
         instance_count: '实例数', net_count: '网络数',
+        flop_count: '寄存器数',
     };
+
+    // 从 record 提取 cell 指标值 (flop_count 来自 extra_fields.FlopCount)
+    function getCellValue(r, metric) {
+        if (metric === 'flop_count') {
+            const v = r && r.extra_fields && r.extra_fields.FlopCount;
+            return v == null ? null : Math.round(v);
+        }
+        return r[metric] == null ? null : Math.round(r[metric]);
+    }
 
     function renderCellChart() {
         const select = document.getElementById('chartCellMetric');
@@ -1035,7 +1484,7 @@
         const seriesList = metrics.map((metric, i) => ({
             name: CELL_METRIC_LABELS[metric] || metric,
             type: chartType,
-            data: data.map(r => r[metric] == null ? null : Math.round(r[metric])),
+            data: data.map(r => getCellValue(r, metric)),
             itemStyle: { color: COLORS[(i + 2) % COLORS.length] },
             label: getSeriesLabelConfig(),
             smooth: chartType === 'line',
@@ -1269,7 +1718,7 @@
                 }
             });
 
-            if (r.comment) html += `<br/><span style="color:#999;font-size:11px;">${r.comment}</span>`;
+            if (r.comment) html += `<br/><span style="color:var(--color-text-secondary);font-size:11px;">${r.comment}</span>`;
             return html;
         };
 
@@ -1442,7 +1891,7 @@
             const tag = r.tag || r.version;
             if (tag) html += ` / ${tag}`;
             html += `<br/>${title}: <b>${p.value}${unit ? ' ' + unit : ''}</b>`;
-            if (r.comment) html += `<br/><span style="color:#999;font-size:11px;">${r.comment}</span>`;
+            if (r.comment) html += `<br/><span style="color:var(--color-text-secondary);font-size:11px;">${r.comment}</span>`;
             return html;
         };
 
@@ -1476,7 +1925,95 @@
     }
 
     function renderCongestionChart() {
-        renderPhysicalMetricChart('chartCongestion', 'congestion', '拥塞指数', '', 0, false);
+        const chartId = 'chartCongestion';
+        const data = getFilteredData();
+        if (data.length === 0) return initChart(chartId, '暂无数据');
+
+        // 拥塞指数有 H(水平) / V(垂直) / B(Both 综合) 三个维度
+        // 优先使用新字段 congestion_h/v/b; 若全为空则回退到旧 congestion 字段
+        const series = [
+            { key: 'congestion_h', name: '水平 (H)', color: COLORS[0] },
+            { key: 'congestion_v', name: '垂直 (V)', color: COLORS[1] },
+            { key: 'congestion_b', name: '综合 (B)', color: COLORS[2] },
+        ];
+
+        // 检查是否有任意一个维度有数据
+        const hasNewData = data.some(r =>
+            r.congestion_h != null || r.congestion_v != null || r.congestion_b != null
+        );
+        const hasOldData = data.some(r => r.congestion != null);
+        if (!hasNewData && !hasOldData) return initChart(chartId, '暂无物理实现数据');
+
+        // 销毁旧图表
+        if (charts[chartId]) { charts[chartId].dispose(); delete charts[chartId]; }
+
+        const chart = echarts.init(document.getElementById(chartId), null, { renderer: 'svg' });
+        const labels = getLabels();
+        const orientation = getOrientation();
+        const chartType = getChartType();
+        const unit = '';
+        const axes = buildAxes(labels, unit);
+
+        // 构建序列数据: 若新字段全为空, 则用旧 congestion 作为 B 序列兜底
+        const buildSeries = (cfg) => {
+            const vals = data.map(r => {
+                let v = r[cfg.key];
+                // 旧数据兜底: 若 B 序列为空且没有 H/V, 用 congestion
+                if (cfg.key === 'congestion_b' && v == null && r.congestion_h == null && r.congestion_v == null) {
+                    v = r.congestion;
+                }
+                if (v == null) return null;
+                const n = parseFloat(v);
+                if (isNaN(n)) return null;
+                return Math.round(n * 1000) / 1000;
+            });
+            const s = {
+                name: cfg.name,
+                type: chartType,
+                data: vals,
+                itemStyle: { color: cfg.color },
+                label: getSeriesLabelConfig(),
+                smooth: chartType === 'line',
+            };
+            if (chartType === 'line') s.areaStyle = { opacity: 0.1 };
+            return s;
+        };
+
+        const allSeries = series.map(buildSeries);
+
+        const tooltipFormatter = function (params) {
+            const arr = Array.isArray(params) ? params : [params];
+            if (arr.length === 0) return '';
+            const idx = arr[0].dataIndex;
+            const r = data[idx];
+            if (!r) return arr[0].name;
+            let html = `<b>${r.module_name || ''}</b>`;
+            const tag = r.tag || r.version;
+            if (tag) html += ` / ${tag}`;
+            arr.forEach(p => {
+                if (p.value == null) return;
+                html += `<br/><span style="display:inline-block;width:10px;height:10px;background:${p.color};margin-right:4px;"></span>${p.seriesName}: <b>${p.value}</b>`;
+            });
+            if (r.comment) html += `<br/><span style="color:var(--color-text-secondary);font-size:11px;">${r.comment}</span>`;
+            return html;
+        };
+
+        const option = {
+            tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: tooltipFormatter },
+            legend: { bottom: 0, data: series.map(s => s.name), type: 'scroll' },
+            grid: getGridConfig(labels),
+            series: allSeries,
+        };
+        if (orientation === 'horizontal') {
+            option.xAxis = axes.valueAxis;
+            option.yAxis = axes.categoryAxis;
+        } else {
+            option.xAxis = axes.categoryAxis;
+            option.yAxis = axes.valueAxis;
+        }
+
+        chart.setOption(option, true);
+        charts[chartId] = chart;
     }
 
     function initChart(id, msg) {
@@ -1504,10 +2041,192 @@
     function updateChartHeight() {
         const h = document.getElementById('chartHeight').value + 'px';
         document.querySelectorAll('.chart-container-small').forEach(el => {
+            // 找到所属卡片, 若该卡片有单卡高度覆盖, 则跳过 (单卡优先于全局)
+            const card = el.closest('.chart-card[data-chart-id]');
+            const cid = card && card.getAttribute('data-chart-id');
+            if (cid && cardSizes[cid] && cardSizes[cid].height) return;
             el.style.height = h;
         });
         // 重新 resize
         Object.values(charts).forEach(c => c && c.resize && c.resize());
+    }
+
+    // ===================== Run 备注 / 参数 =====================
+
+    // notesVersionsCache: 缓存每个 module 的版本列表 (含 notes 计数)
+    let notesVersionsCache = {};
+
+    // 初始化备注面板: 用 allProjects 填充模块下拉框
+    function initNotesPanel() {
+        const modSel = document.getElementById('notesModule');
+        if (!modSel) return;
+
+        // 收集所有模块 (带项目名前缀, 便于区分)
+        let opts = '<option value="">选择模块</option>';
+        allProjects.forEach(p => {
+            p.modules.forEach(m => {
+                opts += `<option value="${m.id}">${p.name} / ${m.name}</option>`;
+            });
+        });
+        modSel.innerHTML = opts;
+
+        // 清空版本 / full_dir 下拉
+        document.getElementById('notesVersion').innerHTML = '<option value="">选择版本</option>';
+        document.getElementById('notesFullDir').innerHTML = '<option value="">全部</option>';
+
+        // 默认渲染空表
+        renderNotesTable([]);
+    }
+
+    // 模块切换: 加载该模块下的版本列表
+    async function onNotesModuleChange() {
+        const modId = document.getElementById('notesModule').value;
+        const verSel = document.getElementById('notesVersion');
+        const fdSel = document.getElementById('notesFullDir');
+        verSel.innerHTML = '<option value="">选择版本</option>';
+        fdSel.innerHTML = '<option value="">全部</option>';
+
+        if (!modId) {
+            renderNotesTable([]);
+            return;
+        }
+
+        try {
+            const vResp = await fetch(`/api/versions?module_ids=${modId}`);
+            const allVersions = await vResp.json();
+            notesVersionsCache[modId] = allVersions;
+
+            let opts = '<option value="">选择版本</option>';
+            allVersions.forEach(v => {
+                opts += `<option value="${v}">${v}</option>`;
+            });
+            verSel.innerHTML = opts;
+
+            // 若只有 1 个版本, 自动选中并加载下一级
+            if (allVersions.length === 1) {
+                verSel.value = allVersions[0];
+                await onNotesVersionChange();
+                return;
+            }
+        } catch (e) {
+            console.error('onNotesModuleChange error:', e);
+        }
+
+        renderNotesTable([]);
+    }
+
+    // 版本切换: 加载该 module+version 下已有备注的 full_dir 列表
+    async function onNotesVersionChange() {
+        const modId = document.getElementById('notesModule').value;
+        const ver = document.getElementById('notesVersion').value;
+        const fdSel = document.getElementById('notesFullDir');
+        fdSel.innerHTML = '<option value="">全部</option>';
+
+        if (!modId || !ver) {
+            renderNotesTable([]);
+            return;
+        }
+
+        try {
+            // 先拉取该 module+version 的全部备注, 提取不重复的 full_dir
+            const params = new URLSearchParams({ module_id: modId, version: ver });
+            const resp = await fetch('/api/run_notes?' + params.toString());
+            const notes = await resp.json();
+
+            const fullDirs = [];
+            const seen = new Set();
+            notes.forEach(n => {
+                const fd = n.full_dir || '';
+                if (fd && !seen.has(fd)) {
+                    seen.add(fd);
+                    fullDirs.push(fd);
+                }
+            });
+
+            let opts = '<option value="">全部 (' + notes.length + ')</option>';
+            fullDirs.forEach(fd => {
+                const cnt = notes.filter(n => (n.full_dir || '') === fd).length;
+                opts += `<option value="${escapeHtml(fd)}">${escapeHtml(fd)} (${cnt})</option>`;
+            });
+            fdSel.innerHTML = opts;
+
+            // 若只有 1 个 full_dir, 自动选中并加载
+            if (fullDirs.length === 1) {
+                fdSel.value = fullDirs[0];
+                loadRunNotes();
+                return;
+            }
+        } catch (e) {
+            console.error('onNotesVersionChange error:', e);
+        }
+
+        // 未自动加载时, 直接拉取当前选择
+        loadRunNotes();
+    }
+
+    // 加载选中模块+版本(可选 full_dir)的备注并渲染
+    async function loadRunNotes() {
+        const modId = document.getElementById('notesModule').value;
+        const ver = document.getElementById('notesVersion').value;
+        const fd = document.getElementById('notesFullDir').value;
+
+        if (!modId || !ver) {
+            renderNotesTable([]);
+            return;
+        }
+
+        try {
+            const params = new URLSearchParams({ module_id: modId, version: ver });
+            if (fd) params.set('full_dir', fd);
+            const resp = await fetch('/api/run_notes?' + params.toString());
+            const notes = await resp.json();
+            renderNotesTable(notes);
+        } catch (e) {
+            console.error('loadRunNotes error:', e);
+            renderNotesTable([]);
+        }
+    }
+
+    // 渲染备注表格
+    function renderNotesTable(notes) {
+        const container = document.getElementById('notesTable');
+        if (!container) return;
+
+        if (!notes || notes.length === 0) {
+            container.innerHTML = '<div style="color:var(--color-text-secondary);padding:16px;text-align:center;">暂无 Run 备注数据，请先选择模块和版本，或上传备注 CSV</div>';
+            return;
+        }
+
+        let html = '<table class="table" style="font-size:13px;width:100%;">';
+        html += '<thead><tr>';
+        html += '<th style="width:25%;">Item</th>';
+        html += '<th style="width:50%;">Description</th>';
+        html += '<th style="width:25%;">full_dir</th>';
+        html += '</tr></thead><tbody>';
+        notes.forEach((n, idx) => {
+            const rowStyle = idx % 2 === 0 ? '' : 'background:var(--color-surface-hover);';
+            const item = escapeHtml(n.item || '');
+            const desc = escapeHtml(n.description || '');
+            const fd = escapeHtml(n.full_dir || '');
+            html += `<tr style="${rowStyle}">`;
+            html += `<td style="font-weight:600;vertical-align:top;word-break:break-word;">${item}</td>`;
+            html += `<td style="vertical-align:top;word-break:break-word;white-space:pre-wrap;">${desc}</td>`;
+            html += `<td style="vertical-align:top;word-break:break-all;font-size:11px;color:var(--color-text-secondary);">${fd}</td>`;
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    }
+
+    // HTML 转义, 防止 XSS
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     // ---- Dashboard 配置管理 ----
@@ -1625,6 +2344,319 @@
         } else {
             alert('保存失败');
         }
+    }
+
+    // ===================== CSV 查看 / 导出 =====================
+    // 功能: 每个图表卡片可查看其原始 CSV; 顶部 "合并导出 CSV" 可将多个图表
+    // 的指标按 (module, version) 对齐合并为一张宽表, 方便保存和复制。
+    const POWER_METRIC_LABELS = {
+        power_total: '总功耗', power_internal: '内部功耗',
+        power_switching: '翻转功耗', power_leakage: '漏电功耗'
+    };
+    const _BASE_HEADERS = ['Label', 'Module', 'Version', 'Project'];
+
+    function _recordLabel(r) {
+        let label = r.module_name || '';
+        const tag = r.tag || r.version;
+        if (tag && tag !== 'v1') label += ` (${tag})`;
+        return label;
+    }
+
+    function _baseRow(r) {
+        return [_recordLabel(r), r.module_name || '', r.tag || r.version || '', r.project_name || ''];
+    }
+
+    // CSV 字段转义: 含逗号/引号/换行 -> 双引号包裹并转义内部引号
+    function csvEscape(v) {
+        if (v === null || v === undefined) return '';
+        const s = String(v);
+        if (/[",\n\r]/.test(s)) {
+            return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+    }
+
+    function rowsToCsv(headers, rows) {
+        const lines = [headers.map(csvEscape).join(',')];
+        rows.forEach(row => lines.push(row.map(csvEscape).join(',')));
+        return lines.join('\n');
+    }
+
+    // 各图表的 CSV 数据提取器, 返回 {headers, rows}
+    function _areaCsv() {
+        const metrics = Array.from(document.getElementById('chartAreaMetric').selectedOptions).map(o => o.value).filter(Boolean);
+        const data = getFilteredData();
+        const headers = [..._BASE_HEADERS, ...metrics.map(m => AREA_METRIC_LABELS[m] || m)];
+        const rows = data.map(r => [..._baseRow(r), ...metrics.map(m => r[m])]);
+        return { headers, rows };
+    }
+
+    function _cellCsv() {
+        const metrics = Array.from(document.getElementById('chartCellMetric').selectedOptions).map(o => o.value).filter(Boolean);
+        const data = getFilteredData();
+        const headers = [..._BASE_HEADERS, ...metrics.map(m => CELL_METRIC_LABELS[m] || m)];
+        const rows = data.map(r => [..._baseRow(r), ...metrics.map(m => getCellValue(r, m))]);
+        return { headers, rows };
+    }
+
+    function _powerCsv() {
+        const metrics = Array.from(document.getElementById('chartPowerMetric').selectedOptions).map(o => o.value).filter(Boolean);
+        const data = getFilteredData().filter(r => metrics.some(m => r[m] !== null && r[m] !== undefined));
+        const headers = [..._BASE_HEADERS, ...metrics.map(m => POWER_METRIC_LABELS[m] || m)];
+        const rows = data.map(r => [..._baseRow(r), ...metrics.map(m => r[m])]);
+        return { headers, rows };
+    }
+
+    function _timingCsv() {
+        const metric = document.getElementById('chartTimingMetric').value;  // wns / tns / period
+        const data = getFilteredData();
+        const clockSet = [];
+        data.forEach(r => {
+            const clocks = (r.extra_fields && r.extra_fields.clocks) || {};
+            Object.keys(clocks).forEach(k => { if (!clockSet.includes(k)) clockSet.push(k); });
+        });
+        let headers, rows;
+        if (clockSet.length === 0) {
+            const fallbackMetric = (metric === 'wns') ? 'wns_setup' : (metric === 'tns' ? 'tns_setup' : null);
+            if (!fallbackMetric) {
+                return { headers: [..._BASE_HEADERS], rows: data.map(r => _baseRow(r)) };
+            }
+            headers = [..._BASE_HEADERS, fallbackMetric];
+            rows = data.map(r => [..._baseRow(r), r[fallbackMetric]]);
+        } else {
+            headers = [..._BASE_HEADERS, ...clockSet.map(c => `${c}_${metric}`)];
+            rows = data.map(r => {
+                const clocks = (r.extra_fields && r.extra_fields.clocks) || {};
+                return [..._baseRow(r), ...clockSet.map(c => {
+                    const cd = clocks[c] || {};
+                    const v = cd[metric];
+                    return v === undefined ? null : v;
+                })];
+            });
+        }
+        return { headers, rows };
+    }
+
+    function _singleMetricCsv(metric, label) {
+        const data = getFilteredData();
+        const headers = [..._BASE_HEADERS, label];
+        const rows = data.map(r => [..._baseRow(r), r[metric]]);
+        return { headers, rows };
+    }
+
+    function _mbbCsv() { return _singleMetricCsv('mbb_ratio', 'MBB合并率'); }
+    function _clockGatingCsv() { return _singleMetricCsv('clock_gating_ratio', '时钟门控覆盖率'); }
+    function _utilizationCsv() { return _singleMetricCsv('utilization', '布局利用率'); }
+
+    function _congestionCsv() {
+        const data = getFilteredData();
+        const headers = [..._BASE_HEADERS, '拥塞H', '拥塞V', '拥塞B'];
+        const rows = data.map(r => {
+            let b = r.congestion_b;
+            if (b == null && r.congestion_h == null && r.congestion_v == null) b = r.congestion;
+            return [..._baseRow(r), r.congestion_h, r.congestion_v, b];
+        });
+        return { headers, rows };
+    }
+
+    function _pieCsv() {
+        const sel = document.getElementById('chartPieTarget');
+        const selectedIdx = Array.from(sel.selectedOptions).map(o => parseInt(o.value)).filter(x => !isNaN(x));
+        const data = getFilteredData();
+        const COMP = ['组合逻辑', '时序逻辑', '黑盒', '宏单元'];
+        const headers = [..._BASE_HEADERS, ...COMP];
+        const rows = selectedIdx.map(idx => {
+            const r = data[idx];
+            if (!r) return null;
+            return [..._baseRow(r), r.area_combinational, r.area_sequential, r.area_black_box, r.area_macro];
+        }).filter(Boolean);
+        return { headers, rows };
+    }
+
+    // 图表配置: chart-id -> {name, getCsv}
+    const _CHART_CSV_CONFIG = {
+        area:         { name: '面积对比',       getCsv: _areaCsv },
+        timing:       { name: '时序分析',       getCsv: _timingCsv },
+        power:        { name: '功耗分析',       getCsv: _powerCsv },
+        cell:         { name: 'Cell 数量',      getCsv: _cellCsv },
+        pie:          { name: '面积构成',       getCsv: _pieCsv },
+        mbb:          { name: 'MBB 合并率',     getCsv: _mbbCsv },
+        clock_gating: { name: '时钟门控覆盖率', getCsv: _clockGatingCsv },
+        utilization:  { name: '布局利用率',     getCsv: _utilizationCsv },
+        congestion:   { name: '拥塞指数',       getCsv: _congestionCsv },
+    };
+
+    // 给每个图表卡片头部注入 "CSV" 按钮 (violations / notes 已有表格, 不注入)
+    function injectCsvButtons() {
+        document.querySelectorAll('.chart-card[data-chart-id]').forEach(card => {
+            const id = card.getAttribute('data-chart-id');
+            if (!_CHART_CSV_CONFIG[id]) return;
+            const header = card.querySelector('.card-header');
+            if (!header || header.querySelector('.csv-btn')) return;
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-sm csv-btn';
+            btn.textContent = 'CSV';
+            btn.style.cssText = 'font-size:11px; padding:2px 8px; margin-left:8px;';
+            btn.title = '查看此图表的 CSV 数据';
+            btn.onclick = () => viewChartCsv(id);
+            header.appendChild(btn);
+        });
+    }
+
+    // 弹窗状态
+    let _csvModalState = { mode: 'single', csv: '', filename: 'chart.csv' };
+
+    function _openCsvModal(title, csvText, filename, meta, isMerge) {
+        document.getElementById('csvModalTitle').textContent = title;
+        document.getElementById('csvModalText').value = csvText;
+        document.getElementById('csvModalMeta').textContent = meta || '';
+        document.getElementById('csvMergePicker').style.display = isMerge ? '' : 'none';
+        _csvModalState = { mode: isMerge ? 'merge' : 'single', csv: csvText, filename: filename };
+        document.getElementById('csvModal').style.display = 'flex';
+    }
+
+    function closeCsvModal() {
+        document.getElementById('csvModal').style.display = 'none';
+    }
+
+    // 查看单个图表 CSV
+    function viewChartCsv(chartId) {
+        const cfg = _CHART_CSV_CONFIG[chartId];
+        if (!cfg) return;
+        const { headers, rows } = cfg.getCsv();
+        const csv = rowsToCsv(headers, rows);
+        const meta = `${rows.length} 行 × ${headers.length} 列`;
+        _openCsvModal(`CSV - ${cfg.name}`, csv, `${chartId}.csv`, meta, false);
+    }
+
+    // 查看合并 CSV (弹出选择器, 默认勾选主要图表)
+    function viewMergedCsv() {
+        const picker = document.getElementById('csvMergeCheckboxes');
+        picker.innerHTML = '';
+        const defaultChecked = ['area', 'timing', 'power', 'cell'];
+        Object.keys(_CHART_CSV_CONFIG).forEach(id => {
+            const label = document.createElement('label');
+            label.style.cssText = 'display:inline-flex; align-items:center; gap:4px;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = id;
+            cb.checked = defaultChecked.includes(id);
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(_CHART_CSV_CONFIG[id].name));
+            picker.appendChild(label);
+        });
+        regenerateMergedCsv();
+    }
+
+    function regenerateMergedCsv() {
+        const checked = Array.from(document.querySelectorAll('#csvMergeCheckboxes input:checked')).map(cb => cb.value);
+        if (checked.length === 0) {
+            document.getElementById('csvModalText').value = '';
+            document.getElementById('csvModalMeta').textContent = '请至少选择一个图表';
+            _csvModalState.csv = '';
+            document.getElementById('csvModal').style.display = 'flex';
+            return;
+        }
+        const merged = _buildMergedCsv(checked);
+        const meta = `${merged.rows.length} 行 × ${merged.headers.length} 列 (合并 ${checked.length} 个图表)`;
+        _csvModalState.csv = merged.csv;
+        _csvModalState.filename = 'merged_dashboard.csv';
+        document.getElementById('csvModalText').value = merged.csv;
+        document.getElementById('csvModalMeta').textContent = meta;
+        document.getElementById('csvModal').style.display = 'flex';
+    }
+
+    // 构建合并 CSV: 按 (module, version) 对齐行, 列 = base + 各图表指标并集
+    // 不同图表的行按 module+version 合并到同一行, 缺失值留空
+    function _buildMergedCsv(chartIds) {
+        // 收集各图表的 (headers, rows), 提取指标列 (跳过 _BASE_HEADERS)
+        const chartData = chartIds.map(id => {
+            const cfg = _CHART_CSV_CONFIG[id];
+            const { headers, rows } = cfg.getCsv();
+            const metricCols = [];
+            for (let i = _BASE_HEADERS.length; i < headers.length; i++) {
+                metricCols.push({ colIdx: i, name: headers[i] });
+            }
+            return { id, name: cfg.name, rows, metricCols };
+        });
+
+        // 合并指标列名: 重名时加图表名前缀避免冲突
+        const mergedMetricNames = [];
+        const usedNames = new Set();
+        chartData.forEach(cd => {
+            cd.metricCols.forEach(mc => {
+                let name = mc.name;
+                if (usedNames.has(name)) name = `${cd.name}-${name}`;
+                while (usedNames.has(name)) name = '_' + name;
+                usedNames.add(name);
+                mc.mergedName = name;
+                mergedMetricNames.push(mc.mergedName);
+            });
+        });
+
+        // 按 (module, version) 对齐行; key = `${module}||${version}`
+        const rowMap = new Map();
+        const rowOrder = [];
+        chartData.forEach(cd => {
+            cd.rows.forEach(row => {
+                const module = row[1] || '';
+                const version = row[2] || '';
+                const key = `${module}||${version}`;
+                if (!rowMap.has(key)) {
+                    rowMap.set(key, { base: row.slice(0, _BASE_HEADERS.length), metrics: {} });
+                    rowOrder.push(key);
+                }
+                cd.metricCols.forEach(mc => {
+                    rowMap.get(key).metrics[mc.mergedName] = row[mc.colIdx];
+                });
+            });
+        });
+
+        const headers = [..._BASE_HEADERS, ...mergedMetricNames];
+        const rows = rowOrder.map(key => {
+            const entry = rowMap.get(key);
+            return [...entry.base, ...mergedMetricNames.map(n => entry.metrics[n])];
+        });
+        return { headers, rows, csv: rowsToCsv(headers, rows) };
+    }
+
+    // 复制 CSV 到剪贴板
+    function copyCsvFromModal() {
+        const text = document.getElementById('csvModalText').value;
+        if (!text) { alert('暂无 CSV 数据'); return; }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert('已复制到剪贴板');
+            }).catch(() => _fallbackCopy(text));
+        } else {
+            _fallbackCopy(text);
+        }
+    }
+
+    function _fallbackCopy(text) {
+        const ta = document.getElementById('csvModalText');
+        ta.select();
+        try {
+            document.execCommand('copy');
+            alert('已复制到剪贴板');
+        } catch (e) {
+            alert('复制失败, 请手动选择文本复制');
+        }
+    }
+
+    // 下载 CSV 文件 (带 UTF-8 BOM, Excel 可正确识别中文)
+    function downloadCsvFromModal() {
+        const text = document.getElementById('csvModalText').value;
+        if (!text) { alert('暂无 CSV 数据'); return; }
+        const blob = new Blob(['\ufeff' + text], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = _csvModalState.filename || 'export.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
 
     window.addEventListener('resize', () => {

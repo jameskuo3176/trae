@@ -1,10 +1,100 @@
 """数据模型定义"""
+import json
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 
 db = SQLAlchemy()
+
+
+# =========================================================================
+# 主题预设
+# =========================================================================
+
+DEFAULT_THEME = {
+    # neon 主题: 深色霓虹科技风 (默认)
+    'name': 'neon',
+    'primary': '#00d4ff',
+    'primary_gradient_end': '#7b2ff7',
+    'background': '#0a0e1a',
+    'surface': '#131829',
+    'surface_hover': '#1a2138',
+    'text': '#e6f1ff',
+    'text_secondary': '#8b9bb4',
+    'border': '#1f2a44',
+    'navbar_text': 'rgba(230, 241, 255, 0.75)',
+    'navbar_text_active': '#00d4ff',
+}
+
+THEME_PRESETS = {
+    'classic': {
+        'name': 'classic',
+        'primary': '#1a237e',
+        'primary_gradient_end': '#283593',
+        'background': '#f0f2f5',
+        'surface': '#ffffff',
+        'surface_hover': '#fafafa',
+        'text': '#333333',
+        'text_secondary': '#666666',
+        'border': '#e8e8e8',
+        'navbar_text': 'rgba(255, 255, 255, 0.85)',
+        'navbar_text_active': '#ffffff',
+    },
+    'neon': DEFAULT_THEME,
+    'dark': {
+        'name': 'dark',
+        'primary': '#0d47a1',
+        'primary_gradient_end': '#1565c0',
+        'background': '#121212',
+        'surface': '#1e1e1e',
+        'surface_hover': '#2a2a2a',
+        'text': '#e0e0e0',
+        'text_secondary': '#9e9e9e',
+        'border': '#333333',
+        'navbar_text': 'rgba(255, 255, 255, 0.85)',
+        'navbar_text_active': '#ffffff',
+    },
+    'green': {
+        'name': 'green',
+        'primary': '#1b5e20',
+        'primary_gradient_end': '#2e7d32',
+        'background': '#f1f8e9',
+        'surface': '#ffffff',
+        'surface_hover': '#f5f5f5',
+        'text': '#333333',
+        'text_secondary': '#666666',
+        'border': '#e8e8e8',
+        'navbar_text': 'rgba(255, 255, 255, 0.85)',
+        'navbar_text_active': '#ffffff',
+    },
+    'purple': {
+        'name': 'purple',
+        'primary': '#4a148c',
+        'primary_gradient_end': '#6a1b9a',
+        'background': '#f3e5f5',
+        'surface': '#ffffff',
+        'surface_hover': '#f5f5f5',
+        'text': '#333333',
+        'text_secondary': '#666666',
+        'border': '#e8e8e8',
+        'navbar_text': 'rgba(255, 255, 255, 0.85)',
+        'navbar_text_active': '#ffffff',
+    },
+    'orange': {
+        'name': 'orange',
+        'primary': '#bf360c',
+        'primary_gradient_end': '#d84315',
+        'background': '#fff3e0',
+        'surface': '#ffffff',
+        'surface_hover': '#f5f5f5',
+        'text': '#333333',
+        'text_secondary': '#666666',
+        'border': '#e8e8e8',
+        'navbar_text': 'rgba(255, 255, 255, 0.85)',
+        'navbar_text_active': '#ffffff',
+    },
+}
 
 
 class User(UserMixin, db.Model):
@@ -14,8 +104,10 @@ class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(256), nullable=False)
-    role = db.Column(db.String(20), nullable=False, default='user')  # admin / user
+    role = db.Column(db.String(20), nullable=False, default='user')  # admin / user / release
     display_name = db.Column(db.String(120))
+    # 用户自定义主题 (JSON), null 时使用默认主题
+    theme = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     dashboards = db.relationship('UserDashboard', backref='user', lazy='dynamic')
@@ -29,6 +121,31 @@ class User(UserMixin, db.Model):
     @property
     def is_admin(self):
         return self.role == 'admin'
+
+    @property
+    def is_release(self):
+        """release 角色: 仅能查看已 release 的数据, 无管理权限"""
+        return self.role == 'release'
+
+    def get_theme(self):
+        """获取用户主题, 未设置时返回默认主题"""
+        if not self.theme:
+            return dict(DEFAULT_THEME)
+        try:
+            data = json.loads(self.theme)
+            if isinstance(data, str):
+                data = json.loads(data)
+            # 合并默认主题, 保证字段完整 (兼容历史数据 / 主题升级)
+            merged = dict(DEFAULT_THEME)
+            if isinstance(data, dict):
+                merged.update(data)
+            return merged
+        except (json.JSONDecodeError, TypeError):
+            return dict(DEFAULT_THEME)
+
+    def set_theme(self, theme_dict):
+        """设置用户主题"""
+        self.theme = json.dumps(theme_dict, ensure_ascii=False)
 
 
 class Project(db.Model):
@@ -136,7 +253,12 @@ class QorRecord(db.Model):
     mbb_ratio = db.Column(db.Float)           # Multi-Bit Flip-Flop 合并率 (%)
     clock_gating_ratio = db.Column(db.Float)  # 时钟门控覆盖率 (%)
     utilization = db.Column(db.Float)         # 布局利用率 (%)
-    congestion = db.Column(db.Float)          # 拥塞指数 (0-1 或 0-100)
+    # 拥塞指数 (0-1 或 0-100): H=水平, V=垂直, B=Both(综合)
+    # 旧字段 congestion 保留用于向后兼容, 新数据应使用 h/v/b 三字段
+    congestion = db.Column(db.Float)          # 拥塞指数 (旧, 等同于 B)
+    congestion_h = db.Column(db.Float)        # 水平拥塞指数 (Horizontal)
+    congestion_v = db.Column(db.Float)        # 垂直拥塞指数 (Vertical)
+    congestion_b = db.Column(db.Float)        # 综合拥塞指数 (Both)
 
     # ---- 额外字段 (JSON) ----
     extra_fields = db.Column(db.Text)  # JSON string
@@ -145,6 +267,12 @@ class QorRecord(db.Model):
     source_file = db.Column(db.String(500))
     recorded_at = db.Column(db.DateTime, default=datetime.utcnow)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # ---- Release 标记 ----
+    # True = 已对 release 角色账号可见 (对外发布); False/None = 仅内部可见
+    is_released = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    released_at = db.Column(db.DateTime)
+    released_by = db.Column(db.Integer, db.ForeignKey('users.id'))
 
     def to_dict(self):
         """转换为字典"""
@@ -191,9 +319,16 @@ class QorRecord(db.Model):
             'mbb_ratio': self.mbb_ratio,
             'clock_gating_ratio': self.clock_gating_ratio,
             'utilization': self.utilization,
+            # 拥塞指数: H=水平 / V=垂直 / B=Both
+            # 旧 congestion 字段保留; 若新字段为空则用旧 congestion 兜底 B (向后兼容)
             'congestion': self.congestion,
+            'congestion_h': self.congestion_h,
+            'congestion_v': self.congestion_v,
+            'congestion_b': self.congestion_b if self.congestion_b is not None else self.congestion,
             'source_file': self.source_file,
             'recorded_at': self.recorded_at.isoformat() if self.recorded_at else None,
+            'is_released': bool(self.is_released),
+            'released_at': self.released_at.isoformat() if self.released_at else None,
             'extra_fields': extra,
         }
         return result
@@ -255,6 +390,42 @@ class ViolationPath(db.Model):
             'et_fanin': self.et_fanin,
             'et_fanout': self.et_fanout,
             'source_file': self.source_file,
+        }
+
+
+class RunNote(db.Model):
+    """Run 备注/参数表
+
+    存储每个 module/version/full_dir 的重要修改与参数（item + description 键值对）。
+    关联到 QorRecord，继承其 is_released 可见性（release 账号只看已发布记录的备注）。
+    数据来源于用户上传的 2~3 列 CSV（item, description[, full_dir]）。
+    full_dir 用于区分同一 module+version 下不同目录的 run（例如多 corner / 多 sub-run）。
+    """
+    __tablename__ = 'run_notes'
+
+    id = db.Column(db.Integer, primary_key=True)
+    qor_record_id = db.Column(db.Integer, db.ForeignKey('qor_records.id'), nullable=False, index=True)
+    item = db.Column(db.String(500), nullable=False)
+    description = db.Column(db.Text)
+    seq = db.Column(db.Integer, default=0)  # 排序序号
+    source_file = db.Column(db.String(500))
+    # full_dir: 关联到 QorRecord.extra_fields.full_dir, 用于区分同 module+version 下的不同 run 目录
+    # 为空则表示该 module+version 下的通用备注（兼容老数据）
+    full_dir = db.Column(db.String(1000), index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    record = db.relationship('QorRecord', backref=db.backref('notes', cascade='all, delete-orphan'))
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'qor_record_id': self.qor_record_id,
+            'item': self.item,
+            'description': self.description,
+            'seq': self.seq,
+            'source_file': self.source_file,
+            'full_dir': self.full_dir,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 
 

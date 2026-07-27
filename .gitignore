@@ -51,5 +51,8 @@ instance/
 .coverage
 htmlcov/
 
+# 临时验证脚本 (开发期手动跑, 不入库)
+_test_*.py
+
 # 部署
 *.pid

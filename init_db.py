@@ -27,8 +27,8 @@ DB_PATH = os.path.join(BASE_DIR, 'qor_recorder.db')
 #     {CLOCK}_period, {CLOCK}_wns, {CLOCK}_tns, {CLOCK}_path
 # =========================================================================
 
-DEMO_CSV_TEMPLATE = """tag,full_dir,comment,reg_count,comb_count,macro_count,total_count,reg_area,comb_area,macro_area,stdcell_area,total_area,no_clock,SRAMCLK_period,SRAMCLK_wns,SRAMCLK_tns,SRAMCLK_path,CLK_CPU_period,CLK_CPU_wns,CLK_CPU_tns,CLK_CPU_path,mbb_ratio,clock_gating_ratio,utilization,congestion
-{tag},{full_dir},{comment},{reg_count},{comb_count},{macro_count},{total_count},{reg_area:.2f},{comb_area:.2f},{macro_area:.2f},{stdcell_area:.2f},{total_area:.2f},{no_clock},{sram_period:.2f},{sram_wns:.3f},{sram_tns:.3f},{sram_path},{cpu_period:.2f},{cpu_wns:.3f},{cpu_tns:.3f},{cpu_path},{mbb_ratio:.3f},{clock_gating_ratio:.3f},{utilization:.3f},{congestion:.3f}
+DEMO_CSV_TEMPLATE = """tag,full_dir,comment,reg_count,comb_count,macro_count,total_count,reg_area,comb_area,macro_area,stdcell_area,total_area,no_clock,SRAMCLK_period,SRAMCLK_wns,SRAMCLK_tns,SRAMCLK_path,CLK_CPU_period,CLK_CPU_wns,CLK_CPU_tns,CLK_CPU_path,mbb_ratio,clock_gating_ratio,utilization,congestion_h,congestion_v,congestion_b
+{tag},{full_dir},{comment},{reg_count},{comb_count},{macro_count},{total_count},{reg_area:.2f},{comb_area:.2f},{macro_area:.2f},{stdcell_area:.2f},{total_area:.2f},{no_clock},{sram_period:.2f},{sram_wns:.3f},{sram_tns:.3f},{sram_path},{cpu_period:.2f},{cpu_wns:.3f},{cpu_tns:.3f},{cpu_path},{mbb_ratio:.3f},{clock_gating_ratio:.3f},{utilization:.3f},{congestion_h:.3f},{congestion_v:.3f},{congestion_b:.3f}
 """
 
 
@@ -72,7 +72,12 @@ def _gen_csv_row(tag, module_name, version_idx, with_power=False):
     mbb_ratio = min(0.05 + version_idx * 0.12 + random.uniform(-0.03, 0.03), 0.95)
     clock_gating_ratio = min(0.1 + version_idx * 0.15 + random.uniform(-0.05, 0.05), 0.9)
     utilization = min(0.4 + version_idx * 0.05 + random.uniform(-0.08, 0.08), 0.92)
-    congestion = max(0.05, min(0.5 - version_idx * 0.03 + random.uniform(-0.05, 0.05), 0.6))
+    # 拥塞指数: H=水平, V=垂直, B=Both(综合, 通常为 max(H,V) 或加权)
+    base_cong = max(0.05, min(0.5 - version_idx * 0.03 + random.uniform(-0.05, 0.05), 0.6))
+    congestion_h = max(0.02, min(base_cong * random.uniform(0.8, 1.1), 0.95))
+    congestion_v = max(0.02, min(base_cong * random.uniform(0.9, 1.2), 0.95))
+    # B 取 H/V 较大者作为综合拥塞 (典型定义)
+    congestion_b = max(congestion_h, congestion_v)
 
     return DEMO_CSV_TEMPLATE.format(
         tag=tag,
@@ -99,7 +104,9 @@ def _gen_csv_row(tag, module_name, version_idx, with_power=False):
         mbb_ratio=mbb_ratio,
         clock_gating_ratio=clock_gating_ratio,
         utilization=utilization,
-        congestion=congestion,
+        congestion_h=congestion_h,
+        congestion_v=congestion_v,
+        congestion_b=congestion_b,
     )
 
 
@@ -182,12 +189,20 @@ def gen_demo_data():
                             cell_count=rec.get('cell_count'),
                             sequential_cell_count=rec.get('sequential_cell_count'),
                             source_file=f'{mod_name}_{tag}.csv',
-                            # 物理实现指标（从 extra_fields 中解析）
-                            mbb_ratio=float(extra.get('mbb_ratio')) if extra.get('mbb_ratio') else None,
-                            clock_gating_ratio=float(extra.get('clock_gating_ratio')) if extra.get('clock_gating_ratio') else None,
-                            utilization=float(extra.get('utilization')) if extra.get('utilization') else None,
-                            congestion=float(extra.get('congestion')) if extra.get('congestion') else None,
+                            # 物理实现指标（新解析器已识别到顶级字段；旧 CSV 则从 extra_fields 兜底）
+                            mbb_ratio=rec.get('mbb_ratio') or (float(extra.get('mbb_ratio')) if extra.get('mbb_ratio') else None),
+                            clock_gating_ratio=rec.get('clock_gating_ratio') or (float(extra.get('clock_gating_ratio')) if extra.get('clock_gating_ratio') else None),
+                            utilization=rec.get('utilization') or (float(extra.get('utilization')) if extra.get('utilization') else None),
+                            congestion=rec.get('congestion') or (float(extra.get('congestion')) if extra.get('congestion') else None),
+                            congestion_h=rec.get('congestion_h'),
+                            congestion_v=rec.get('congestion_v'),
+                            congestion_b=rec.get('congestion_b'),
                         )
+                    # 拥塞指数向后兼容同步 (congestion <-> congestion_b)
+                    if qor.congestion_b is not None and qor.congestion is None:
+                        qor.congestion = qor.congestion_b
+                    elif qor.congestion is not None and qor.congestion_b is None:
+                        qor.congestion_b = qor.congestion
                     # extra_fields 保存 comment, full_dir, stdcell_area, clocks 等
                     # 注意: parser 返回的 extra_fields 已是 JSON 字符串，直接赋值即可
                     qor.extra_fields = rec.get('extra_fields')
@@ -289,18 +304,26 @@ def init_database(with_demo=False):
             print('[OK] 数据库表已创建 (db.create_all)')
 
         # 创建默认管理员
+        # 注意: admin@2026 符合密码策略 (8+ 位, 含字母+数字), 首次登录后请立即修改
         if User.query.filter_by(username='admin').first() is None:
             admin = User(username='admin', role='admin', display_name='管理员')
-            admin.set_password('admin123')
+            admin.set_password('admin@2026')
             db.session.add(admin)
-            print('[OK] 默认管理员已创建 (用户名: admin, 密码: admin123)')
+            print('[OK] 默认管理员已创建 (用户名: admin, 密码: admin@2026)')
 
         # 创建默认普通用户
         if User.query.filter_by(username='user').first() is None:
             user = User(username='user', role='user', display_name='普通用户')
-            user.set_password('user123')
+            user.set_password('user@2026')
             db.session.add(user)
-            print('[OK] 默认普通用户已创建 (用户名: user, 密码: user123)')
+            print('[OK] 默认普通用户已创建 (用户名: user, 密码: user@2026)')
+
+        # 创建默认 release 账号 (对外只读, 仅可查看已发布数据)
+        if User.query.filter_by(username='release').first() is None:
+            rel = User(username='release', role='release', display_name='Release 客户')
+            rel.set_password('release@2026')
+            db.session.add(rel)
+            print('[OK] 默认 release 账号已创建 (用户名: release, 密码: release@2026)')
 
         db.session.commit()
 

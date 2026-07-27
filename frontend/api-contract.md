@@ -16,7 +16,7 @@
 POST /api/v1/auth/login
 Content-Type: application/json
 
-{"username": "admin", "password": "admin123"}
+{"username": "admin", "password": "admin@2026"}
 ```
 响应:
 ```json

@@ -32,6 +32,14 @@ METRIC_WORSEN_DIRECTION = {
     'power_leakage': True,
     'cell_count': True,
     'instance_count': True,
+    # 物理实现指标 (增大=恶化)
+    'mbb_ratio': False,           # 合并率/门控率/利用率: 增大反而更好
+    'clock_gating_ratio': False,
+    'utilization': False,
+    'congestion': True,           # 拥塞指数: 增大=恶化
+    'congestion_h': True,
+    'congestion_v': True,
+    'congestion_b': True,
 }
 
 

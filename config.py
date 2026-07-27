@@ -20,6 +20,7 @@
   3. 内置默认值
 """
 import os
+from datetime import timedelta
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
@@ -107,6 +108,9 @@ class Config:
     # 密钥
     SECRET_KEY = os.environ.get('SECRET_KEY', 'qor-recorder-dev-key-change-in-prod')
 
+    # 默认密钥指纹 (用于检测是否仍是出厂默认值)
+    _DEFAULT_SECRET_KEY = 'qor-recorder-dev-key-change-in-prod'
+
     # 文件上传
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB
@@ -127,3 +131,27 @@ class Config:
     HOST = os.environ.get('HOST', '0.0.0.0')
     PORT = int(os.environ.get('PORT', '5000'))
     DEBUG = os.environ.get('DEBUG', '0') == '1'
+
+    # =========================================================================
+    # Session / Cookie 安全配置
+    # =========================================================================
+    # HttpOnly: 阻止 JS 读取 cookie (防 XSS 窃取 session)
+    SESSION_COOKIE_HTTPONLY = True
+    # SameSite=Lax: 阻止跨站 POST 自动带 cookie (防 CSRF, 允许顶部导航)
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    # Secure: 仅 HTTPS 传输 (生产环境必须开启)
+    # 默认 False 兼容 HTTP 开发环境; 生产环境设置 SESSION_COOKIE_SECURE=1
+    SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', '0') == '1'
+    # Session 有效期 (默认 12 小时)
+    PERMANENT_SESSION_LIFETIME = timedelta(hours=int(os.environ.get('SESSION_LIFETIME_HOURS', '12')))
+    # Remember-Me cookie (若启用 flask-login remember)
+    REMEMBER_COOKIE_HTTPONLY = True
+    REMEMBER_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', '0') == '1'
+    REMEMBER_COOKIE_SAMESITE = 'Lax'
+
+    # =========================================================================
+    # 安全开关 (生产环境必须配置)
+    # =========================================================================
+    # 是否强制检查 SECRET_KEY (生产环境若仍是默认值则拒绝启动)
+    # 设 ENFORCE_SECRET_KEY=0 可关闭 (仅限本地调试)
+    ENFORCE_SECRET_KEY = os.environ.get('ENFORCE_SECRET_KEY', '1') == '1'
