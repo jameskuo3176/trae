@@ -47,11 +47,22 @@
                 </select>
             </div>
             <div class="form-group">
-                <label>模块 (多选) <input type="text" id="moduleSearch" placeholder="搜索..." oninput="filterModuleOptions()"
-                        style="margin-left:4px; padding:2px 6px; font-size:12px; width: 100px;"></label>
-                <select id="filterModules" multiple onchange="refreshVersions()"
-                    style="min-width: 280px; min-height: 90px;">
-                </select>
+                <label>模块 (多选)</label>
+                <div class="multi-select" id="multiSelectModules" data-target="filterModules" data-search="moduleSearch"
+                    data-render="renderModuleSelected">
+                    <!-- 已选标签胶囊区 -->
+                    <div class="ms-chips" id="moduleChips" onclick="focusModuleInput(event)"></div>
+                    <!-- 输入框,自带搜索 -->
+                    <div class="ms-input-wrap">
+                        <input type="text" id="moduleSearch" class="ms-input" placeholder="输入关键词搜索模块…"
+                            oninput="onMultiSelectSearch('Modules')" onfocus="onMultiSelectFocus('Modules')"
+                            onkeydown="onMultiSelectKey('Modules', event)">
+                    </div>
+                    <!-- 下拉选项 -->
+                    <div class="ms-dropdown" id="modulesDropdown" onclick="event.stopPropagation()"></div>
+                </div>
+                <!-- 隐藏的原生 select, 保留以兼容旧逻辑 -->
+                <select id="filterModules" multiple style="display:none;" onchange="refreshVersions()"></select>
                 <div style="margin-top: 4px; display: flex; gap: 6px;">
                     <button class="btn btn-sm" onclick="selectAllModules()"
                         style="font-size: 11px; padding: 2px 8px;">全选</button>
@@ -61,8 +72,17 @@
             </div>
             <div class="form-group">
                 <label>Tag / 版本 (多选)</label>
-                <select id="filterVersion" multiple style="min-width: 200px; min-height: 90px;">
-                </select>
+                <div class="multi-select" id="multiSelectVersions" data-target="filterVersion"
+                    data-search="versionSearch" data-render="renderVersionSelected">
+                    <div class="ms-chips" id="versionChips" onclick="focusVersionInput(event)"></div>
+                    <div class="ms-input-wrap">
+                        <input type="text" id="versionSearch" class="ms-input" placeholder="输入关键词搜索 Tag…"
+                            oninput="onMultiSelectSearch('Versions')" onfocus="onMultiSelectFocus('Versions')"
+                            onkeydown="onMultiSelectKey('Versions', event)">
+                    </div>
+                    <div class="ms-dropdown" id="versionsDropdown" onclick="event.stopPropagation()"></div>
+                </div>
+                <select id="filterVersion" multiple style="display:none;"></select>
                 <div style="margin-top: 4px; display: flex; gap: 6px;">
                     <button class="btn btn-sm" onclick="selectAllVersions()"
                         style="font-size: 11px; padding: 2px 8px;">全选</button>
@@ -808,8 +828,7 @@
 
         const params = new URLSearchParams();
         const projId = document.getElementById('filterProject').value;
-        const modSelect = document.getElementById('filterModules');
-        const selectedModules = Array.from(modSelect.selectedOptions).map(o => o.value).filter(Boolean);
+        const selectedModules = getMultiSelectValues('Modules').filter(Boolean);
 
         if (selectedModules.length > 0) {
             params.set('module_ids', selectedModules.join(','));
@@ -827,6 +846,7 @@
             if (previouslySelected.includes(v)) opt.selected = true;
             sel.appendChild(opt);
         });
+        renderVersionSelected();
     }
 
     function updateModuleOptions() {
@@ -840,45 +860,182 @@
                 });
             }
         });
-        // 清空搜索框
-        document.getElementById('moduleSearch').value = '';
+        // 清空搜索框 + 重新渲染胶囊
+        const kw = document.getElementById('moduleSearch');
+        if (kw) kw.value = '';
+        renderModuleSelected();
+        closeMultiSelectDropdown('Modules');
     }
 
-    // 模块搜索过滤（保留已选）
-    function filterModuleOptions() {
-        const keyword = document.getElementById('moduleSearch').value.toLowerCase();
-        const modSelect = document.getElementById('filterModules');
-        Array.from(modSelect.options).forEach(opt => {
-            if (!keyword) {
-                opt.style.display = '';
-            } else {
-                opt.style.display = opt.text.toLowerCase().includes(keyword) ? '' : 'none';
+    // ========== 标签式多选组件 ==========
+    // 通用: 打开/关闭下拉
+    function openMultiSelectDropdown(kind) {
+        document.getElementById(kind.toLowerCase() + 'Dropdown').classList.add('open');
+    }
+    function closeMultiSelectDropdown(kind) {
+        document.getElementById(kind.toLowerCase() + 'Dropdown').classList.remove('open');
+    }
+    // 点击外部关闭
+    document.addEventListener('click', function (e) {
+        ['modules', 'versions'].forEach(kind => {
+            const root = document.getElementById('multiSelect' + (kind === 'modules' ? 'Modules' : 'Versions'));
+            if (root && !root.contains(e.target)) {
+                document.getElementById(kind + 'Dropdown').classList.remove('open');
             }
         });
+    });
+    function focusModuleInput(e) {
+        if (e.target.classList.contains('ms-chip-x')) return;
+        document.getElementById('moduleSearch').focus();
+    }
+    function focusVersionInput(e) {
+        if (e.target.classList.contains('ms-chip-x')) return;
+        document.getElementById('versionSearch').focus();
     }
 
+    // 输入即搜索, 同步下拉
+    function onMultiSelectSearch(kind) {
+        const sel = document.getElementById('multiSelect' + kind);
+        const target = document.getElementById(sel.dataset.target);
+        const inputId = sel.dataset.search;
+        const kw = document.getElementById(inputId).value.trim().toLowerCase();
+        const dropdown = document.getElementById((kind === 'Modules' ? 'modules' : 'versions') + 'Dropdown');
+
+        // 已选值集合
+        const selectedSet = new Set(Array.from(target.selectedOptions).map(o => o.value));
+
+        // 过滤选项
+        const items = Array.from(target.options).filter(opt => {
+            if (selectedSet.has(opt.value)) return false; // 已选不显示
+            if (!kw) return true;
+            return opt.text.toLowerCase().includes(kw);
+        });
+
+        if (items.length === 0) {
+            dropdown.innerHTML = `<div class="ms-empty">无匹配项</div>`;
+        } else {
+            dropdown.innerHTML = items.map(opt => {
+                return `<div class="ms-option" data-value="${escapeAttr(opt.value)}" onclick="toggleMultiSelectOption('${kind}', '${escapeAttr(opt.value)}')">${escapeHtml(opt.text)}</div>`;
+            }).join('');
+        }
+        openMultiSelectDropdown(kind);
+    }
+
+    // 点击下拉项: 切换选中
+    function toggleMultiSelectOption(kind, value) {
+        const sel = document.getElementById('multiSelect' + kind);
+        const target = document.getElementById(sel.dataset.target);
+        const opt = Array.from(target.options).find(o => o.value === value);
+        if (!opt) return;
+        opt.selected = !opt.selected;
+        // 触发原生 change 让其他逻辑联动
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+        // 重渲染下拉(已选的不再显示)
+        onMultiSelectSearch(kind);
+        // 重新渲染胶囊
+        if (kind === 'Modules') renderModuleSelected();
+        else renderVersionSelected();
+    }
+
+    // 渲染已选标签胶囊
+    function renderModuleSelected() { renderMultiSelectChips('Modules'); }
+    function renderVersionSelected() { renderMultiSelectChips('Versions'); }
+    function renderMultiSelectChips(kind) {
+        const sel = document.getElementById('multiSelect' + kind);
+        const target = document.getElementById(sel.dataset.target);
+        const chipsBox = document.getElementById(
+            kind === 'Modules' ? 'moduleChips' : 'versionChips');
+        const selected = Array.from(target.selectedOptions);
+        if (selected.length === 0) {
+            chipsBox.innerHTML = `<span class="ms-placeholder">未选择</span>`;
+            return;
+        }
+        chipsBox.innerHTML = selected.map(opt =>
+            `<span class="ms-chip" title="${escapeAttr(opt.text)}">` +
+            `<span class="ms-chip-text">${escapeHtml(opt.text)}</span>` +
+            `<span class="ms-chip-x" onclick="removeMultiSelectChip('${kind}', '${escapeAttr(opt.value)}')">&times;</span>` +
+            `</span>`
+        ).join('');
+    }
+
+    // 移除某个已选项
+    function removeMultiSelectChip(kind, value) {
+        const sel = document.getElementById('multiSelect' + kind);
+        const target = document.getElementById(sel.dataset.target);
+        const opt = Array.from(target.options).find(o => o.value === value);
+        if (opt) {
+            opt.selected = false;
+            target.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (kind === 'Modules') renderModuleSelected();
+        else renderVersionSelected();
+    }
+
+    // 键盘支持: Enter 选中第一个匹配项, Backspace 在空输入时删最后一个
+    function onMultiSelectKey(kind, e) {
+        if (e.key === 'Enter') {
+            const dropdown = document.getElementById(
+                kind === 'Modules' ? 'modulesDropdown' : 'versionsDropdown');
+            const first = dropdown.querySelector('.ms-option');
+            if (first) {
+                toggleMultiSelectOption(kind, first.dataset.value);
+                e.preventDefault();
+            }
+        } else if (e.key === 'Backspace') {
+            const inputId = kind === 'Modules' ? 'moduleSearch' : 'versionSearch';
+            if (document.getElementById(inputId).value === '') {
+                const sel = document.getElementById('multiSelect' + kind);
+                const target = document.getElementById(sel.dataset.target);
+                const last = Array.from(target.selectedOptions).pop();
+                if (last) {
+                    removeMultiSelectChip(kind, last.value);
+                    e.preventDefault();
+                }
+            }
+        }
+    }
+
+    // 工具
+    function getMultiSelectValues(kind) {
+        const sel = document.getElementById('multiSelect' + kind);
+        const target = document.getElementById(sel.dataset.target);
+        return Array.from(target.selectedOptions).map(o => o.value);
+    }
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+    function escapeAttr(s) { return escapeHtml(s).replace(/'/g, '&#39;'); }
+
+    // 全选 / 清空 (改为基于隐藏 select, 保留旧按钮兼容)
     function selectAllModules() {
         const modSelect = document.getElementById('filterModules');
+        const kw = document.getElementById('moduleSearch').value.toLowerCase();
         Array.from(modSelect.options).forEach(opt => {
-            if (opt.style.display !== 'none') opt.selected = true;
+            if (!kw || opt.text.toLowerCase().includes(kw)) opt.selected = true;
         });
+        renderModuleSelected();
         refreshVersions();
     }
 
     function clearModuleSelection() {
         const modSelect = document.getElementById('filterModules');
         Array.from(modSelect.options).forEach(opt => opt.selected = false);
+        renderModuleSelected();
         refreshVersions();
     }
 
     function selectAllVersions() {
         const verSelect = document.getElementById('filterVersion');
         Array.from(verSelect.options).forEach(opt => opt.selected = true);
+        renderVersionSelected();
     }
 
     function clearVersionSelection() {
         const verSelect = document.getElementById('filterVersion');
         Array.from(verSelect.options).forEach(opt => opt.selected = false);
+        renderVersionSelected();
     }
 
     async function loadDashboardData() {
@@ -2230,15 +2387,18 @@
     }
 
     // ---- Dashboard 配置管理 ----
+    // 注意: 所有 /api/dashboard/* 接口在后端均已按 current_user.id 过滤,
+    // 用户间完全隔离, 不需要在前端做额外过滤。
     async function loadDashboardList() {
         const resp = await fetch('/api/dashboard/list');
         const configs = await resp.json();
         const sel = document.getElementById('dashboardConfigSelect');
-        sel.innerHTML = '<option value="">-- 加载已保存配置 --</option>';
+        sel.innerHTML = '<option value="">-- 加载已保存配置 (仅我的) --</option>';
         configs.forEach(c => {
             const def = c.is_default ? ' [默认]' : '';
             sel.innerHTML += `<option value="${c.id}">${c.name}${def}</option>`;
         });
+        return configs;
     }
 
     sel_onchange = async function () {
@@ -2249,8 +2409,23 @@
         applyConfig(config.config);
     }
 
+    // 进入页面: 自动加载当前用户的默认配置
+    async function loadDefaultConfigIfAny() {
+        const configs = await loadDashboardList();
+        const def = configs.find(c => c.is_default);
+        if (!def) return;
+        const sel = document.getElementById('dashboardConfigSelect');
+        sel.value = def.id;
+        const resp = await fetch(`/api/dashboard/${def.id}`);
+        if (!resp.ok) return;
+        const config = await resp.json();
+        applyConfig(config.config);
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('dashboardConfigSelect').addEventListener('change', sel_onchange);
+        // 自动恢复该用户的默认配置
+        loadDefaultConfigIfAny();
     });
 
     function applyConfig(config) {
@@ -2475,15 +2650,15 @@
 
     // 图表配置: chart-id -> {name, getCsv}
     const _CHART_CSV_CONFIG = {
-        area:         { name: '面积对比',       getCsv: _areaCsv },
-        timing:       { name: '时序分析',       getCsv: _timingCsv },
-        power:        { name: '功耗分析',       getCsv: _powerCsv },
-        cell:         { name: 'Cell 数量',      getCsv: _cellCsv },
-        pie:          { name: '面积构成',       getCsv: _pieCsv },
-        mbb:          { name: 'MBB 合并率',     getCsv: _mbbCsv },
+        area: { name: '面积对比', getCsv: _areaCsv },
+        timing: { name: '时序分析', getCsv: _timingCsv },
+        power: { name: '功耗分析', getCsv: _powerCsv },
+        cell: { name: 'Cell 数量', getCsv: _cellCsv },
+        pie: { name: '面积构成', getCsv: _pieCsv },
+        mbb: { name: 'MBB 合并率', getCsv: _mbbCsv },
         clock_gating: { name: '时钟门控覆盖率', getCsv: _clockGatingCsv },
-        utilization:  { name: '布局利用率',     getCsv: _utilizationCsv },
-        congestion:   { name: '拥塞指数',       getCsv: _congestionCsv },
+        utilization: { name: '布局利用率', getCsv: _utilizationCsv },
+        congestion: { name: '拥塞指数', getCsv: _congestionCsv },
     };
 
     // 给每个图表卡片头部注入 "CSV" 按钮 (violations / notes 已有表格, 不注入)

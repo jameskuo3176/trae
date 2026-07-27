@@ -997,6 +997,126 @@
     </style>
     {% endif %}
     {% block extra_head %}{% endblock %}
+    <style>
+        /* ========== 标签式多选组件 (multi-select) ========== */
+        .multi-select {
+            position: relative;
+            min-width: 280px;
+            background: var(--bg-input, #1e2738);
+            border: 1px solid var(--border-color, #2d3a52);
+            border-radius: 6px;
+            padding: 4px 6px;
+            cursor: text;
+            transition: border-color 0.15s;
+        }
+        .multi-select:hover,
+        .multi-select:focus-within {
+            border-color: var(--accent, #4f9eff);
+        }
+        .ms-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            min-height: 24px;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+        .ms-placeholder {
+            color: var(--text-muted, #6b7a90);
+            font-size: 12px;
+            padding: 2px 4px;
+        }
+        .ms-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: var(--accent-soft, rgba(79, 158, 255, 0.18));
+            color: var(--accent, #4f9eff);
+            border: 1px solid var(--accent, #4f9eff);
+            border-radius: 12px;
+            padding: 2px 4px 2px 8px;
+            font-size: 12px;
+            line-height: 1.4;
+            max-width: 100%;
+        }
+        .ms-chip-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 220px;
+        }
+        .ms-chip-x {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            cursor: pointer;
+            color: inherit;
+            font-size: 14px;
+            line-height: 1;
+            opacity: 0.7;
+            transition: all 0.15s;
+        }
+        .ms-chip-x:hover {
+            background: rgba(255, 80, 80, 0.25);
+            color: #ff6464;
+            opacity: 1;
+        }
+        .ms-input-wrap { display: block; }
+        .ms-input {
+            width: 100%;
+            border: none;
+            background: transparent;
+            color: var(--text-main, #e0e6f0);
+            font-size: 13px;
+            padding: 4px 2px;
+            outline: none;
+        }
+        .ms-input::placeholder {
+            color: var(--text-muted, #6b7a90);
+        }
+        .ms-dropdown {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            margin-top: 4px;
+            max-height: 280px;
+            overflow-y: auto;
+            background: var(--bg-card, #131a29);
+            border: 1px solid var(--border-color, #2d3a52);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            z-index: 1000;
+        }
+        .ms-dropdown.open { display: block; }
+        .ms-option {
+            padding: 6px 10px;
+            font-size: 13px;
+            color: var(--text-main, #e0e6f0);
+            cursor: pointer;
+            transition: background 0.1s;
+            word-break: break-all;
+        }
+        .ms-option:hover {
+            background: var(--accent-soft, rgba(79, 158, 255, 0.18));
+        }
+        .ms-option .ms-option-hl {
+            color: var(--accent, #4f9eff);
+            font-weight: 600;
+        }
+        .ms-empty {
+            padding: 12px;
+            text-align: center;
+            color: var(--text-muted, #6b7a90);
+            font-size: 12px;
+        }
+        /* 表单 group 适配: 让 label 在上, 多选框在下 */
+        .form-group .multi-select { display: block; }
+    </style>
 </head>
 
 <body data-theme="{{ (current_user.get_theme().name if current_user.is_authenticated else 'neon') }}">
