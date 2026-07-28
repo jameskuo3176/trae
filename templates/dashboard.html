@@ -76,7 +76,8 @@
                     data-search="versionSearch" data-render="renderVersionSelected">
                     <div class="ms-chips" id="versionChips" onclick="focusVersionInput(event)"></div>
                     <div class="ms-input-wrap">
-                        <input type="text" id="versionSearch" class="ms-input" placeholder="输入关键词搜索 Tag…"
+                        <input type="text" id="versionSearch" class="ms-input" placeholder="输入版本号" autocomplete="off"
+                            autocorrect="off" autocapitalize="off" spellcheck="false"
                             oninput="onMultiSelectSearch('Versions')" onfocus="onMultiSelectFocus('Versions')"
                             onkeydown="onMultiSelectKey('Versions', event)">
                     </div>
@@ -132,6 +133,7 @@
             <select id="chartDefaultType" onchange="rerenderAllCharts()" style="font-size: 13px;">
                 <option value="bar">柱状图</option>
                 <option value="line">折线图</option>
+                <option value="table">表格 (可排序)</option>
             </select>
         </div>
         <div class="form-group" style="margin: 0;">
@@ -150,6 +152,13 @@
             <label style="font-size: 12px; display: block;">CSV 导出</label>
             <button id="mergeCsvBtn" type="button" onclick="viewMergedCsv()"
                 style="font-size: 13px; padding: 4px 12px;">合并导出 CSV</button>
+        </div>
+        <div class="form-group" style="margin: 0;">
+            <label style="font-size: 12px; display: block;">全量合并</label>
+            <button id="combinedTableBtn" type="button" onclick="toggleCombinedTable()"
+                style="font-size: 13px; padding: 4px 12px;">合并表格视图</button>
+            <button id="dirAggregateBtn" type="button" onclick="toggleDirAggregate()"
+                style="font-size: 13px; padding: 4px 12px; margin-top: 4px;">目录聚合视图</button>
         </div>
     </div>
 </div>
@@ -257,103 +266,183 @@
             <div id="chartCongestion" class="chart-container-small"></div>
         </div>
     </div>
-    <div class="card chart-card" data-chart-id="violations" data-span="2">
-        <div class="card-header">
-            <span>违例路径分析</span>
-            <div style="display: inline-block; font-size: 12px;">
-                <label>模式:</label>
-                <select id="violationMode" onchange="onViolationModeChange()" class="btn-sm" style="font-size: 12px;">
-                    <option value="single">单 run 查看</option>
-                    <option value="diff">两 run 对比</option>
-                </select>
-            </div>
-        </div>
-        <div class="card-body">
-            <!-- 模式切换区域 -->
-            <div id="vioSinglePanel">
-                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
-                    <label>模块:</label>
-                    <select id="vioModule" onchange="onVioModuleChange()" class="btn-sm"
-                        style="font-size:12px;min-width:140px;">
-                        <option value="">选择模块</option>
-                    </select>
-                    <label>版本:</label>
-                    <select id="vioVersion" onchange="onVioVersionChange()" class="btn-sm"
-                        style="font-size:12px;min-width:120px;">
-                        <option value="">选择版本</option>
-                    </select>
-                    <label>Timing Group:</label>
-                    <select id="vioGroup" onchange="onVioGroupChange()" class="btn-sm"
-                        style="font-size:12px;min-width:140px;">
-                        <option value="">全部</option>
-                    </select>
-                    <label>CSV 文件:</label>
-                    <select id="vioSourceFile" onchange="loadViolations()" class="btn-sm"
-                        style="font-size:12px;min-width:160px;">
-                        <option value="">全部</option>
-                    </select>
-                </div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
-                    <label>排序:</label>
-                    <select id="violationSortBy" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
-                        <option value="slack">Slack</option>
-                        <option value="depth">Depth</option>
-                        <option value="cell_delay">Cell Delay</option>
-                        <option value="net_delay">Net Delay</option>
-                    </select>
-                    <select id="violationSortOrder" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
-                        <option value="asc">升序(最差优先)</option>
-                        <option value="desc">降序</option>
-                    </select>
-                    <label style="margin-left:8px;">条数:</label>
-                    <select id="violationLimit" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
-                        <option value="100">100</option>
-                        <option value="500" selected>500</option>
-                        <option value="1000">1000</option>
-                        <option value="2000">2000</option>
-                    </select>
-                    <label style="margin-left:8px;">
-                        <input type="checkbox" id="violationBusGrouping" checked onchange="loadViolations()"> Bus 合并
-                    </label>
-                    <button class="btn btn-sm" onclick="loadViolations()">刷新</button>
-                </div>
-                <div id="violationSummary" style="margin-bottom: 12px;"></div>
-                <div id="violationTable" style="max-height: 500px; overflow: auto;"></div>
-            </div>
+</div>
+<!-- /chartLayoutRoot -->
 
-            <!-- 对比模式 -->
-            <div id="vioDiffPanel" style="display:none;">
-                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
-                    <label>模块:</label>
-                    <select id="diffModule" onchange="onDiffModuleChange()" class="btn-sm"
-                        style="font-size:12px;min-width:140px;">
-                        <option value="">选择模块</option>
-                    </select>
-                    <label>Timing Group:</label>
-                    <select id="diffGroup" onchange="loadViolationDiff()" class="btn-sm"
-                        style="font-size:12px;min-width:140px;">
-                        <option value="">全部</option>
-                    </select>
-                    <label>版本 A:</label>
-                    <select id="diffVersionA" onchange="loadViolationDiff()" class="btn-sm"
-                        style="font-size:12px;min-width:120px;">
-                        <option value="">选择版本A</option>
-                    </select>
-                    <label>版本 B:</label>
-                    <select id="diffVersionB" onchange="loadViolationDiff()" class="btn-sm"
-                        style="font-size:12px;min-width:120px;">
-                        <option value="">选择版本B</option>
-                    </select>
-                    <label style="margin-left:8px;">
-                        <input type="checkbox" id="diffBusGrouping" checked onchange="loadViolationDiff()"> Bus 合并
-                    </label>
-                    <button class="btn btn-sm" onclick="loadViolationDiff()">对比</button>
-                </div>
-                <div id="diffSummary" style="margin-bottom: 12px;"></div>
-                <div id="diffTable" style="max-height: 500px; overflow: auto;"></div>
-            </div>
+<!-- 合并表格视图: 隐藏的整页表格, 显示时覆盖所有图表卡片 -->
+<div id="combinedTableWrap" class="card" style="display:none; margin-bottom: 12px;">
+    <div class="card-header"
+        style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <span>全量指标合并表格 (一行 = 一条 module/version 记录, 所有指标列展开, 表头点击排序)</span>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; font-size:12px; align-items:center;">
+            <label style="display:flex; align-items:center; gap:4px;">
+                <input type="checkbox" id="combinedShowClocks" checked onchange="renderCombinedTable()"> 显示时钟列
+            </label>
+            <label style="display:flex; align-items:center; gap:4px;">
+                <input type="checkbox" id="combinedEnableColor" checked onchange="renderCombinedTable()"> 启用变化标注
+            </label>
+            <label style="display:flex; align-items:center; gap:4px;">
+                变化阈值
+                <input type="number" id="combinedColorThreshold" min="0" max="100" step="0.5" value="5"
+                    style="width:60px; padding:1px 4px; font-size:12px;" onchange="renderCombinedTable()"
+                    oninput="renderCombinedTable()">
+                %
+            </label>
+            <span style="color:#888; font-size:11px;">
+                <span
+                    style="display:inline-block; width:10px; height:10px; background:#fde2e1; border:1px solid #f5222d; vertical-align:middle;"></span>
+                恶化
+                <span
+                    style="display:inline-block; width:10px; height:10px; background:#d9f7be; border:1px solid #52c41a; margin-left:6px; vertical-align:middle;"></span>
+                改善
+            </span>
+            <button type="button" class="btn-sm" onclick="copyCombinedTable('tsv')">复制为 TSV</button>
+            <button type="button" class="btn-sm" onclick="copyCombinedTable('csv')">复制为 CSV</button>
+            <button type="button" class="btn-sm" onclick="downloadCombinedCsv()">下载 CSV</button>
         </div>
     </div>
+    <div class="card-body" style="padding:0;">
+        <div id="combinedTableContainer" class="chart-table-wrap" style="max-height: 70vh;"></div>
+    </div>
+</div>
+
+<!-- 目录聚合视图: 按 base_dir / module / run 维度聚合 QoR, 表格 + 颜色标注 -->
+<div id="dirAggregateWrap" class="card" style="display:none; margin-bottom: 12px;">
+    <div class="card-header"
+        style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <span>目录聚合视图 (按 full_dir 路径解析 base_dir / sub_path / run_name, 跨模块跨 run 汇总)</span>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; font-size:12px; align-items:center;">
+            <label>聚合维度:</label>
+            <select id="dirAggGroupBy" onchange="loadDirAggregate()" class="btn-sm" style="font-size:12px;">
+                <option value="run">按 Run (原始每条记录)</option>
+                <option value="base_dir">按 base_dir (跨模块跨 run 汇总)</option>
+                <option value="module">按 Module (跨 base_dir 跨 run 汇总)</option>
+            </select>
+            <label>聚合方法:</label>
+            <select id="dirAggStat" onchange="renderDirAggregate()" class="btn-sm" style="font-size:12px;">
+                <option value="avg">avg (平均)</option>
+                <option value="min">min (最小)</option>
+                <option value="max">max (最大)</option>
+                <option value="median">median (中位数)</option>
+            </select>
+            <label style="display:flex; align-items:center; gap:4px;">
+                <input type="checkbox" id="dirAggBestWorst" checked onchange="renderDirAggregate()"> 标注最佳/最差
+            </label>
+            <button type="button" class="btn-sm" onclick="downloadDirAggCsv()">下载 CSV</button>
+            <span style="color:#888; font-size:11px;">
+                <span
+                    style="display:inline-block; width:10px; height:10px; background:#d9f7be; border:1px solid #52c41a; vertical-align:middle;"></span>
+                同维度最佳
+                <span
+                    style="display:inline-block; width:10px; height:10px; background:#fde2e1; border:1px solid #f5222d; margin-left:6px; vertical-align:middle;"></span>
+                同维度最差
+            </span>
+        </div>
+    </div>
+    <div class="card-body" style="padding:0;">
+        <div id="dirAggregateContainer" class="chart-table-wrap" style="max-height: 70vh;"></div>
+        <div id="dirAggregateSummary"
+            style="padding: 10px 12px; font-size: 12px; color: var(--color-text-secondary); border-top: 1px solid var(--color-border);">
+        </div>
+    </div>
+</div>
+<div class="card chart-card" data-chart-id="violations" data-span="2">
+    <div class="card-header">
+        <span>违例路径分析</span>
+        <div style="display: inline-block; font-size: 12px;">
+            <label>模式:</label>
+            <select id="violationMode" onchange="onViolationModeChange()" class="btn-sm" style="font-size: 12px;">
+                <option value="single">单 run 查看</option>
+                <option value="diff">两 run 对比</option>
+            </select>
+        </div>
+    </div>
+    <div class="card-body">
+        <!-- 模式切换区域 -->
+        <div id="vioSinglePanel">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
+                <label>模块:</label>
+                <select id="vioModule" onchange="onVioModuleChange()" class="btn-sm"
+                    style="font-size:12px;min-width:140px;">
+                    <option value="">选择模块</option>
+                </select>
+                <label>版本:</label>
+                <select id="vioVersion" onchange="onVioVersionChange()" class="btn-sm"
+                    style="font-size:12px;min-width:120px;">
+                    <option value="">选择版本</option>
+                </select>
+                <label>Timing Group:</label>
+                <select id="vioGroup" onchange="onVioGroupChange()" class="btn-sm"
+                    style="font-size:12px;min-width:140px;">
+                    <option value="">全部</option>
+                </select>
+                <label>CSV 文件:</label>
+                <select id="vioSourceFile" onchange="loadViolations()" class="btn-sm"
+                    style="font-size:12px;min-width:160px;">
+                    <option value="">全部</option>
+                </select>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
+                <label>排序:</label>
+                <select id="violationSortBy" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
+                    <option value="slack">Slack</option>
+                    <option value="depth">Depth</option>
+                    <option value="cell_delay">Cell Delay</option>
+                    <option value="net_delay">Net Delay</option>
+                </select>
+                <select id="violationSortOrder" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
+                    <option value="asc">升序(最差优先)</option>
+                    <option value="desc">降序</option>
+                </select>
+                <label style="margin-left:8px;">条数:</label>
+                <select id="violationLimit" onchange="loadViolations()" class="btn-sm" style="font-size:12px;">
+                    <option value="100">100</option>
+                    <option value="500" selected>500</option>
+                    <option value="1000">1000</option>
+                    <option value="2000">2000</option>
+                </select>
+                <label style="margin-left:8px;">
+                    <input type="checkbox" id="violationBusGrouping" checked onchange="loadViolations()"> Bus 合并
+                </label>
+                <button class="btn btn-sm" onclick="loadViolations()">刷新</button>
+            </div>
+            <div id="violationSummary" style="margin-bottom: 12px;"></div>
+            <div id="violationTable" style="max-height: 500px; overflow: auto;"></div>
+        </div>
+
+        <!-- 对比模式 -->
+        <div id="vioDiffPanel" style="display:none;">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px;">
+                <label>模块:</label>
+                <select id="diffModule" onchange="onDiffModuleChange()" class="btn-sm"
+                    style="font-size:12px;min-width:140px;">
+                    <option value="">选择模块</option>
+                </select>
+                <label>Timing Group:</label>
+                <select id="diffGroup" onchange="loadViolationDiff()" class="btn-sm"
+                    style="font-size:12px;min-width:140px;">
+                    <option value="">全部</option>
+                </select>
+                <label>版本 A:</label>
+                <select id="diffVersionA" onchange="loadViolationDiff()" class="btn-sm"
+                    style="font-size:12px;min-width:120px;">
+                    <option value="">选择版本A</option>
+                </select>
+                <label>版本 B:</label>
+                <select id="diffVersionB" onchange="loadViolationDiff()" class="btn-sm"
+                    style="font-size:12px;min-width:120px;">
+                    <option value="">选择版本B</option>
+                </select>
+                <label style="margin-left:8px;">
+                    <input type="checkbox" id="diffBusGrouping" checked onchange="loadViolationDiff()"> Bus 合并
+                </label>
+                <button class="btn btn-sm" onclick="loadViolationDiff()">对比</button>
+            </div>
+            <div id="diffSummary" style="margin-bottom: 12px;"></div>
+            <div id="diffTable" style="max-height: 500px; overflow: auto;"></div>
+        </div>
+    </div>
+</div>
 </div><!-- /chartLayoutRoot -->
 
 <!-- Run 备注表 -->
@@ -455,7 +544,80 @@
         await refreshVersions();
         await loadDashboardList();
         loadDashboardData();
+        // 处理从记录管理跳转过来的 focus_record_id 定位
+        handleFocusRecord();
     });
+
+    // ---- 来自记录管理页的 focus 定位 ----
+    const FOCUS_RECORD_ID = {{ focus_record_id| tojson if focus_record_id else 'null' }};
+    const PRE_PROJECT_ID = {{ pre_project_id| tojson if pre_project_id else 'null' }};
+    const PRE_MODULE_ID = {{ pre_module_id| tojson if pre_module_id else 'null' }};
+    const PRE_VERSION = {{ pre_version| tojson if pre_version else 'null' }};
+    const PRE_FULL_DIR = {{ pre_full_dir| tojson if pre_full_dir else 'null' }};
+
+    async function handleFocusRecord() {
+        if (!FOCUS_RECORD_ID) return;
+        // 自动选中对应项目/模块/version
+        if (PRE_PROJECT_ID) {
+            // 等候项目列表加载完成
+            const projSelect = document.getElementById('projectSelect');
+            if (projSelect) {
+                for (const opt of projSelect.options) {
+                    if (parseInt(opt.value) === PRE_PROJECT_ID) {
+                        projSelect.value = String(PRE_PROJECT_ID);
+                        projSelect.dispatchEvent(new Event('change'));
+                        break;
+                    }
+                }
+            }
+        }
+        // 等模块列表刷新
+        await new Promise(r => setTimeout(r, 300));
+        if (PRE_MODULE_ID) {
+            const modSelect = document.getElementById('moduleSelect');
+            if (modSelect) {
+                for (const opt of modSelect.options) {
+                    if (parseInt(opt.value) === PRE_MODULE_ID) {
+                        modSelect.value = String(PRE_MODULE_ID);
+                        modSelect.dispatchEvent(new Event('change'));
+                        break;
+                    }
+                }
+            }
+        }
+        await new Promise(r => setTimeout(r, 200));
+        if (PRE_VERSION) {
+            const verSelect = document.getElementById('versionSelect');
+            if (verSelect) {
+                for (const opt of verSelect.options) {
+                    if (opt.value === PRE_VERSION) {
+                        verSelect.value = PRE_VERSION;
+                        verSelect.dispatchEvent(new Event('change'));
+                        break;
+                    }
+                }
+            }
+        }
+        // 显示定位提示横幅
+        const banner = document.createElement('div');
+        banner.id = 'focusBanner';
+        banner.style.cssText = 'position:fixed; top:80px; right:20px; z-index:9999; background:#fff3e0; border:1px solid #ff9800; border-radius:6px; padding:10px 16px; box-shadow:0 4px 12px rgba(0,0,0,0.15); display:flex; align-items:center; gap:10px; max-width:480px;';
+        banner.innerHTML = `
+            <span style="color:#e65100; font-size:20px;">📍</span>
+            <div style="font-size:13px;">
+                <div style="font-weight:600; color:#e65100;">已定位到记录 #${FOCUS_RECORD_ID}</div>
+                <div style="color:#666; font-size:11px; margin-top:2px;">
+                    ${PRE_FULL_DIR ? 'full_dir: <code>' + escapeAttr(PRE_FULL_DIR) + '</code>' : ''}
+                </div>
+            </div>
+            <a href="/qor_record/${FOCUS_RECORD_ID}" target="_blank" class="btn btn-sm btn-primary" style="margin-left:8px;">查看详情</a>
+            <button onclick="document.getElementById('focusBanner').remove()" style="background:none;border:none;cursor:pointer;font-size:16px;color:#999;">×</button>
+        `;
+        document.body.appendChild(banner);
+        setTimeout(() => { const b = document.getElementById('focusBanner'); if (b) b.remove(); }, 10000);
+    }
+
+    function escapeAttr(s) { return String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c])); }
 
     // ===================== 图表自由拖拽布局 =====================
     // 布局存储: localStorage 中按用户名隔离, 每个用户保存自己的卡片顺序
@@ -1448,39 +1610,24 @@
     function getLabels() {
         const data = getFilteredData();
         const mode = document.getElementById('chartLabelMode').value;
+        return data.map(r => makeLabelForRecord(r, mode));
+    }
 
-        if (mode === 'tag') {
-            return data.map(r => r.tag || r.version || r.module_name || '');
-        }
-        if (mode === 'module') {
-            return data.map(r => r.module_name || '');
-        }
+    // 单条记录生成标签 (供 getLabels / renderPowerChart 表格复用)
+    function makeLabelForRecord(r, mode) {
+        if (mode === 'tag') return r.tag || r.version || r.module_name || '';
+        if (mode === 'module') return r.module_name || '';
         if (mode === 'both') {
-            return data.map(r => {
-                let label = r.module_name || '';
-                const tag = r.tag || r.version;
-                if (tag && tag !== 'v1') label += ` (${tag})`;
-                return label;
-            });
-        }
-        // auto: 智能选择
-        const moduleNames = new Set(data.map(r => r.module_name));
-        const versions = new Set(data.map(r => r.tag || r.version));
-        if (moduleNames.size === 1) {
-            // 单模块多版本: 用 tag 作标签
-            return data.map(r => r.tag || r.version || r.module_name || '');
-        }
-        if (versions.size === 1) {
-            // 多模块单版本: 用模块名
-            return data.map(r => r.module_name || '');
-        }
-        // 多模块多版本: 模块+标签
-        return data.map(r => {
             let label = r.module_name || '';
             const tag = r.tag || r.version;
             if (tag && tag !== 'v1') label += ` (${tag})`;
             return label;
-        });
+        }
+        // auto: 智能选择 (对单条记录无法判断整体, 默认模块+标签)
+        let label = r.module_name || '';
+        const tag = r.tag || r.version;
+        if (tag && tag !== 'v1') label += ` (${tag})`;
+        return label;
     }
 
     // 构建增强 tooltip formatter
@@ -1613,10 +1760,27 @@
         if (data.length === 0) return initChart('chartArea', '暂无数据');
         if (metrics.length === 0) return initChart('chartArea', '请在右上角选择至少一个面积指标');
 
+        const chartType = getChartType();
+
+        // 表格模式: 跳过 echarts, 直接渲染可排序 HTML 表格
+        if (chartType === 'table') {
+            const labels = getLabels();
+            const headers = ['模块/版本', ...metrics.map(m => AREA_METRIC_LABELS[m] || m)];
+            const rows = data.map((r, i) => {
+                const row = [labels[i] || ''];
+                metrics.forEach(m => {
+                    const v = r[m];
+                    row.push(v == null ? null : Math.round(v));
+                });
+                return row;
+            });
+            renderAsTable('chartArea', headers, rows, metrics.map((_, i) => i + 1));
+            return;
+        }
+
         const chart = echarts.init(document.getElementById('chartArea'), null, { renderer: 'svg' });
         const labels = getLabels();
         const orientation = getOrientation();
-        const chartType = getChartType();
         const axes = buildAxes(labels, 'um2');
 
         // 多指标 -> 多 series，每个指标一种颜色
@@ -1689,10 +1853,24 @@
         if (data.length === 0) return initChart('chartCell', '暂无数据');
         if (metrics.length === 0) return initChart('chartCell', '请选择至少一个统计指标');
 
+        const chartType = getChartType();
+        if (chartType === 'table') {
+            const labels = getLabels();
+            const headers = ['模块/版本', ...metrics.map(m => CELL_METRIC_LABELS[m] || m)];
+            const rows = data.map((r, i) => {
+                const row = [labels[i] || ''];
+                metrics.forEach(m => {
+                    row.push(getCellValue(r, m));
+                });
+                return row;
+            });
+            renderAsTable('chartCell', headers, rows, metrics.map((_, i) => i + 1));
+            return;
+        }
+
         const chart = echarts.init(document.getElementById('chartCell'), null, { renderer: 'svg' });
         const labels = getLabels();
         const orientation = getOrientation();
-        const chartType = getChartType();
         const axes = buildAxes(labels, 'count');
 
         const seriesList = metrics.map((metric, i) => ({
@@ -1741,10 +1919,47 @@
         const data = getFilteredData();
         if (data.length === 0) return initChart('chartTiming', '暂无数据');
 
+        const chartType = getChartType();
+        if (chartType === 'table') {
+            const labels = getLabels();
+            const unit = (metric === 'period' || metric === 'wns' || metric === 'tns') ? ' ns' : '';
+            // 优先从 extra_fields.clocks 提取时钟
+            const clockSet = [];
+            data.forEach(r => {
+                const clocks = (r.extra_fields && r.extra_fields.clocks) || {};
+                Object.keys(clocks).forEach(k => {
+                    if (!clockSet.includes(k)) clockSet.push(k);
+                });
+            });
+            if (clockSet.length > 0) {
+                const headers = ['模块/版本', ...clockSet.map(c => `${c} ${metric.toUpperCase()}${unit}`)];
+                const rows = data.map((r, i) => {
+                    const clocks = (r.extra_fields && r.extra_fields.clocks) || {};
+                    const row = [labels[i] || ''];
+                    clockSet.forEach(c => {
+                        const v = (clocks[c] || {})[metric];
+                        row.push(v == null ? null : Math.round(v * 1000) / 1000);
+                    });
+                    return row;
+                });
+                renderAsTable('chartTiming', headers, rows, clockSet.map((_, i) => i + 1));
+            } else {
+                // 回退到 wns_setup / tns_setup
+                const fallbackMetric = (metric === 'wns') ? 'wns_setup'
+                    : (metric === 'tns') ? 'tns_setup' : null;
+                if (!fallbackMetric) return initChart('chartTiming', '暂无时钟数据');
+                const headers = ['模块/版本', `${fallbackMetric}${unit}`];
+                const rows = data.map((r, i) => {
+                    return [labels[i] || '', r[fallbackMetric] == null ? null : Math.round(r[fallbackMetric] * 1000) / 1000];
+                });
+                renderAsTable('chartTiming', headers, rows, [1]);
+            }
+            return;
+        }
+
         const chart = echarts.init(document.getElementById('chartTiming'), null, { renderer: 'svg' });
         const labels = getLabels();
         const orientation = getOrientation();
-        const chartType = getChartType();
         const isCount = metric === 'nvp';
         const axes = buildAxes(labels, metric === 'period' ? 'ns' : (isCount ? 'count' : 'ns'));
 
@@ -1845,7 +2060,7 @@
         }
 
         const data = getFilteredData();
-        const chart = echarts.init(document.getElementById('chartPower'), null, { renderer: 'svg' });
+        const chartType = getChartType();
 
         // 检查是否有任何功耗数据
         const hasAnyPowerData = selectedMetrics.some(metric =>
@@ -1860,41 +2075,6 @@
             selectedMetrics.some(metric => r[metric] !== null && r[metric] !== undefined)
         );
 
-        // 复用 getLabels 逻辑（基于过滤后的数据）
-        const mode = document.getElementById('chartLabelMode').value;
-        let labels;
-        if (mode === 'tag') {
-            labels = powerData.map(r => r.tag || r.version || r.module_name || '');
-        } else if (mode === 'module') {
-            labels = powerData.map(r => r.module_name || '');
-        } else if (mode === 'both') {
-            labels = powerData.map(r => {
-                let label = r.module_name || '';
-                const tag = r.tag || r.version;
-                if (tag && tag !== 'v1') label += ` (${tag})`;
-                return label;
-            });
-        } else {
-            const moduleNames = new Set(powerData.map(r => r.module_name));
-            const versions = new Set(powerData.map(r => r.tag || r.version));
-            if (moduleNames.size === 1) {
-                labels = powerData.map(r => r.tag || r.version || r.module_name || '');
-            } else if (versions.size === 1) {
-                labels = powerData.map(r => r.module_name || '');
-            } else {
-                labels = powerData.map(r => {
-                    let label = r.module_name || '';
-                    const tag = r.tag || r.version;
-                    if (tag && tag !== 'v1') label += ` (${tag})`;
-                    return label;
-                });
-            }
-        }
-
-        const orientation = getOrientation();
-        const chartType = getChartType();
-        const axes = buildAxes(labels, 'mW');
-
         // 功耗指标名称映射
         const powerMetricNames = {
             power_total: '总功耗',
@@ -1902,6 +2082,25 @@
             power_switching: '翻转功耗',
             power_leakage: '漏电功耗'
         };
+
+        // 表格模式: 渲染可排序表格
+        if (chartType === 'table') {
+            const mode = document.getElementById('chartLabelMode').value;
+            const labels = powerData.map(r => makeLabelForRecord(r, mode));
+            const headers = ['模块/版本', ...selectedMetrics.map(m => `${powerMetricNames[m] || m} (mW)`)];
+            const rows = powerData.map((r, i) => {
+                const row = [labels[i] || ''];
+                selectedMetrics.forEach(m => {
+                    const v = r[m];
+                    row.push(v == null ? null : Math.round(v));
+                });
+                return row;
+            });
+            renderAsTable('chartPower', headers, rows, selectedMetrics.map((_, i) => i + 1));
+            return;
+        }
+
+        const chart = echarts.init(document.getElementById('chartPower'), null, { renderer: 'svg' });
 
         // 为每个选中的指标创建一个 series
         const series = selectedMetrics.map((metric, idx) => ({
@@ -2002,9 +2201,33 @@
             selectedIdx = selectedIdx.slice(0, 6);
         }
 
+        const chartType = getChartType();
+        const COMP_NAMES = ['组合逻辑', '时序逻辑', '黑盒', '宏单元'];
+
+        // 表格模式: 列出每个选中 record 的 4 个 component 值
+        if (chartType === 'table') {
+            const headers = ['模块/版本', ...COMP_NAMES, '总和 (um2)'];
+            const rows = selectedIdx.map(idx => {
+                const r = data[idx];
+                const tag = r.tag || r.version || '';
+                const label = `${r.module_name || ''} / ${tag}`;
+                const cells = [label];
+                let total = 0;
+                COMP_NAMES.forEach((_, i) => {
+                    const key = ['area_combinational', 'area_sequential', 'area_black_box', 'area_macro'][i];
+                    const v = r[key] || 0;
+                    cells.push(Math.round(v));
+                    total += v;
+                });
+                cells.push(Math.round(total));
+                return cells;
+            });
+            renderAsTable('chartPie', headers, rows, [1, 2, 3, 4, 5]);
+            return;
+        }
+
         const chart = echarts.init(document.getElementById('chartPie'), null, { renderer: 'svg' });
         const PIE_COLORS = COLORS.slice(0, 4);
-        const COMP_NAMES = ['组合逻辑', '时序逻辑', '黑盒', '宏单元'];
 
         // 自适应布局: 1个->1列, 2-4->2列, 5-6->3列
         const n = selectedIdx.length;
@@ -2072,10 +2295,27 @@
         // 销毁旧图表
         if (charts[chartId]) { charts[chartId].dispose(); delete charts[chartId]; }
 
+        const chartType = getChartType();
+
+        // 表格模式
+        if (chartType === 'table') {
+            const labels = getLabels();
+            const headers = ['模块/版本', `${title}${unit ? ' (' + unit + ')' : ''}`];
+            const rows = data.map((r, i) => {
+                const v = r[metric];
+                let display;
+                if (v == null) display = null;
+                else if (scaleToPercent) display = Math.round(v * 1000) / 10;
+                else display = Math.round(v * 1000) / 1000;
+                return [labels[i] || '', display];
+            });
+            renderAsTable(chartId, headers, rows, [1]);
+            return;
+        }
+
         const chart = echarts.init(document.getElementById(chartId), null, { renderer: 'svg' });
         const labels = getLabels();
         const orientation = getOrientation();
-        const chartType = getChartType();
         const axes = buildAxes(labels, unit);
 
         // 数据转换
@@ -2158,13 +2398,36 @@
         const hasOldData = data.some(r => r.congestion != null);
         if (!hasNewData && !hasOldData) return initChart(chartId, '暂无物理实现数据');
 
+        const chartType = getChartType();
+
+        // 表格模式
+        if (chartType === 'table') {
+            const labels = getLabels();
+            const headers = ['模块/版本', '水平 (H)', '垂直 (V)', '综合 (B)'];
+            const rows = data.map((r, i) => {
+                const row = [labels[i] || ''];
+                ['congestion_h', 'congestion_v', 'congestion_b'].forEach(k => {
+                    let v = r[k];
+                    // 旧数据兜底: 若 B 序列为空且没有 H/V, 用 congestion
+                    if (k === 'congestion_b' && v == null && r.congestion_h == null && r.congestion_v == null) {
+                        v = r.congestion;
+                    }
+                    if (v == null) { row.push(null); return; }
+                    const n = parseFloat(v);
+                    row.push(isNaN(n) ? null : Math.round(n * 1000) / 1000);
+                });
+                return row;
+            });
+            renderAsTable(chartId, headers, rows, [1, 2, 3]);
+            return;
+        }
+
         // 销毁旧图表
         if (charts[chartId]) { charts[chartId].dispose(); delete charts[chartId]; }
 
         const chart = echarts.init(document.getElementById(chartId), null, { renderer: 'svg' });
         const labels = getLabels();
         const orientation = getOrientation();
-        const chartType = getChartType();
         const unit = '';
         const axes = buildAxes(labels, unit);
 
@@ -2235,6 +2498,844 @@
         el.innerHTML = `<div class="empty-state">${msg}</div>`;
     }
 
+    // 通用: 在 container 渲染可排序表格 (替代 echarts 图表)
+    // headers: ['模块/版本', '指标A', '指标B', ...]
+    // rows: [[label, val1, val2, ...], ...]
+    // numericCols: [colIdx, ...] 标记数值列 (按数字排序, 否则按字符串)
+    function renderAsTable(containerId, headers, rows, numericCols) {
+        // 销毁旧 echarts 实例
+        if (charts[containerId]) { charts[containerId].dispose(); delete charts[containerId]; }
+        const el = document.getElementById(containerId);
+        if (!headers || headers.length === 0) {
+            el.innerHTML = `<div class="empty-state">暂无数据</div>`;
+            return;
+        }
+        const tblId = `tbl_${containerId}`;
+        const isNumCol = (i) => numericCols && numericCols.includes(i);
+        let html = `<div class="chart-table-wrap"><table class="chart-table" id="${tblId}"><thead><tr>`;
+        headers.forEach((h, i) => {
+            const sortable = i > 0 ? 'sortable' : '';  // 第一列(模块/版本)也可排序
+            html += `<th class="${sortable}" data-col="${i}" onclick="sortTable('${tblId}', ${i}, ${isNumCol(i)})">` +
+                `<span class="th-text">${escapeHtml(h)}</span>` +
+                `<span class="sort-indicator">⇅</span></th>`;
+        });
+        html += `</tr></thead><tbody>`;
+        rows.forEach(r => {
+            html += '<tr>';
+            r.forEach((v, i) => {
+                const raw = (v === null || v === undefined) ? '' : String(v);
+                const display = raw === '' ? '-' : raw;
+                html += `<td data-raw="${escapeAttr(raw)}">${escapeHtml(display)}</td>`;
+            });
+            html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        el.innerHTML = html;
+    }
+
+    // 表格排序: 按列点击切换升/降序
+    // 状态保存到 window._tableSortState, 跨多次排序保留 (同一列再点翻转, 换列重置)
+    const _tableSortState = {};
+    function sortTable(tblId, colIdx, isNumeric) {
+        const tbl = document.getElementById(tblId);
+        if (!tbl) return;
+        const tbody = tbl.querySelector('tbody');
+        if (!tbody) return;
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const key = `${tblId}_${colIdx}`;
+        const dir = _tableSortState[key] === 'asc' ? 'desc' : 'asc';
+        // 切换列时重置其他列的指示器
+        _tableSortState[key] = dir;
+        Object.keys(_tableSortState).forEach(k => {
+            if (k !== key) delete _tableSortState[k];
+        });
+        rows.sort((a, b) => {
+            const aCell = a.cells[colIdx];
+            const bCell = b.cells[colIdx];
+            const av = aCell ? (aCell.dataset.raw || '') : '';
+            const bv = bCell ? (bCell.dataset.raw || '') : '';
+            if (isNumeric) {
+                const an = parseFloat(av);
+                const bn = parseFloat(bv);
+                const aValid = av !== '' && !isNaN(an);
+                const bValid = bv !== '' && !isNaN(bn);
+                if (!aValid && !bValid) return 0;
+                if (!aValid) return 1;  // 空值排最后
+                if (!bValid) return -1;
+                return dir === 'asc' ? an - bn : bn - an;
+            } else {
+                return dir === 'asc' ? av.localeCompare(bv, 'zh') : bv.localeCompare(av, 'zh');
+            }
+        });
+        rows.forEach(r => tbody.appendChild(r));
+        // 更新表头指示器
+        tbl.querySelectorAll('th').forEach(th => {
+            th.classList.remove('sort-asc', 'sort-desc');
+            const ind = th.querySelector('.sort-indicator');
+            if (ind) ind.textContent = '⇅';
+        });
+        const th = tbl.querySelectorAll('th')[colIdx];
+        if (th) {
+            th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
+            const ind = th.querySelector('.sort-indicator');
+            if (ind) ind.textContent = dir === 'asc' ? '↑' : '↓';
+        }
+    }
+
+    // ===== 合并表格视图 (一行 = 一条 module/version 记录, 所有指标列展开) =====
+    // 静态指标列定义: { key, label, unit, group, fmt }
+    // group 用于表头分组, fmt: 'num' / 'pct'(百分比) / 'int'
+    // direction: 'min' 越小越好 (面积/功耗/拥塞), 'max' 越大越好 (WNS/TNS/MBB/util)
+    // absoluteBad: 为 true 时, 值<0 视为违例直接标红 (例如 slack/WNS/TNS)
+    const COMBINED_METRIC_COLS = [
+        // 面积 (越小越好)
+        { key: 'area_total', label: '总面积', group: '面积', unit: 'um2', fmt: 'num', direction: 'min' },
+        { key: 'area_combinational', label: '组合面积', group: '面积', unit: 'um2', fmt: 'num', direction: 'min' },
+        { key: 'area_sequential', label: '时序面积', group: '面积', unit: 'um2', fmt: 'num', direction: 'min' },
+        { key: 'area_black_box', label: '黑盒面积', group: '面积', unit: 'um2', fmt: 'num', direction: 'min' },
+        { key: 'area_macro', label: '宏面积', group: '面积', unit: 'um2', fmt: 'num', direction: 'min' },
+        // 单元数 (越小越好)
+        { key: 'cell_count', label: '总单元数', group: '单元数', unit: '', fmt: 'int', direction: 'min' },
+        { key: 'sequential_cell_count', label: '时序单元数', group: '单元数', unit: '', fmt: 'int', direction: 'min' },
+        { key: 'flop_count', label: '寄存器数', group: '单元数', unit: '', fmt: 'int', direction: 'min' },
+        // 时序: 越小越好 (用户约定: 全部时序指标统一为越小越好, 值<0 视为违例)
+        { key: 'wns_setup', label: 'WNS (setup)', group: '时序', unit: 'ns', fmt: 'num', direction: 'min', absoluteBad: true },
+        { key: 'tns_setup', label: 'TNS (setup)', group: '时序', unit: 'ns', fmt: 'num', direction: 'min', absoluteBad: true },
+        { key: 'period', label: '时钟周期', group: '时序', unit: 'ns', fmt: 'num', direction: 'min' },
+        { key: 'nvp', label: '违例路径数', group: '时序', unit: '', fmt: 'int', direction: 'min' },
+        // 功耗 (越小越好)
+        { key: 'power_total', label: '总功耗', group: '功耗', unit: 'mW', fmt: 'num', direction: 'min' },
+        { key: 'power_internal', label: '内部功耗', group: '功耗', unit: 'mW', fmt: 'num', direction: 'min' },
+        { key: 'power_switching', label: '翻转功耗', group: '功耗', unit: 'mW', fmt: 'num', direction: 'min' },
+        { key: 'power_leakage', label: '漏电功耗', group: '功耗', unit: 'mW', fmt: 'num', direction: 'min' },
+        // 物理 (越大越好)
+        { key: 'mbb_ratio', label: 'MBB 合并率', group: '物理', unit: '%', fmt: 'pct', direction: 'max' },
+        { key: 'clock_gating_ratio', label: '时钟门控', group: '物理', unit: '%', fmt: 'pct', direction: 'max' },
+        { key: 'utilization', label: '布局利用率', group: '物理', unit: '%', fmt: 'pct', direction: 'max' },
+        // 拥塞 (越小越好)
+        { key: 'congestion_h', label: '拥塞 H', group: '拥塞', unit: '', fmt: 'num', direction: 'min' },
+        { key: 'congestion_v', label: '拥塞 V', group: '拥塞', unit: '', fmt: 'num', direction: 'min' },
+        { key: 'congestion_b', label: '拥塞 B', group: '拥塞', unit: '', fmt: 'num', direction: 'min' },
+        { key: 'congestion', label: '拥塞 (旧)', group: '拥塞', unit: '', fmt: 'num', direction: 'min' },
+    ];
+
+    function formatCombinedCell(v, fmt) {
+        if (v === null || v === undefined) return null;
+        if (typeof v === 'string') {
+            const n = parseFloat(v);
+            if (!isNaN(n)) v = n;
+            else return v;  // 非数值字符串原样返回
+        }
+        if (typeof v !== 'number' || isNaN(v)) return null;
+        if (fmt === 'pct') return Math.round(v * 1000) / 10;       // 0.85 -> 85.0
+        if (fmt === 'int') return Math.round(v);
+        return Math.round(v * 1000) / 1000;                        // 3 位小数
+    }
+
+    // 解析 metric 方向与是否绝对违例 (按 col key 查找)
+    function getMetricMeta(colKey) {
+        // 静态指标
+        for (let i = 0; i < COMBINED_METRIC_COLS.length; i++) {
+            if (COMBINED_METRIC_COLS[i].key === colKey) {
+                return {
+                    direction: COMBINED_METRIC_COLS[i].direction || 'min',
+                    absoluteBad: !!COMBINED_METRIC_COLS[i].absoluteBad,
+                };
+            }
+        }
+        // 时钟级指标: __clk_<clock>_<metric>
+        if (colKey.startsWith('__clk_')) {
+            const m = colKey.split('__clk_')[1];
+            const lastUnderscore = m.lastIndexOf('_');
+            const metric = m.substring(lastUnderscore + 1);
+            if (metric === 'wns' || metric === 'tns') {
+                return { direction: 'max', absoluteBad: true };
+            }
+            // period, nvp
+            return { direction: 'min', absoluteBad: false };
+        }
+        return { direction: 'min', absoluteBad: false };
+    }
+
+    // 计算 cell 颜色 class
+    //   cur: 当前值 (number|null)
+    //   prev: 上一版本值 (number|null)
+    //   direction: 'min' 越小越好 / 'max' 越大越好
+    //   absoluteBad: 值<0 即视为违例 (例如 WNS/TNS)
+    //   threshold: 百分比阈值 (0.05 = 5%)
+    //   enableColor: 用户是否启用颜色标注
+    // 返回: { cls, pctLabel }
+    //   cls ∈ { 'delta-bad', 'delta-worse', 'delta-better', 'delta-baseline', '' }
+    function computeDeltaClass(cur, prev, direction, absoluteBad, threshold, enableColor) {
+        if (!enableColor) return { cls: '', pctLabel: '' };
+        // 绝对违例优先 (WNS/TNS < 0)
+        if (absoluteBad && typeof cur === 'number' && cur < 0) {
+            return { cls: 'delta-bad', pctLabel: '' };
+        }
+        if (prev === null || prev === undefined || typeof prev !== 'number' || isNaN(prev)) {
+            // 基准行 (最早版本) - 不标注
+            return { cls: 'delta-baseline', pctLabel: '' };
+        }
+        if (cur === null || cur === undefined || typeof cur !== 'number' || isNaN(cur)) {
+            return { cls: 'delta-baseline', pctLabel: '' };
+        }
+        const absPrev = Math.abs(prev);
+        if (absPrev < 1e-9) {
+            // 上一版为 0, 用绝对差判断 (>=1 算显著变化)
+            const absDiff = Math.abs(cur - prev);
+            if (absDiff < 1e-9) return { cls: 'delta-baseline', pctLabel: '0%' };
+            // 没有 prev 基准, 但 cur 本身非零: 不算"恶化/改善" (无方向可比)
+            return { cls: 'delta-baseline', pctLabel: (cur > 0 ? '+' : '') + cur };
+        }
+        const ratio = (cur - prev) / absPrev;     // 正数 = 增大, 负数 = 减小
+        const pctLabel = (ratio >= 0 ? '+' : '') + (ratio * 100).toFixed(1) + '%';
+        if (Math.abs(ratio) < threshold) {
+            return { cls: '', pctLabel: pctLabel };
+        }
+        // 判断方向:
+        //  'min' 越小越好: 增大(ratio>0) -> 恶化, 减小 -> 改善
+        //  'max' 越大越好: 减小(ratio<0) -> 恶化, 增大 -> 改善
+        const isWorse = (direction === 'min') ? (ratio > 0) : (ratio < 0);
+        return { cls: isWorse ? 'delta-worse' : 'delta-better', pctLabel: pctLabel };
+    }
+
+    // 构造合并表头 (含表头分组) 与所有数据行
+    function buildCombinedTableData() {
+        const data = getFilteredData();
+        const showClocks = document.getElementById('combinedShowClocks') && document.getElementById('combinedShowClocks').checked;
+        const enableColor = document.getElementById('combinedEnableColor')
+            ? document.getElementById('combinedEnableColor').checked : true;
+        const thresholdPct = document.getElementById('combinedColorThreshold')
+            ? Math.max(0, parseFloat(document.getElementById('combinedColorThreshold').value) || 0) / 100
+            : 0.05;
+
+        // 收集所有出现过的 clock 名 (保留顺序)
+        const clockSet = [];
+        if (showClocks) {
+            data.forEach(r => {
+                const clocks = (r.extra_fields && r.extra_fields.clocks) || {};
+                Object.keys(clocks).forEach(k => {
+                    if (!clockSet.includes(k)) clockSet.push(k);
+                });
+            });
+        }
+
+        // 列定义: [{ key, label, group, numeric, fmt? }]
+        const cols = [
+            { key: '__module', label: '模块', group: '基础', numeric: false },
+            { key: '__tag', label: '标签/版本', group: '基础', numeric: false },
+            { key: '__project', label: '项目', group: '基础', numeric: false },
+        ];
+        COMBINED_METRIC_COLS.forEach(c => {
+            cols.push({ key: c.key, label: c.label, group: c.group, numeric: true, fmt: c.fmt, unit: c.unit });
+        });
+        if (showClocks) {
+            const clockMetrics = [
+                { key: 'wns', label: 'WNS', fmt: 'num', unit: 'ns' },
+                { key: 'tns', label: 'TNS', fmt: 'num', unit: 'ns' },
+                { key: 'period', label: '周期', fmt: 'num', unit: 'ns' },
+                { key: 'nvp', label: 'NVP', fmt: 'int', unit: '' },
+            ];
+            clockSet.forEach(clock => {
+                clockMetrics.forEach(m => {
+                    cols.push({
+                        key: `__clk_${clock}_${m.key}`,
+                        label: `${clock} ${m.label}`,
+                        group: '时钟',
+                        numeric: true,
+                        fmt: m.fmt,
+                    });
+                });
+            });
+        }
+
+        // 排序与上版本比较:
+        //   1) 按 module_id 分组
+        //   2) 每组内按 recorded_at 升序 (旧->新), 缺失则按 version 字符串降序
+        //   3) 记录每行 cell 与上一版本的差值, 包装为 {v, cls, pctLabel}
+        const sorted = (data || []).slice().sort((a, b) => {
+            if (a.module_id !== b.module_id) return (a.module_id || 0) - (b.module_id || 0);
+            // 同一 module: 按 recorded_at 升序 (空记录排最后)
+            const at = a.recorded_at || '';
+            const bt = b.recorded_at || '';
+            if (at && bt) return at < bt ? -1 : (at > bt ? 1 : 0);
+            if (at) return -1;
+            if (bt) return 1;
+            return (a.id || 0) - (b.id || 0);
+        });
+
+        // 上版本值缓存: { module_id: { colKey: prevValue } }
+        const prevByModule = {};
+        const rows = sorted.map(r => {
+            const modKey = r.module_id;
+            const prevMap = prevByModule[modKey] || {};
+            // 基础列 (无颜色)
+            const row = [
+                r.module_name || '',
+                r.tag || r.version || '',
+                r.project_name || '',
+            ];
+            // 静态指标列
+            COMBINED_METRIC_COLS.forEach(c => {
+                const raw = r[c.key];
+                const v = formatCombinedCell(raw, c.fmt);
+                const meta = getMetricMeta(c.key);
+                const delta = computeDeltaClass(v, prevMap[c.key], meta.direction, meta.absoluteBad, thresholdPct, enableColor);
+                row.push({ v: v, cls: delta.cls, pct: delta.pctLabel });
+                // 缓存当前值供下一行比较
+                prevMap[c.key] = (typeof v === 'number') ? v : null;
+            });
+            // 时钟级列
+            if (showClocks) {
+                const clocks = (r.extra_fields && r.extra_fields.clocks) || {};
+                clockSet.forEach(clock => {
+                    const cm = clocks[clock] || {};
+                    ['wns', 'tns', 'period', 'nvp'].forEach(m => {
+                        const colKey = `__clk_${clock}_${m}`;
+                        const v = formatCombinedCell(cm[m], m === 'nvp' ? 'int' : 'num');
+                        const meta = getMetricMeta(colKey);
+                        const delta = computeDeltaClass(v, prevMap[colKey], meta.direction, meta.absoluteBad, thresholdPct, enableColor);
+                        row.push({ v: v, cls: delta.cls, pct: delta.pctLabel });
+                        prevMap[colKey] = (typeof v === 'number') ? v : null;
+                    });
+                });
+            }
+            prevByModule[modKey] = prevMap;
+            return row;
+        });
+
+        return { headers: cols, rows };
+    }
+
+    // 渲染合并表格 (含表头分组)
+    function renderAsTableRaw(containerId, cols, rows, numericColIdxs) {
+        if (charts[containerId]) { charts[containerId].dispose(); delete charts[containerId]; }
+        const el = document.getElementById(containerId);
+        if (!cols || cols.length === 0) {
+            el.innerHTML = `<div class="empty-state">暂无数据</div>`;
+            return;
+        }
+
+        // 收集表头分组
+        const groups = [];
+        cols.forEach((c, i) => {
+            const g = c.group || '';
+            if (groups.length === 0 || groups[groups.length - 1].name !== g) {
+                groups.push({ name: g, start: i, end: i + 1 });
+            } else {
+                groups[groups.length - 1].end = i + 1;
+            }
+        });
+
+        const tblId = `tbl_${containerId}`;
+        const isNumCol = (i) => numericColIdxs && numericColIdxs.includes(i);
+
+        let html = `<table class="chart-table" id="${tblId}">`;
+        // 最后一列 sticky-right, 横向滚动时贴右可见
+        const lastColIdx = (cols && cols.length) ? cols.length - 1 : -1;
+        // 表头分组行
+        if (groups.some(g => g.name)) {
+            html += '<thead>';
+            html += '<tr>';
+            groups.forEach(g => {
+                const span = g.end - g.start;
+                const colspan = span > 1 ? ` colspan="${span}"` : '';
+                const sticky = g.end - 1 === lastColIdx ? ' col-sticky-right' : '';
+                html += `<th class="th-group${sticky}"${colspan}>${escapeHtml(g.name)}</th>`;
+            });
+            html += '</tr>';
+            // 列表头
+            html += '<tr>';
+            cols.forEach((c, i) => {
+                const sticky = i === lastColIdx ? ' col-sticky-right' : '';
+                html += `<th class="sortable${sticky}" data-col="${i}" onclick="sortCombinedTable(${i}, ${isNumCol(i)})">` +
+                    `<span class="th-text">${escapeHtml(c.label)}${c.unit ? ' (' + escapeHtml(c.unit) + ')' : ''}</span>` +
+                    `<span class="sort-indicator">⇅</span></th>`;
+            });
+            html += '</tr>';
+            html += '</thead>';
+        } else {
+            html += '<thead><tr>';
+            cols.forEach((c, i) => {
+                const sticky = i === lastColIdx ? ' col-sticky-right' : '';
+                html += `<th class="sortable${sticky}" data-col="${i}" onclick="sortCombinedTable(${i}, ${isNumCol(i)})">` +
+                    `<span class="th-text">${escapeHtml(c.label)}</span>` +
+                    `<span class="sort-indicator">⇅</span></th>`;
+            });
+            html += '</tr></thead>';
+        }
+
+        html += '<tbody>';
+        rows.forEach(r => {
+            html += '<tr>';
+            r.forEach((cell, i) => {
+                // 兼容两种 cell 格式:
+                //   1) 基本值 (旧格式): 数字 / 字符串 / null
+                //   2) 对象 (新格式): { v, cls, pct } - 带颜色标注
+                let v, cls, pct;
+                if (cell && typeof cell === 'object' && !Array.isArray(cell) && 'v' in cell) {
+                    v = cell.v; cls = cell.cls || ''; pct = cell.pct || '';
+                } else {
+                    v = cell; cls = ''; pct = '';
+                }
+                const raw = (v === null || v === undefined) ? '' : String(v);
+                const display = raw === '' ? '-' : raw;
+                const sticky = i === lastColIdx ? ' col-sticky-right' : '';
+                const clsAttr = (cls ? ` class="${escapeAttr(cls)}${sticky}"` : (sticky ? ` class="${sticky.trim()}"` : ''));
+                const titleAttr = pct ? ` title="相对上一版本 ${escapeAttr(pct)}"` : '';
+                const pctHtml = pct ? `<span class="delta-pct">${escapeHtml(pct)}</span>` : '';
+                html += `<td data-raw="${escapeAttr(raw)}"${clsAttr}${titleAttr}>${escapeHtml(display)}${pctHtml}</td>`;
+            });
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        el.innerHTML = html;
+        // 增强: 列宽拖拽 + 列隐藏 + 行搜索
+        if (window.TBLX) {
+            const tbl = el.querySelector('table');
+            if (tbl) {
+                tbl.dataset.tblx = tbl.dataset.tblx || (containerId || 'renderAsTableRaw');
+                window.TBLX.enhance(tbl);
+            }
+        }
+    }
+
+    function renderCombinedTable() {
+        const wrap = document.getElementById('combinedTableWrap');
+        if (!wrap || wrap.style.display === 'none') return;
+        const { headers, rows } = buildCombinedTableData();
+        if (rows.length === 0) {
+            document.getElementById('combinedTableContainer').innerHTML =
+                `<div class="empty-state">暂无数据</div>`;
+            return;
+        }
+        const numericColIdxs = headers.map((c, i) => c.numeric ? i : -1).filter(i => i >= 0);
+        renderAsTableRaw('combinedTableContainer', headers, rows, numericColIdxs);
+        // 增强: 列宽拖拽 + 列隐藏 + 行搜索
+        if (window.TBLX) {
+            const tbl = document.getElementById('tbl_combinedTableContainer');
+            if (tbl) {
+                tbl.dataset.tblx = 'combinedTable';
+                window.TBLX.enhance(tbl);
+            }
+        }
+    }
+
+    // 合并表排序
+    function sortCombinedTable(colIdx, isNumeric) {
+        const tbl = document.getElementById('tbl_combinedTableContainer');
+        if (!tbl) return;
+        const tbody = tbl.querySelector('tbody');
+        if (!tbody) return;
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const key = `combinedTableContainer_${colIdx}`;
+        const dir = _tableSortState[key] === 'asc' ? 'desc' : 'asc';
+        _tableSortState[key] = dir;
+        Object.keys(_tableSortState).forEach(k => {
+            if (k !== key && k.startsWith('combinedTableContainer_')) delete _tableSortState[k];
+        });
+        rows.sort((a, b) => {
+            const aCell = a.cells[colIdx];
+            const bCell = b.cells[colIdx];
+            const av = aCell ? (aCell.dataset.raw || '') : '';
+            const bv = bCell ? (bCell.dataset.raw || '') : '';
+            if (isNumeric) {
+                const an = parseFloat(av);
+                const bn = parseFloat(bv);
+                const aValid = av !== '' && !isNaN(an);
+                const bValid = bv !== '' && !isNaN(bn);
+                if (!aValid && !bValid) return 0;
+                if (!aValid) return 1;
+                if (!bValid) return -1;
+                return dir === 'asc' ? an - bn : bn - an;
+            } else {
+                return dir === 'asc' ? av.localeCompare(bv, 'zh') : bv.localeCompare(av, 'zh');
+            }
+        });
+        rows.forEach(r => tbody.appendChild(r));
+        // 更新表头指示器
+        const headerRows = tbl.querySelectorAll('thead tr');
+        headerRows.forEach(tr => {
+            tr.querySelectorAll('th').forEach(th => {
+                th.classList.remove('sort-asc', 'sort-desc');
+                const ind = th.querySelector('.sort-indicator');
+                if (ind) ind.textContent = '⇅';
+            });
+        });
+        const lastHeaderRow = headerRows[headerRows.length - 1];
+        if (lastHeaderRow) {
+            const th = lastHeaderRow.querySelectorAll('th')[colIdx];
+            if (th) {
+                th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
+                const ind = th.querySelector('.sort-indicator');
+                if (ind) ind.textContent = dir === 'asc' ? '↑' : '↓';
+            }
+        }
+    }
+
+    function toggleCombinedTable() {
+        const wrap = document.getElementById('combinedTableWrap');
+        const layoutRoot = document.getElementById('chartLayoutRoot');
+        const btn = document.getElementById('combinedTableBtn');
+        if (!wrap) return;
+        if (wrap.style.display === 'none' || wrap.style.display === '') {
+            wrap.style.display = '';
+            if (layoutRoot) layoutRoot.style.display = 'none';
+            btn.textContent = '关闭合并表格';
+            renderCombinedTable();
+        } else {
+            wrap.style.display = 'none';
+            if (layoutRoot) layoutRoot.style.display = '';
+            btn.textContent = '合并表格视图';
+            rerenderAllCharts();
+        }
+    }
+
+    // 复制合并表内容到剪贴板
+    function copyCombinedTable(format) {
+        const { headers, rows } = buildCombinedTableData();
+        if (rows.length === 0) { alert('暂无数据'); return; }
+        const sep = format === 'csv' ? ',' : '\t';
+        const flat = (v) => (v && typeof v === 'object' && 'v' in v) ? v.v : v;
+        const esc = (v) => {
+            const raw = flat(v);
+            const s = (raw === null || raw === undefined) ? '' : String(raw);
+            if (s.includes(sep) || s.includes('"') || s.includes('\n')) {
+                return '"' + s.replace(/"/g, '""') + '"';
+            }
+            return s;
+        };
+        const lines = [];
+        lines.push(headers.map(c => esc(c.label + (c.unit ? ' (' + c.unit + ')' : ''))).join(sep));
+        rows.forEach(r => lines.push(r.map(v => esc(v)).join(sep)));
+        const text = lines.join('\n');
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+            alert(`已复制 ${rows.length} 行到剪贴板 (${format.toUpperCase()})`);
+        } catch (e) {
+            alert('复制失败: ' + e.message);
+        }
+        document.body.removeChild(ta);
+    }
+
+    // 下载合并表为 CSV 文件
+    function downloadCombinedCsv() {
+        const { headers, rows } = buildCombinedTableData();
+        if (rows.length === 0) { alert('暂无数据'); return; }
+        const flat = (v) => (v && typeof v === 'object' && 'v' in v) ? v.v : v;
+        const esc = (v) => {
+            const raw = flat(v);
+            const s = (raw === null || raw === undefined) ? '' : String(raw);
+            if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+                return '"' + s.replace(/"/g, '""') + '"';
+            }
+            return s;
+        };
+        const BOM = '\uFEFF';
+        const lines = [];
+        lines.push(headers.map(c => esc(c.label + (c.unit ? ' (' + c.unit + ')' : ''))).join(','));
+        rows.forEach(r => lines.push(r.map(v => esc(v)).join(',')));
+        const csv = BOM + lines.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+        a.download = `qor_combined_${ts}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    // ========== 目录聚合视图 (group_by=base_dir|module|run) ==========
+    let _dirAggCache = null;   // 当前拉取的原始聚合结果
+    let _dirAggDirections = {}; // 指标方向: {metric: 'min'|'max'}
+
+    function toggleDirAggregate() {
+        const wrap = document.getElementById('dirAggregateWrap');
+        const layoutRoot = document.getElementById('chartLayoutRoot');
+        const btn = document.getElementById('dirAggregateBtn');
+        if (!wrap) return;
+        const visible = wrap.style.display !== 'none';
+        wrap.style.display = visible ? 'none' : '';
+        if (layoutRoot) layoutRoot.style.display = visible ? '' : 'none';
+        if (btn) btn.textContent = visible ? '目录聚合视图' : '关闭目录聚合';
+        if (!visible) loadDirAggregate();
+    }
+
+    async function loadDirAggregate() {
+        const container = document.getElementById('dirAggregateContainer');
+        const summary = document.getElementById('dirAggregateSummary');
+        if (container) container.innerHTML = '<div style="padding:14px;">加载中…</div>';
+        const groupBy = document.getElementById('dirAggGroupBy').value;
+        const projectIds = selectedProjects.join(',');
+        const moduleIds = selectedModules.join(',');
+        const versions = selectedVersions.join(',');
+        try {
+            const params = new URLSearchParams({ group_by: groupBy });
+            if (projectIds) params.set('project_ids', projectIds);
+            if (moduleIds) params.set('module_ids', moduleIds);
+            if (versions) params.set('versions', versions);
+            const r = await fetch('/api/qor/aggregate?' + params.toString());
+            const data = await r.json();
+            if (!r.ok) {
+                container.innerHTML = `<div style="padding:14px; color:#c62828;">错误: ${data.error || r.statusText}</div>`;
+                return;
+            }
+            _dirAggCache = data;
+            _dirAggDirections = data.metric_directions || {};
+            renderDirAggregate();
+            if (summary) {
+                summary.innerHTML = `共 ${data.total_records} 条原始记录 / 聚合成 ${data.group_count} 组 (维度: <b>${data.group_by}</b>)` +
+                    (data.group_by === 'run' ? ' · 同名 run 在不同 base_dir 下已区分' : '');
+            }
+        } catch (e) {
+            if (container) container.innerHTML = `<div style="padding:14px; color:#c62828;">异常: ${e.message}</div>`;
+        }
+    }
+
+    // 指标元信息 (label + unit + direction), 与后端 candidate_metrics 对齐
+    const _DIR_AGG_METRICS = [
+        { key: 'area_total', label: '总面积', unit: 'um²', dir: 'min' },
+        { key: 'area_combinational', label: '组合面积', unit: 'um²', dir: 'min' },
+        { key: 'area_sequential', label: '时序面积', unit: 'um²', dir: 'min' },
+        { key: 'cell_count', label: 'Cell 数', unit: '', dir: 'min' },
+        { key: 'instance_count', label: 'Instance 数', unit: '', dir: 'min' },
+        { key: 'net_count', label: 'Net 数', unit: '', dir: 'min' },
+        { key: 'sequential_cell_count', label: '时序 Cell 数', unit: '', dir: 'min' },
+        { key: 'wns_setup', label: 'WNS (Setup)', unit: 'ns', dir: 'min' },
+        { key: 'tns_setup', label: 'TNS (Setup)', unit: 'ns', dir: 'min' },
+        { key: 'nvp_setup', label: 'NVP (Setup)', unit: '', dir: 'min' },
+        { key: 'wns_hold', label: 'WNS (Hold)', unit: 'ns', dir: 'min' },
+        { key: 'tns_hold', label: 'TNS (Hold)', unit: 'ns', dir: 'min' },
+        { key: 'nvp_hold', label: 'NVP (Hold)', unit: '', dir: 'min' },
+        { key: 'power_total', label: '总功耗', unit: 'mW', dir: 'min' },
+        { key: 'power_internal', label: '内部功耗', unit: 'mW', dir: 'min' },
+        { key: 'power_switching', label: '开关功耗', unit: 'mW', dir: 'min' },
+        { key: 'power_leakage', label: '漏电功耗', unit: 'mW', dir: 'min' },
+        { key: 'mbb_ratio', label: 'MBB 合并率', unit: '%', dir: 'max' },
+        { key: 'clock_gating_ratio', label: 'CG 覆盖率', unit: '%', dir: 'max' },
+        { key: 'congestion', label: '拥塞', unit: '', dir: 'min' },
+        { key: 'congestion_h', label: '拥塞 H', unit: '', dir: 'min' },
+        { key: 'congestion_v', label: '拥塞 V', unit: '', dir: 'min' },
+        { key: 'congestion_b', label: '拥塞 B', unit: '', dir: 'min' },
+        { key: 'utilization', label: '利用率', unit: '%', dir: 'mid' },
+    ];
+
+    function _dirAggGetValue(item, metricKey, stat) {
+        // stat ∈ avg|min|max|median, item[metric] = {avg,min,max,median,count}
+        const m = item[metricKey];
+        if (!m) return null;
+        if (stat === 'min') return m.min;
+        if (stat === 'max') return m.max;
+        if (stat === 'median') return m.median;
+        return m.avg;
+    }
+
+    function renderDirAggregate() {
+        const container = document.getElementById('dirAggregateContainer');
+        if (!container) return;
+        if (!_dirAggCache || !_dirAggCache.items || !_dirAggCache.items.length) {
+            container.innerHTML = '<div style="padding:14px;">无数据</div>';
+            return;
+        }
+        const stat = document.getElementById('dirAggStat').value;
+        const markBestWorst = document.getElementById('dirAggBestWorst').checked;
+        const items = _dirAggCache.items;
+
+        // 计算每列的最大/最小值用于颜色标注
+        const colStats = {};   // metric -> {bestVal, worstVal}
+        for (const m of _DIR_AGG_METRICS) {
+            const vals = [];
+            for (const it of items) {
+                const v = _dirAggGetValue(it, m.key, stat);
+                if (v !== null && v !== undefined && !isNaN(v)) vals.push(v);
+            }
+            if (!vals.length) continue;
+            const dir = _dirAggDirections[m.key] || m.dir;
+            let best, worst;
+            if (dir === 'min') { best = Math.min(...vals); worst = Math.max(...vals); }
+            else if (dir === 'max') { best = Math.max(...vals); worst = Math.min(...vals); }
+            else { best = vals[0]; worst = vals[0]; }  // 'mid' 不做颜色
+            colStats[m.key] = { best, worst, dir, count: vals.length };
+        }
+
+        // 构建表头
+        const baseCols = [
+            { key: 'label', label: 'Tag / 维度', unit: '' },
+            { key: 'module_name', label: 'Module', unit: '' },
+            { key: 'base_dir', label: 'base_dir', unit: '' },
+            { key: 'run_name', label: 'run_name', unit: '' },
+            { key: 'count', label: '记录数', unit: '' },
+        ];
+        const headers = baseCols.concat(_DIR_AGG_METRICS.map(m => ({
+            key: m.key, label: m.label, unit: m.unit, dir: _dirAggDirections[m.key] || m.dir,
+        })));
+
+        // 构建行
+        const rows = items.map(it => {
+            const cells = baseCols.map(c => {
+                if (c.key === 'count') return it.count;
+                if (c.key === 'label') return it.label;
+                return it[c.key] != null ? it[c.key] : '';
+            });
+            for (const m of _DIR_AGG_METRICS) {
+                const v = _dirAggGetValue(it, m.key, stat);
+                cells.push(v == null ? '' : v);
+            }
+            return cells;
+        });
+
+        // 渲染表格
+        const tbl = document.createElement('table');
+        tbl.className = 'chart-table';
+        const thead = document.createElement('thead');
+        const trh = document.createElement('tr');
+        // 最后一列 (拥塞 V) 设为 sticky-right, 横向滚动时贴右可见
+        const lastColIdx = headers.length - 1;
+        headers.forEach((h, idx) => {
+            const th = document.createElement('th');
+            th.style.whiteSpace = 'nowrap';
+            if (idx === lastColIdx) th.classList.add('col-sticky-right');
+            th.innerHTML = h.label + (h.unit ? ` <span style="color:#888; font-weight:normal; font-size:11px;">${h.unit}</span>` : '') +
+                ' <span class="sort-indicator" style="color:#bbb;">⇅</span>';
+            trh.appendChild(th);
+        });
+        thead.appendChild(trh);
+        tbl.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        items.forEach((it, rowIdx) => {
+            const tr = document.createElement('tr');
+            let cellIdx = 0;
+            // 基础列
+            baseCols.forEach(c => {
+                const td = document.createElement('td');
+                if (cellIdx === lastColIdx) td.classList.add('col-sticky-right');
+                if (c.key === 'count') td.textContent = it.count;
+                else if (c.key === 'label') {
+                    td.textContent = it.label;
+                    td.style.fontWeight = '500';
+                    if (it.full_dir) td.title = it.full_dir;
+                } else td.textContent = it[c.key] != null ? it[c.key] : '';
+                tr.appendChild(td);
+                cellIdx++;
+            });
+            // 指标列 + 颜色
+            _DIR_AGG_METRICS.forEach(m => {
+                const td = document.createElement('td');
+                if (cellIdx === lastColIdx) td.classList.add('col-sticky-right');
+                const v = _dirAggGetValue(it, m.key, stat);
+                if (v == null) { td.textContent = '-'; tr.appendChild(td); cellIdx++; return; }
+                td.textContent = (typeof v === 'number') ? (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(3)) : v;
+                td.style.textAlign = 'right';
+                if (markBestWorst) {
+                    const cs = colStats[m.key];
+                    if (cs && cs.dir !== 'mid' && cs.best !== cs.worst) {
+                        if (v === cs.best) {
+                            td.style.background = '#d9f7be';
+                            td.style.color = '#237804';
+                            td.title = '同维度最佳 (' + m.label + ' ' + m.dir + ')';
+                        } else if (v === cs.worst) {
+                            td.style.background = '#fde2e1';
+                            td.style.color = '#a8071a';
+                            td.title = '同维度最差 (' + m.label + ' ' + m.dir + ')';
+                        }
+                    }
+                }
+                tr.appendChild(td);
+                cellIdx++;
+            });
+            tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+        container.innerHTML = '';
+        container.appendChild(tbl);
+        _attachDirAggSort(tbl, headers, items, baseCols);
+    }
+
+    function _attachDirAggSort(tbl, headers, items, baseCols) {
+        // 简单表头点击排序
+        const trh = tbl.querySelector('thead tr');
+        if (!trh) return;
+        Array.from(trh.children).forEach((th, idx) => {
+            th.style.cursor = 'pointer';
+            th.onclick = () => {
+                const cur = th.classList.contains('sort-asc') ? 'asc' : th.classList.contains('sort-desc') ? 'desc' : null;
+                const next = cur === 'asc' ? 'desc' : 'asc';
+                th.parentElement.querySelectorAll('th').forEach(x => {
+                    x.classList.remove('sort-asc', 'sort-desc');
+                    const ind = x.querySelector('.sort-indicator');
+                    if (ind) ind.textContent = '⇅';
+                });
+                th.classList.add(next === 'asc' ? 'sort-asc' : 'sort-desc');
+                const ind = th.querySelector('.sort-indicator');
+                if (ind) ind.textContent = next === 'asc' ? '↑' : '↓';
+                const m = headers[idx];
+                const dir = _dirAggDirections[m.key] || m.dir;
+                items.sort((a, b) => {
+                    let av, bv;
+                    if (m.key === 'count') { av = a.count; bv = b.count; }
+                    else if (m.key === 'label') { av = a.label || ''; bv = b.label || ''; }
+                    else { av = a[m.key]; bv = b[m.key]; }
+                    if (typeof av === 'number' && typeof bv === 'number') {
+                        if (next === 'asc') return av - bv;
+                        return bv - av;
+                    }
+                    av = av == null ? '' : String(av);
+                    bv = bv == null ? '' : String(bv);
+                    return next === 'asc' ? av.localeCompare(bv, 'zh') : bv.localeCompare(av, 'zh');
+                });
+                const tbody = tbl.querySelector('tbody');
+                tbody.innerHTML = '';
+                renderDirAggregate();
+            };
+        });
+    }
+
+    function downloadDirAggCsv() {
+        if (!_dirAggCache || !_dirAggCache.items.length) {
+            alert('无数据可下载');
+            return;
+        }
+        const stat = document.getElementById('dirAggStat').value;
+        const items = _dirAggCache.items;
+        const lines = [];
+        const BOM = '﻿';
+        const header = ['维度', 'Module', 'base_dir', 'sub_path', 'run_name', 'full_dir', '记录数'];
+        _DIR_AGG_METRICS.forEach(m => {
+            header.push(`${m.label} (${stat})${m.unit ? ' ' + m.unit : ''}`);
+        });
+        lines.push(header.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(','));
+        items.forEach(it => {
+            const row = [it.label, it.module_name, it.base_dir, it.sub_path, it.run_name, it.full_dir, it.count];
+            _DIR_AGG_METRICS.forEach(m => {
+                const v = _dirAggGetValue(it, m.key, stat);
+                row.push(v == null ? '' : v);
+            });
+            lines.push(row.map(c => {
+                const s = String(c);
+                return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+            }).join(','));
+        });
+        const csv = BOM + lines.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+        a.download = `qor_dir_aggregate_${_dirAggCache.group_by}_${stat}_${ts}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
     // 重新渲染所有图表
     function rerenderAllCharts() {
         // 销毁旧图表
@@ -2249,6 +3350,11 @@
         renderClockGatingChart();
         renderUtilizationChart();
         renderCongestionChart();
+        // 若合并表格视图打开, 同步刷新
+        const wrap = document.getElementById('combinedTableWrap');
+        if (wrap && wrap.style.display !== 'none' && wrap.style.display !== '') {
+            renderCombinedTable();
+        }
     }
 
     // 更新图表高度

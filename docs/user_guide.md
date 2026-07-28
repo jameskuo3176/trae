@@ -36,35 +36,47 @@ QoR Recorder 是一款面向 IC 设计团队的综合质量数据管理系统。
 
 ## 3. 数据准备
 
-### 3.1 QoR 数据 CSV 格式
+### 3.1 QoR 数据 CSV 格式（v3.0）
 
-QoR Recorder 支持解析 Design Compiler 导出的 CSV 文件。系统会自动识别列名变体（不区分大小写、空格、下划线、连字符），但建议使用以下标准列名：
+QoR Recorder 支持解析 Design Compiler 导出的 CSV 文件。系统会自动识别列名变体（不区分大小写、空格、下划线、连字符），但建议使用以下标准列名。
 
 **核心字段**：
 
 ```
-tag, module_name, version,
+module_name, version, full_dir,
 area_total, area_combinational, area_sequential, area_macro,
 wns_setup, tns_setup, nvp_setup,
 wns_hold, tns_hold, nvp_hold,
 power_internal, power_switching, power_leakage, power_total,
 cell_count, instance_count, net_count, sequential_cell_count,
-target_frequency, achieved_frequency
+target_frequency, achieved_frequency,
+mbb_ratio, clock_gating_ratio, utilization,
+congestion, congestion_h, congestion_v, congestion_b
 ```
 
-**实际使用的 CSV 格式示例**（含 extra fields）：
+**v3.0 关键变更**：
+- `version` 是主键列（不再使用 `tag`，仍兼容）
+- `full_dir` 是新增的独立列（v2.0 在 `extra_fields` JSON 中，v3.0 提升为独立列）
+- 所有时序指标（`wns_setup` / `tns_setup` / `nvp_setup` / `wns_hold` / `tns_hold` / `nvp_hold`）**统一为"越小越好"**
+
+**实际使用的 CSV 格式示例**（含 full_dir 与多时钟列）：
 
 ```csv
-tag,full_dir,comment,reg_count,comb_count,macro_count,total_count,reg_area,comb_area,macro_area,stdcell_area,total_area,no_clock,SRAMCLK_period,SRAMCLK_wns,SRAMCLK_tns,SRAMCLK_path,CLK_CPU_period,CLK_CPU_wns,CLK_CPU_tns,CLK_CPU_path
-v1.0,/proj/work/alu/v1.0,alu v1.0 synthesis,512,3200,0,3712,256.00,640.00,0,896.00,896.00,2,2.50,-0.123,-0.456,/clk_div/SRAMCLK/end_reg,1.25,-0.045,-0.123,/clk_div/CPU_CLK/out_reg
+module_name,version,full_dir,comment,area_total,area_combinational,area_sequential,area_macro,wns_setup,tns_setup,nvp_setup,wns_hold,tns_hold,nvp_hold,power_total,cell_count,target_frequency,achieved_frequency,SRAMCLK_period,SRAMCLK_wns,SRAMCLK_tns,SRAMCLK_path,CLK_CPU_period,CLK_CPU_wns
+cpu_top,v1.0,v1.0/main/cpu_core_baseline,cpu v1.0 baseline,12345.6,5678.9,3456.7,1110.0,-0.123,-0.456,12,0.012,0.034,3,9.9,8500,500.0,476.2,2.50,-0.123,-0.456,/clk_div/SRAMCLK/end_reg,1.25,-0.045
 ```
 
-**说明**：
+**字段说明**：
 
-- `tag`：版本标签（如 v1.0、commit hash、日期）
-- 未在标准字段列表中的列（如 `full_dir`、`comment`、各 clock 的 period/wns/tns/path）会自动存入 `extra_fields`，在详情中可见
+- `module_name`：模块名，必须与系统中已有模块一致（大小写敏感）
+- `version`：版本标签（必填，业务主键之一）
+- `full_dir`：Run 目录路径（推荐），格式 `<base_dir>/<sub_path>/<run_name>`，用于按目录聚合
+- `tag`：仍兼容，作为 `version` 的别名
+- `comment`：自由备注
+- 未在标准字段列表中的列（如 `density`、`DRC_violations`、各 clock 的 period/wns/tns/path）会自动存入 `extra_fields`
 - 编码支持 UTF-8 BOM / UTF-8 / GBK / Latin-1
 - 空值可用 `-`、`N/A`、`NULL`、空字符串表示
+- 比例字段（`mbb_ratio` / `clock_gating_ratio` / `utilization` / `congestion*`）可传 0-1 小数（推荐）或 0-100 整数
 
 ### 3.2 功耗数据 CSV 格式
 
@@ -150,14 +162,14 @@ a_reg/CK,b_Refg_0_/D,-0.020,27,23,500,77,9,-10,1,122,122,11
 - timing group 从文件名提取（如 `SRAMCLK_vio.csv` → `SRAMCLK`）
 - 若 QoR 记录不存在，该文件跳过
 
-### 4.5 上传 Run 备注
+### 4.5 上传 Run 备注（v3.0 新增 notes 数据类型）
 
 1. 数据类型选择「Run 备注」
 2. 选择模块和版本
 3. （可选）填写 `full_dir`：Run 目录路径，用于区分同 module+version 下的不同子目录 run
 4. 选择 CSV 文件（2~3 列：`item, description[, full_dir]`）
 
-**CSV 格式**：
+**CSV 格式 A：2 列（item, description），通过参数传入 full_dir**：
 
 ```csv
 item,description
@@ -166,10 +178,20 @@ item,description
 修改内容,优化了关键路径 retiming
 ```
 
+**CSV 格式 B：3 列（item, description, full_dir）**，每行可指定不同 full_dir：
+
+```csv
+item,description,full_dir
+综合策略,compile_ultra,v1.0/corner_ss/cpu_core_baseline
+综合策略,compile_fast,v1.0/corner_ff/cpu_core_baseline
+目标频率,500MHz,v1.0/corner_ss/cpu_core_baseline
+```
+
 **行为**：
 
 - 关联到 (模块 + 版本) 对应的 QorRecord
-- 若 `full_dir` 非空，进一步按 QorRecord 的 `extra_fields.full_dir` 精确匹配
+- 若 `full_dir` 非空，进一步按 `QorRecord.full_dir` 精确匹配（v3.0 起为独立列）
+- 找不到精确匹配 → 回退到该 (module, version) 的第一条记录（兼容老数据）
 - **重复上传同 (record, full_dir) 的备注会覆盖旧备注**，不会累积
 - 其他 `full_dir` 的备注不受影响
 
@@ -193,7 +215,7 @@ export QOR_API_KEY=qor_xxxxxxxx
 
 # data_type: qor (默认) / power / violation / notes
 # --release: 标记为已发布
-# --full-dir <DIR>: Run 目录路径 (notes 类型)
+# --full-dir <DIR>: Run 目录路径 (notes 类型, 默认 $PWD)
 ```
 
 **Makefile 方式**（推荐用于 DC flow）：
@@ -207,6 +229,48 @@ make release          # 上传并标记为已发布
 ```
 
 Makefile 自动用 `$(PWD)` 作为 notes 的 `full_dir`，再次 `make` 会覆盖同目录的旧备注。
+
+### 4.8 一键生成 Demo 数据（v3.0 新增）
+
+需要快速体验 Dashboard / 对比 / Review 等功能时，可使用 demo 数据生成脚本：
+
+```bash
+# 完整重置 + 重新生成 (推荐, 干净状态)
+python seed_demo_data.py --clean-all
+
+# 仅清空 demo 命名空间的数据
+python seed_demo_data.py --clean
+
+# 增量补充 (项目已存在则跳过)
+python seed_demo_data.py
+
+# 仅打印计划, 不写库
+python seed_demo_data.py --preview
+
+# 指定随机种子, 便于复现
+python seed_demo_data.py --seed 12345
+```
+
+**生成规模**：
+
+| 维度          | 数量                                       |
+|---------------|--------------------------------------------|
+| 项目          | 5 个（demo_riscv_soc / demo_dsp_engine / demo_video_codec / demo_eth_mac / demo_ai_accel）|
+| 模块/项目     | 5~10 个                                    |
+| base_dir/模块 | 2~3 个（日期/周次/语义版本号）              |
+| run/base_dir  | 2~3 个（baseline / cfg1 / cfg2 / opt_speed / opt_area / mbb_aggr）|
+| 总记录数      | 约 200+ 条（默认 seed 约 227 条）           |
+
+**`--clean-all` 清理顺序**（修复外键约束错误）：
+
+```
+TileReview / GroupReview / SubsystemReview / ReviewSnapshot / ReviewFile
+  → ProjectMember / DashboardGroup
+    → 非系统项目 (排除 _system / system / admin / default)
+      → 模块/记录 (级联)
+```
+
+详细字段与指标方向约定见 [DATA_FORMAT.md](DATA_FORMAT.md) §14~19。
 
 ## 5. Dashboard 使用
 
@@ -478,7 +542,104 @@ db.session.commit()
 - 初步分析时开启 Bus 合并，快速定位问题总线
 - 深入分析某条 bus 时关闭合并，查看具体哪一位最差
 
-## 11. 联系与支持
+## 11. 数据库存储与迁移
+
+### 11.1 存储结构（v4.0 起按项目分库）
+
+自 v4.0 起，QoR Recorder 采用**主库 + 项目库**的分离架构：
+
+| 文件                                | 存储内容                                                                                |
+|-------------------------------------|-----------------------------------------------------------------------------------------|
+| `qor_recorder.db`（主库）            | 用户、项目元数据、API Key、项目成员、仪表板配置主键等**系统级**数据                       |
+| `qor_p_<id>.db`（项目库，**每个项目一个**） | 该项目的模块、QoR 记录、违例路径、Run 备注、Tile/Group/Subsystem Review、告警规则等**业务**数据 |
+
+**优势**：
+
+- **性能隔离**：每个项目独立文件，单项目大数据量不会拖慢其他项目
+- **易于备份/归档**：可单独备份或归档一个项目（直接拷贝对应 `qor_p_<id>.db`）
+- **支持锁定**：项目 `status=locked` 时，对应 DB 文件被设为 `0444`（只读），物理层防止误写
+- **可清理**：删除项目时只需删除对应 `.db` 文件，零牵连
+- **跨项目查询**：Dashboard 等场景通过 `query_records_by_projects()` 按项目迭代查询并合并结果
+
+### 11.2 迁移历史数据到分库结构
+
+从旧版（v3.x 单库）升级到 v4.0 时，运行迁移脚本：
+
+```bash
+# 1. 备份旧主库
+cp qor_recorder.db qor_recorder.db.bak.$(date +%Y%m%d)
+
+# 2. 升级代码 + 跑 alembic 迁移（增加 projects.db_path 字段）
+flask db upgrade
+
+# 3. 按项目分库数据迁移（默认 dry-run 模式，先看看会迁什么）
+python migrate_to_per_project_db.py --dry-run
+
+# 4. 实际迁移
+python migrate_to_per_project_db.py
+
+# 5. 迁移后从主库清理已迁数据（可选，节省主库空间）
+python migrate_to_per_project_db.py --clean
+```
+
+**注意**：
+
+- 迁移脚本使用直接 SQL 操作（不走 ORM bind 路由），避免分库逻辑干扰
+- 迁移后主库中 `modules` / `qor_records` 等业务表为 0 条，所有数据都在 `qor_p_<id>.db`
+- 单库结构的回滚：删除所有 `qor_p_*.db` 后将主库 `modules` 等表的内容恢复即可（请用 `--clean` 前的备份）
+
+### 11.3 锁定项目（status=locked）
+
+```bash
+# 通过管理页面 → 项目管理 → 锁定按钮
+# 或直接修改项目状态
+```
+
+锁定后该项目的 `.db` 文件被设为只读（`0444`），所有写入请求（上传/编辑/删除）会被拒绝。
+
+**解锁**：在管理页面解锁，文件恢复 `0644`，WAL 模式自动恢复。
+
+### 11.4 删除项目
+
+QoR Recorder 提供两级删除：
+
+| 操作       | 数据保留 | 是否可恢复 | 使用场景                       |
+|------------|----------|------------|--------------------------------|
+| 软删除     | 全部保留 | ✅ 可恢复   | 误操作、临时清理 dashboard     |
+| 硬删除     | 全部删除 | ❌ 不可逆   | 数据迁移完成、释放磁盘空间      |
+
+- **软删除**：admin → 项目管理 → 删除（设 `status=hidden`），admin → 已隐藏项目 → 恢复
+- **硬删除**：admin → 已隐藏项目 → 硬删除（需输入 `confirm=true`），同时删除对应 `qor_p_<id>.db`
+
+### 11.5 多数据库后端切换（DB_TYPE）
+
+通过单一环境变量 `DB_TYPE` 切换后端：
+
+| DB_TYPE  | 含义              | 必填额外配置        |
+|----------|-------------------|---------------------|
+| `sqlite` | SQLite（默认）     | 无                  |
+| `sql`    | MySQL/PostgreSQL  | `DATABASE_URL`      |
+| `mongodb`| MongoDB           | `MONGODB_URI`       |
+
+```bash
+# SQLite (默认)
+DB_TYPE=sqlite
+
+# MySQL
+DB_TYPE=sql
+DATABASE_URL=mysql+pymysql://user:pass@localhost:3306/qor_recorder?charset=utf8mb4
+
+# MongoDB
+DB_TYPE=mongodb
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DB=qor_recorder
+```
+
+切换后端后执行 `python db_init.py` 自动建库/迁移。
+
+**注意**：MongoDB 模式下，主库走 SQLite（只读回退），业务库走 Mongo + 双写架构。详见 `docs/MIGRATION_MONGODB.md`（如存在）。
+
+## 12. 联系与支持
 
 - 系统管理员：请联系您的团队管理员
 - 数据问题：检查 CSV 格式与编码
@@ -486,4 +647,4 @@ db.session.commit()
 
 ***
 
-*文档版本：2.0 | 最后更新：2026-07-23*
+*文档版本：4.0 | 最后更新：2026-07-28（按项目分库架构 + MongoDB 切换）*

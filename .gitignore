@@ -53,6 +53,16 @@ htmlcov/
 
 # 临时验证脚本 (开发期手动跑, 不入库)
 _test_*.py
+_tmp_*.py
+_check_*.py
+_http_*.py
+_verify_*.py
+verify_*.py
+preview_demo_data.py
+
+# IDE 工具相关
+.trae/
+trae/
 
 # 部署
 *.pid

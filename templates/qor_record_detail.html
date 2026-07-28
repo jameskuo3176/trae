@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block title %}QoR 记录详情 #{{ record_id }} - QoR Recorder{% endblock %}
+
+{% block content %}
+<div class="container-fluid" style="max-width: 1400px; margin: 0 auto; padding: 20px;">
+    <!-- 顶部: 标题 + 操作按钮 -->
+    <div
+        style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
+        <div>
+            <h2 style="margin:0; font-size:22px;">📊 QoR 记录详情</h2>
+            <div id="recordHeadline" style="font-size:13px; color:var(--color-text-secondary); margin-top:4px;">加载中…
+            </div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-default" onclick="goBack()">← 返回记录管理</button>
+            <button class="btn btn-primary" id="goDashboardBtn" onclick="goDashboard()">📈 查看 Dashboard</button>
+            <button class="btn btn-success" id="goAggregateBtn" onclick="goAggregate()">📁 目录聚合</button>
+        </div>
+    </div>
+
+    <!-- full_dir 路径解析条 -->
+    <div id="pathBar" class="card"
+        style="padding:12px 16px; margin-bottom:12px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:13px;">
+        <span style="color:var(--color-text-secondary);">📂 full_dir:</span>
+        <code id="pathFullDir"
+            style="background:var(--color-surface-hover); padding:4px 8px; border-radius:4px;">-</code>
+        <span id="pathBaseDir" class="tag" style="background:#e3f2fd; color:#1976d2;">base_dir: -</span>
+        <span id="pathSubPath" class="tag" style="background:#f3e5f5; color:#7b1fa2;">sub_path: -</span>
+        <span id="pathRunName" class="tag" style="background:#e8f5e9; color:#2e7d32;">run_name: -</span>
+    </div>
+
+    <!-- 关键指标卡片 (6 个) -->
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-bottom:16px;"
+        id="metricCards">
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">总面积 (um²)</div>
+            <div id="m-area" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">WNS Setup (ns)</div>
+            <div id="m-wns" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">NVP Setup</div>
+            <div id="m-nvp" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">总功耗 (mW)</div>
+            <div id="m-power" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">Cell 数</div>
+            <div id="m-cell" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">MBB / CG (%)</div>
+            <div id="m-mbb-cg" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <!-- 全部指标详情表 -->
+        <div class="card">
+            <div class="card-header">📋 全部指标</div>
+            <div class="card-body" style="padding:0; max-height: 60vh; overflow:auto;">
+                <table class="chart-table" id="allMetricsTable">
+                    <thead>
+                        <tr>
+                            <th>指标</th>
+                            <th style="text-align:right;">值</th>
+                            <th>状态</th>
+                        </tr>
+                    </thead>
+                    <tbody id="allMetricsBody">
+                        <tr>
+                            <td colspan="3" class="empty-state">加载中…</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 同 module+version 横向对比 -->
+        <div class="card">
+            <div class="card-header">🔍 同 Module+Version 横向对比 <span id="siblingHint"
+                    style="font-size:11px; color:var(--color-text-secondary); margin-left:6px;"></span></div>
+            <div class="card-body" style="padding:0; max-height: 60vh; overflow:auto;">
+                <table class="chart-table" id="siblingsTable">
+                    <thead>
+                        <tr>
+                            <th>Run (full_dir)</th>
+                            <th style="text-align:right;">Area</th>
+                            <th style="text-align:right;">WNS</th>
+                            <th style="text-align:right;">NVP</th>
+                            <th style="text-align:right;">Cell</th>
+                        </tr>
+                    </thead>
+                    <tbody id="siblingsBody">
+                        <tr>
+                            <td colspan="5" class="empty-state">加载中…</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 元数据 -->
+    <div class="card" style="margin-top:12px;">
+        <div class="card-header">ℹ️ 元数据</div>
+        <div class="card-body" id="metaBody" style="padding:14px; font-size:13px;">
+            <div style="color:var(--color-text-secondary);">加载中…</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const RECORD_ID = {{ record_id }};
+
+    const METRIC_LABEL = {
+        'area_total': '总面积', 'area_combinational': '组合面积', 'area_sequential': '时序面积',
+        'area_black_box': '黑盒面积', 'area_macro': '宏面积',
+        'cell_count': 'Cell 数', 'instance_count': 'Instance 数', 'net_count': 'Net 数', 'sequential_cell_count': '时序 Cell',
+        'wns_setup': 'WNS Setup', 'tns_setup': 'TNS Setup', 'nvp_setup': 'NVP Setup',
+        'wns_hold': 'WNS Hold', 'tns_hold': 'TNS Hold', 'nvp_hold': 'NVP Hold',
+        'power_total': '总功耗', 'power_internal': '内部功耗', 'power_switching': '开关功耗', 'power_leakage': '漏电功耗',
+        'mbb_ratio': 'MBB 合并率', 'clock_gating_ratio': 'CG 覆盖率', 'utilization': '利用率',
+        'congestion': '拥塞', 'congestion_h': '拥塞 H', 'congestion_v': '拥塞 V', 'congestion_b': '拥塞 B',
+        'target_frequency': '目标频率', 'achieved_frequency': '达成频率',
+    };
+
+    function fmt(v, digits) {
+        if (v == null || isNaN(v)) return '-';
+        if (Math.abs(v) >= 100) return v.toFixed(0);
+        if (Math.abs(v) >= 1) return v.toFixed(digits || 2);
+        return v.toFixed(digits || 3);
+    }
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    function goBack() {
+        if (document.referrer) location.href = document.referrer;
+        else location.href = '/admin#records';
+    }
+    function goDashboard() {
+        // 跳转到 dashboard 并预选 module+version, 自动聚焦该 record
+        const r = window._record;
+        if (!r) return;
+        const params = new URLSearchParams({
+            project_id: r.module?.project_id || '',
+            module_id: r.module_id || '',
+            version: r.version || '',
+        });
+        if (r.full_dir) params.set('full_dir', r.full_dir);
+        if (r.id) params.set('focus_record_id', r.id);
+        location.href = '/dashboard?' + params.toString();
+    }
+    function goAggregate() {
+        const r = window._record;
+        if (!r) return;
+        location.href = '/dashboard?dir_agg=run#dirAggregate';
+    }
+
+    async function loadDetail() {
+        const r = await fetch(`/api/qor/record/${RECORD_ID}`);
+        if (!r.ok) {
+            document.querySelector('.container-fluid').innerHTML =
+                `<div class="card" style="padding:30px; text-align:center;">
+                <h3>❌ 加载失败</h3>
+                <p style="color:#999;">HTTP ${r.status}: ${(await r.json().catch(() => ({ error: r.statusText }))).error || ''}</p>
+                <button class="btn btn-default" onclick="goBack()">返回</button>
+            </div>`;
+            return;
+        }
+        const data = await r.json();
+        window._record = data.record;
+        render(data);
+    }
+
+    function render(data) {
+        const rec = data.record;
+        const mod = rec.module_name || '-';
+        const proj = rec.project_name || '-';
+        const ver = rec.version || '-';
+        document.getElementById('recordHeadline').innerHTML =
+            `项目: <b>${escapeHtml(proj)}</b> / 模块: <b>${escapeHtml(mod)}</b> / version: <b>${escapeHtml(ver)}</b> / record #${rec.id}`;
+
+        // 路径解析条
+        document.getElementById('pathFullDir').textContent = rec.full_dir || '(无 full_dir)';
+        if (rec.full_dir) {
+            const parts = rec.full_dir.replace(/\\/g, '/').split('/').filter(s => s);
+            const base = parts[0] || '-';
+            const sub = parts.length > 2 ? parts.slice(1, -1).join('/') : (parts.length === 2 ? '' : '-');
+            const run = parts.length > 1 ? parts[parts.length - 1] : '-';
+            document.getElementById('pathBaseDir').textContent = 'base_dir: ' + base;
+            document.getElementById('pathSubPath').textContent = 'sub_path: ' + (sub || '∅');
+            document.getElementById('pathRunName').textContent = 'run_name: ' + run;
+        } else {
+            document.getElementById('pathBaseDir').textContent = 'base_dir: -';
+            document.getElementById('pathSubPath').textContent = 'sub_path: -';
+            document.getElementById('pathRunName').textContent = 'run_name: -';
+        }
+
+        // 关键指标卡片
+        const setM = (id, v, good) => {
+            const el = document.getElementById(id);
+            el.textContent = fmt(v, 3);
+            el.style.color = good === true ? '#2e7d32' : good === false ? '#c62828' : 'var(--color-text)';
+        };
+        setM('m-area', rec.area_total);
+        setM('m-wns', rec.wns_setup, rec.wns_setup == null ? null : rec.wns_setup >= 0);
+        setM('m-nvp', rec.nvp_setup, rec.nvp_setup == null ? null : rec.nvp_setup === 0);
+        setM('m-power', rec.power_total);
+        setM('m-cell', rec.cell_count);
+        document.getElementById('m-mbb-cg').innerHTML =
+            `${fmt(rec.mbb_ratio, 1)} / ${fmt(rec.clock_gating_ratio, 1)}`;
+
+        // 全部指标表
+        const tbody = document.getElementById('allMetricsBody');
+        const rows = Object.keys(METRIC_LABEL).map(k => {
+            const v = rec[k];
+            let status = '<span style="color:#999;">-</span>';
+            if (v != null && !isNaN(v)) {
+                if (k === 'wns_setup' || k === 'wns_hold') {
+                    if (v >= 0) status = '<span class="tag tag-success">✓ 满足</span>';
+                    else if (v >= -0.2) status = '<span class="tag" style="background:#fff3e0;color:#e65100;">⚠ 边缘</span>';
+                    else status = '<span class="tag tag-danger">✗ 违例</span>';
+                } else if (k === 'tns_setup' || k === 'tns_hold') {
+                    if (v >= 0) status = '<span class="tag tag-success">✓ 满足</span>';
+                    else status = '<span class="tag tag-danger">✗ 违例</span>';
+                } else if (k === 'nvp_setup' || k === 'nvp_hold') {
+                    if (v === 0) status = '<span class="tag tag-success">✓ 满足</span>';
+                    else status = '<span class="tag tag-danger">✗ 违例 ' + v + '</span>';
+                }
+            }
+            return `<tr>
+            <td>${escapeHtml(METRIC_LABEL[k])} <span style="color:#999;font-size:11px;">(${k})</span></td>
+            <td style="text-align:right; font-family:monospace;">${fmt(v, 3)}</td>
+            <td>${status}</td>
+        </tr>`;
+        }).join('');
+        tbody.innerHTML = rows;
+        // 增强: 列宽拖拽 + 列隐藏 + 行搜索
+        if (window.TBLX) {
+            const t = document.getElementById('allMetricsTable');
+            if (t) { t.dataset.tblx = 'qor_allMetrics'; window.TBLX.enhance(t); }
+        }
+
+        // 横向对比
+        const siblings = data.siblings || [];
+        document.getElementById('siblingHint').textContent =
+            `共 ${siblings.length} 个 run`;
+        const sibBody = document.getElementById('siblingsBody');
+        if (!siblings.length) {
+            sibBody.innerHTML = '<tr><td colspan="5" class="empty-state">无对比数据</td></tr>';
+        } else {
+            // 找最佳 (area 最小, wns 最大且非负, nvp 最少, cell 最少)
+            const minArea = Math.min(...siblings.map(s => s.area_total || Infinity));
+            const maxWns = Math.max(...siblings.map(s => s.wns_setup == null ? -Infinity : s.wns_setup));
+            const minNvp = Math.min(...siblings.map(s => s.nvp_setup == null ? Infinity : s.nvp_setup));
+            const minCell = Math.min(...siblings.map(s => s.cell_count || Infinity));
+            sibBody.innerHTML = siblings.map(s => {
+                const isCurrent = s.id === rec.id;
+                const tr = document.createElement('tr');
+                const tag = (v, best) => {
+                    if (v == null) return '<span style="color:#999;">-</span>';
+                    if (v === best) return `<b style="color:#2e7d32;">${fmt(v)} ✓</b>`;
+                    return fmt(v);
+                };
+                return `<tr style="${isCurrent ? 'background:#fff3e0;' : ''}">
+                <td>
+                    <a href="/qor_record/${s.id}" style="${isCurrent ? 'font-weight:600;color:#e65100;' : ''}">
+                        ${escapeHtml(s.full_dir || s.version || '#' + s.id)}
+                    </a>
+                    ${isCurrent ? '<span class="tag" style="background:#e65100;color:#fff;font-size:10px;margin-left:4px;">当前</span>' : ''}
+                </td>
+                <td style="text-align:right;font-family:monospace;">${tag(s.area_total, minArea)}</td>
+                <td style="text-align:right;font-family:monospace;">${tag(s.wns_setup, maxWns)}</td>
+                <td style="text-align:right;font-family:monospace;">${tag(s.nvp_setup, minNvp)}</td>
+                <td style="text-align:right;font-family:monospace;">${tag(s.cell_count, minCell)}</td>
+            </tr>`;
+            }).join('');
+            // 增强: 列宽拖拽 + 列隐藏 + 行搜索
+            if (window.TBLX) {
+                const t = document.getElementById('siblingsTable');
+                if (t) { t.dataset.tblx = 'qor_siblings'; window.TBLX.enhance(t); }
+            }
+        }
+
+        // 元数据
+        const meta = document.getElementById('metaBody');
+        meta.innerHTML = `
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:8px 16px;">
+            <div><b>Record ID:</b> #${rec.id}</div>
+            <div><b>Project:</b> ${escapeHtml(proj)}</div>
+            <div><b>Module:</b> ${escapeHtml(mod)}</div>
+            <div><b>Version:</b> ${escapeHtml(ver)}</div>
+            <div><b>full_dir:</b> <code>${escapeHtml(rec.full_dir || '-')}</code></div>
+            <div><b>Recorded:</b> ${rec.recorded_at ? new Date(rec.recorded_at).toLocaleString('zh-CN') : '-'}</div>
+            <div><b>Source File:</b> ${escapeHtml(rec.source_file || '-')}</div>
+            <div><b>Released:</b> ${rec.is_released ? '<span class="tag tag-success">已发布</span>' : '<span class="tag" style="background:#999;color:#fff;">未发布</span>'}</div>
+        </div>
+    `;
+    }
+
+    loadDetail();
+</script>
+{% endblock %}

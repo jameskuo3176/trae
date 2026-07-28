@@ -435,6 +435,40 @@
             background: var(--color-surface-hover);
         }
 
+        /* 表格右侧操作列: 横向滚动时始终贴右可见 */
+        /* 关键: 1) border-collapse: separate  2) td/th 单独设置 border-bottom, 不与 sticky 冲突 */
+        .table.has-sticky-right,
+        table.has-sticky-right {
+            border-collapse: separate !important;
+            border-spacing: 0;
+        }
+        .table .col-sticky-right,
+        .table th.col-sticky-right,
+        .table td.col-sticky-right,
+        .chart-table th.col-sticky-right,
+        .chart-table td.col-sticky-right {
+            position: sticky;
+            right: 0;
+            background: var(--color-surface, #ffffff);
+            z-index: 2;
+            box-shadow: -4px 0 8px rgba(0, 0, 0, 0.08);
+            min-width: 280px;
+            white-space: nowrap;
+        }
+        .table thead th.col-sticky-right,
+        .chart-table thead th.col-sticky-right {
+            background: var(--color-surface-hover);
+            z-index: 3;
+        }
+        .table tbody tr:hover td.col-sticky-right,
+        .chart-table tbody tr:hover td.col-sticky-right {
+            background: var(--color-surface-hover, #fafafa);
+        }
+        .table.has-sticky-right tr td.col-sticky-right,
+        .table.has-sticky-right tr th.col-sticky-right {
+            border-bottom: 1px solid var(--color-border);
+        }
+
         .tag {
             display: inline-block;
             padding: 2px 8px;
@@ -1127,6 +1161,16 @@
 
 <body data-theme="{{ (current_user.get_theme().name if current_user.is_authenticated else 'neon') }}">
     {% if current_user.is_authenticated %}
+    <script>
+        // 注入当前用户信息供前端 JS 使用 (admin.html 用来判断删除权限等)
+        window.CURRENT_USER = {
+            id: {{ current_user.id }},
+            username: {{ current_user.username | tojson }},
+            display_name: {{ (current_user.display_name or '') | tojson }},
+            is_admin: {{ 'true' if current_user.is_admin else 'false' }},
+            is_release: {{ 'true' if current_user.is_release else 'false' }},
+        };
+    </script>
     <nav class="navbar">
         <div class="navbar-brand">QoR Recorder</div>
         <div class="navbar-nav">

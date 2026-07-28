@@ -1,7 +1,25 @@
-# QoR Recorder 数据提交规范 v2.0
+# QoR Recorder 数据提交规范 v4.0
 
-> 本文档定义每次 "run"（综合运行）需要提交的数据格式、提交方式（脚本 / API / Makefile）以及覆盖与关联策略。
-> 适用于：CSV 文件作者、Makefile 集成者、API 调用方。
+> 本文档定义每次 "run"（综合运行）需要提交的数据格式、提交方式（脚本 / API / Makefile / Demo 脚本）以及覆盖与关联策略。
+> 适用于：CSV 文件作者、Makefile 集成者、API 调用方、Demo 数据生成者。
+
+> **v4.0 更新（2026-07-28）**:
+> - 引入**按项目分库**架构：每个项目独立 DB 文件 (`qor_p_<id>.db`)，主库只存系统级数据
+> - 引入**多数据库后端**支持：通过 `DB_TYPE` 环境变量一键切换 sqlite / sql (MySQL/PostgreSQL) / mongodb
+> - 引入**MongoDB dual-write** 抽象层：业务库走 Mongo，主库走 SQLite 兜底
+> - 提供 `migrate_to_per_project_db.py` 历史数据迁移工具
+> - 提供 `migrate_sqlite_to_mongo.py` SQLite → MongoDB 迁移工具
+> - `db_init.py --check` 验证配置；`db_init.py --seed` 初始化+demo 数据
+> - 项目软删除（`status=hidden`）+ 已隐藏项目恢复
+
+> **v3.0 更新（2026-07-28）**:
+> - 增补 `full_dir` 作为独立列（不只是 `extra_fields`），用于按目录聚合
+> - 统一时序指标方向为"越小越好"（WNS/TNS/NVP 全部 `min`），与面积/功耗/拥塞一致
+> - 新增 `seed_demo_data.py` 脚本用于生成多项目/多模块/多 base_dir 的演示数据
+> - 新增 `qor_record_detail.html` 详情页与 `record_id` 跳转
+> - 新增 Review 流程（TileReview / GroupReview / SubsystemReview）
+> - 新增目录聚合 API（`/api/qor/aggregate?group_by=run|base_dir|module`）
+
 
 ---
 
@@ -102,6 +120,7 @@ curl -X POST http://localhost:5000/api/v1/upload \
 |---------------------------|--------|-------|------|-------------------------------------------------|
 | **module_name**           | string | -     | ✅   | 模块名，必须在项目中已存在                       |
 | **version**               | string | -     | ✅   | 版本标识，例 `v1` / `20260301_1430` / `a1b2c3` |
+| **full_dir**              | string | -     | ⭕   | **v3.0 独立列**。Run 工作目录，格式 `<base_dir>/<sub_path>/<run_name>`，用于按目录聚合。详见 §15 |
 | area_total                | float  | um²   | ⭕   | 总面积                                          |
 | area_combinational        | float  | um²   | ⭕   | 组合逻辑面积                                    |
 | area_sequential           | float  | um²   | ⭕   | 寄存器面积                                      |
@@ -470,6 +489,342 @@ GET /api/run_notes?module_id=5&version=v1.0&full_dir=/scratch/runs/v1.0
 
 ---
 
-**文档版本**: 2.0
-**最后更新**: 2026-07-23
+## 14. 指标方向约定（v3.0 统一）
+
+> 本节说明每个指标在系统中的"评价方向"，用于差分对比、聚合排序、阈值告警等。
+
+| 指标族        | 字段                                            | 方向 (`min` / `max`) | 说明                                                |
+|---------------|-------------------------------------------------|----------------------|-----------------------------------------------------|
+| 面积          | `area_total` / `area_combinational` / `area_sequential` / `area_black_box` / `area_macro` | `min` | 越小越好                                  |
+| 单元数        | `cell_count` / `instance_count` / `net_count` / `sequential_cell_count` | `min` | 越小越好                                  |
+| **时序**      | `wns_setup` / `wns_hold`                        | **`min`**            | v3.0 统一：负值=违例，越小(更负)=越差，越大=越好   |
+|               | `tns_setup` / `tns_hold`                        | **`min`**            | v3.0 统一：累计违例，越小(更负)=越差                |
+|               | `nvp_setup` / `nvp_hold`                        | `min`                | 违例路径数越少越好                                  |
+| 功耗          | `power_total` / `power_internal` / `power_switching` / `power_leakage` | `min` | 越小越好                                  |
+| 物理          | `mbb_ratio` / `clock_gating_ratio`              | `max`                | 合并率/覆盖率越高越好                               |
+|               | `utilization`                                   | `mid`                | 适中最好（前端默认按 `min` 处理，业务可覆盖）       |
+| 拥塞          | `congestion` / `congestion_h` / `congestion_v` / `congestion_b` | `min` | 越小越好                                  |
+| 频率          | `target_frequency` / `achieved_frequency`      | `max`                | 越高越好                                            |
+
+**v3.0 关键变更**：
+- `wns_setup` / `tns_setup` / `wns_hold` / `tns_hold` 从 v2.0 的 `max` 改为 **`min`**
+- 理由：与用户约定保持一致（违例方向统一为"越小越差"），前端不再显示"方向"列以避免概念混淆
+- 业务影响：Dashboard 同比/环比计算时，WNS 减小(更负) 视为恶化（红色），增大(更接近 0 或正) 视为改善（绿色）
+
+API 返回时会同时给出 `metric_directions` 字段：
+
+```json
+GET /api/qor/aggregate?group_by=module
+{
+  "metric_directions": {
+    "area_total":      "min",
+    "wns_setup":       "min",
+    "tns_setup":       "min",
+    "nvp_setup":       "min",
+    "wns_hold":        "min",
+    "tns_hold":        "min",
+    "nvp_hold":        "min",
+    "mbb_ratio":       "max",
+    "achieved_frequency": "max"
+  }
+}
+```
+
+---
+
+## 15. `full_dir` 字段规范（v3.0 升级）
+
+> 自 v3.0 起，`QorRecord.full_dir` 从 `extra_fields` JSON 字段提升为**独立列**，支持按目录索引与聚合。
+
+### 15.1 字段定义
+
+| 属性     | 值                                                          |
+|----------|-------------------------------------------------------------|
+| 列名     | `full_dir`                                                  |
+| 类型     | `String(512)`                                               |
+| 必填     | 否（推荐填写，特别是多 corner / 多 sub-run 场景）           |
+| 索引     | 普通索引（用于按目录过滤）                                  |
+| 唯一性   | 不唯一——同一 module + version 可有多个不同 `full_dir` 的 run |
+
+### 15.2 路径格式
+
+```
+<base_dir>/<sub_path>/<run_name>
+```
+
+| 段         | 含义                                            | 示例                                  |
+|------------|-------------------------------------------------|---------------------------------------|
+| `base_dir` | 综合器 run 的根目录（一次完整 DC run）          | `v1.0` / `2026Q3_w1` / `2026_0728_weekly` |
+| `sub_path` | 子目录（多 corner / 多 sub-run 区分）           | `main` / `corner_ss` / `corner_ff`    |
+| `run_name` | 本次 run 的具体名称（一个 base_dir 内唯一）     | `cpu_core_baseline` / `cpu_core_cfg1` |
+
+**示例**：
+```
+v1.0/main/cpu_core_baseline
+v1.0/corner_ss/cpu_core_baseline
+v1.0/corner_ff/cpu_core_cfg1
+2026Q3_w2/corner_tt/lsu_opt_speed
+```
+
+### 15.3 用途
+
+- **避免歧义**：同一 module 下不同 base_dir 可能有同名 run（如 `cpu_core_baseline`），用 `full_dir` 作为唯一标识
+- **目录聚合**：按 `base_dir` 跨模块汇总，或按 `module` 跨 base_dir 汇总（见 §16）
+- **Run 备注关联**：notes 的 `full_dir` 字段用于精确匹配到某条具体 QorRecord
+- **Dashboard 跳转**：URL `/qor_record/<id>` 直接展示该 full_dir 下的所有指标详情
+
+### 15.4 兼容老数据
+
+v2.0 数据原本将 `full_dir` 存于 `extra_fields` JSON 中。v3.0 提供数据库迁移：
+
+```bash
+flask db upgrade    # 自动迁移 + 回填
+# 或手动回填:
+python -c "
+from app import app, db
+from models import QorRecord
+import json
+with app.app_context():
+    for r in QorRecord.query.filter(QorRecord.full_dir.is_(None)).all():
+        ef = json.loads(r.extra_fields or '{}')
+        if 'full_dir' in ef:
+            r.full_dir = ef['full_dir']
+    db.session.commit()
+"
+```
+
+---
+
+## 16. 目录聚合 API（v3.0 新增）
+
+> `GET /api/qor/aggregate` 支持按 `run` / `base_dir` / `module` 三种维度聚合 QoR 数据，解决同名 run 在不同 base_dir 下的歧义问题。
+
+### 16.1 接口
+
+```
+GET /api/qor/aggregate
+```
+
+| 参数            | 必填 | 说明                                                            |
+|-----------------|------|-----------------------------------------------------------------|
+| `project_ids`   | ✅   | 项目 ID（逗号分隔，支持多项目）                                 |
+| `group_by`      | -    | `run`（默认）/ `base_dir` / `module`                            |
+| `metric`        | -    | 指标名（默认 `area_total`）；支持多次调用取不同指标             |
+| `modules`       | -    | 模块 ID 过滤（可选）                                            |
+| `versions`      | -    | 版本过滤（可选）                                                |
+| `base_dirs`     | -    | base_dir 过滤（可选，仅 `group_by=run` 时有效）                 |
+
+### 16.2 三种 group_by 示例
+
+**group_by=run**（默认）：每条 QorRecord 一行
+```json
+{
+  "rows": [
+    {
+      "key": "v1.0/main/cpu_core_baseline",
+      "module": "cpu_core",
+      "base_dir": "v1.0",
+      "sub_path": "main",
+      "run_name": "cpu_core_baseline",
+      "version": "v1.0_baseline",
+      "count": 1,
+      "area_total_avg": 12345.6
+    }
+  ]
+}
+```
+
+**group_by=base_dir**：跨模块跨 run 汇总
+```json
+{
+  "rows": [
+    {
+      "key": "v1.0",
+      "count": 8,
+      "modules": ["cpu_core", "lsu", "ifu"],
+      "area_total_avg": 10500.2
+    }
+  ]
+}
+```
+
+**group_by=module**：跨 base_dir 跨 run 汇总
+```json
+{
+  "rows": [
+    {
+      "key": "cpu_core",
+      "count": 7,
+      "base_dirs": ["v1.0", "v1.1", "v2.0"],
+      "area_total_avg": 11200.4
+    }
+  ]
+}
+```
+
+### 16.3 配合 `metric_directions` 做同比
+
+```javascript
+const data = await fetch('/api/qor/aggregate?project_ids=1&group_by=module&metric=area_total').then(r => r.json());
+const dirs = data.metric_directions;  // { area_total: 'min', wns_setup: 'min', ... }
+for (const row of data.rows) {
+    // 行内比较 (vs 上一行): 用 row.area_total_avg 的差值
+    // 用 dirs.area_total ('min') 决定恶化方向
+}
+```
+
+---
+
+## 17. Demo 数据生成脚本（`seed_demo_data.py`，v3.0 新增）
+
+> 用于一键生成符合演示需求的多项目/多模块/多 base_dir QoR 数据，覆盖 Dashboard/对比/Review 等功能。
+
+### 17.1 用法
+
+```bash
+# 完整重置 + 重新生成 (推荐, 干净状态)
+python seed_demo_data.py --clean-all
+
+# 仅清空 demo 命名空间的数据
+python seed_demo_data.py --clean
+
+# 增量补充 (项目已存在则跳过)
+python seed_demo_data.py
+
+# 仅打印计划, 不写库
+python seed_demo_data.py --preview
+
+# 指定随机种子, 便于复现
+python seed_demo_data.py --seed 12345
+```
+
+### 17.2 生成规则
+
+| 维度        | 数量                                | 命名方式                                          |
+|-------------|-------------------------------------|---------------------------------------------------|
+| 项目        | **5 个**                            | `demo_riscv_soc` / `demo_dsp_engine` / `demo_video_codec` / `demo_eth_mac` / `demo_ai_accel` |
+| 模块/项目   | **5 ~ 10 个**（随机）               | 见 `DEMO_PROJECTS` 表，模块名贴近真实 IP（cpu_core / lsu / fft_core ...） |
+| base_dir/模块 | **2 ~ 3 个**（随机）              | 按项目类型选 `v1.0/v1.1/v2.0` 或 `2026Q3_w1/w2/w3` 等 |
+| run/base_dir | **2 ~ 3 个**（随机）               | 后缀 `baseline` / `cfg1` / `cfg2` / `opt_speed` / `opt_area` / `mbb_aggr` |
+| 总记录数    | 约 **200+ 条**                      | 默认 seed 20260728 约生成 227 条                  |
+
+### 17.3 数据特性
+
+- **方向一致**：优秀 base_dir 在"越小越好"指标上数值更小（乘以 factor），"越大越好"指标上数值更大（除以 factor）
+- **趋势平滑**：同一 base_dir 内的 run 趋势一致（`base_seed = hash(base_dir) & 0xFFFF`）
+- **时序合理**：WNS 在 -1.0~0.5ns 之间，TNS 在 -50~5ns 之间，NVP 0~500 之间
+- **覆盖所有指标族**：面积/时序/功耗/单元/MBB/CG/拥塞全有数据
+- **时序方向统一为 min**：v3.0 之后 WNS/TNS/NVP 全部按"越小越好"生成
+
+### 17.4 配套的清理逻辑
+
+`--clean-all` 会按以下顺序删除（修复外键约束错误）：
+
+```
+TileReview / GroupReview / SubsystemReview / ReviewSnapshot / ReviewFile
+  → ProjectMember / DashboardGroup
+    → 非系统项目 (排除 _system / system / admin / default)
+      → 模块/记录 (级联)
+```
+
+### 17.5 配合迁移 / 测试
+
+- 第一次部署：先 `flask db upgrade`，再 `python seed_demo_data.py --clean-all`
+- 测试新功能：随时 `python seed_demo_data.py --clean-all` 重置到干净 demo 状态
+- 性能压测：调整 `DEMO_PROJECTS` / `RUN_SUFFIXES` 扩大规模
+
+---
+
+## 18. QoR 记录详情页（v3.0 新增）
+
+> 每条 QorRecord 都有独立详情页，展示完整指标、状态、与同 module+version 横向对比。
+
+### 18.1 访问
+
+```
+GET /qor_record/<record_id>
+GET /qor_record/<record_id>?from=dashboard   # 跳转回 Dashboard
+```
+
+### 18.2 页面内容
+
+| 区块         | 说明                                              |
+|--------------|---------------------------------------------------|
+| 元信息卡     | 模块 / 项目 / 版本 / full_dir / 记录时间 / source_file |
+| 核心指标卡   | 总面积 / 总功耗 / 总违例数 / 频率 / 良率         |
+| 全部指标表   | 27+ 指标 + 状态（满足/边缘/违例）                |
+| 横向对比     | 同 module+version 下其他 full_dir 的指标         |
+| 跳转按钮     | → Dashboard（按 full_dir 定位） / → 记录管理     |
+
+### 18.3 API
+
+```
+GET /api/qor/record/<record_id>
+```
+
+返回：
+```json
+{
+  "record": { "id": 123, "module_name": "cpu_core", "full_dir": "v1.0/main/...", "area_total": 12345.6, ... },
+  "siblings": [
+    { "id": 124, "full_dir": "v1.0/corner_ss/...", "area_total": 12400.1 },
+    { "id": 125, "full_dir": "v1.0/corner_ff/...", "area_total": 12200.5 }
+  ],
+  "metric_directions": { "area_total": "min", "wns_setup": "min", ... }
+}
+```
+
+### 18.4 入口
+
+- **记录管理页** (`/admin#records`)：点击记录 ID 即跳转
+- **Dashboard 顶部 banner**：跳转链接附在该 run 的 Banner 上
+
+---
+
+## 19. Review 工作流（v3.0 新增）
+
+> 三级审核模型：Tile → Group → Subsystem，每级自动汇总下级指标。
+
+### 19.1 模型层级
+
+```
+SubsystemReview (子系统级, e.g. CPU 整体)
+  └─ GroupReview (模块组, e.g. CPU 子模块集合)
+       └─ TileReview (单个 tile/module)
+```
+
+### 19.2 状态流转
+
+```
+Draft → Submitted → Approved
+                 ↘ Rejected → (修订后) → Re-Submitted → Approved
+```
+
+### 19.3 权限
+
+| 角色     | 权限                                  |
+|----------|---------------------------------------|
+| admin    | 所有项目所有操作                      |
+| owner    | 项目内所有操作                        |
+| editor   | 提交 / 修订                            |
+| viewer   | 只读                                  |
+| release  | 仅查看已发布数据（看不到未审核 run）   |
+
+### 19.4 页面
+
+```
+GET /review
+```
+
+支持：
+- 项目筛选
+- Tile / Group / Subsystem 切换
+- 卡片式 Review 列表（折叠面板）
+- 提交 / 批准 / 驳回 操作
+- 关联 QorRecord 的指标对比
+
+---
+
+**文档版本**: 4.0
+**最后更新**: 2026-07-28（v4.0: 按项目分库 + 多后端切换 + MongoDB dual-write）
 **维护**: QoR Recorder Team

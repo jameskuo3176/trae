@@ -191,6 +191,21 @@
             <div id="projectList"></div>
         </div>
     </div>
+
+    <!-- 已隐藏项目 (软删除, 数据保留, 可恢复) -->
+    <div class="card" style="margin-top:16px;">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>已隐藏项目 <span class="tag" style="background:var(--color-text-secondary); color:white;">软删除, 数据保留</span></span>
+            <button class="btn btn-default btn-sm" onclick="loadHiddenProjects()">刷新</button>
+        </div>
+        <div class="card-body" style="font-size:13px; color:var(--color-text-secondary); margin-bottom:8px;">
+            隐藏项目从系统列表中消失, 但其模块/记录仍保留在数据库中, 可随时恢复.
+            彻底删除需在已隐藏状态下二次确认.
+        </div>
+        <div class="card-body" style="padding-top:0;">
+            <div id="hiddenProjectList"><div class="empty-state">加载中...</div></div>
+        </div>
+    </div>
 </div>
 
 <!-- 记录管理 -->
@@ -201,16 +216,31 @@
             <button class="btn btn-sm" onclick="loadRecords()">刷新</button>
         </div>
         <div class="card-body">
-            <div class="filter-bar">
+            <div class="filter-bar" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
                 <div class="form-group">
                     <label>项目筛选</label>
                     <select id="recordFilterProject" onchange="loadRecords()" style="min-width: 180px;">
                         <option value="">全部</option>
                     </select>
                 </div>
+                <div class="form-group" id="recordFilterOwnerGroup" style="display:none;">
+                    <label>Owner (上传者)</label>
+                    <select id="recordFilterOwner" onchange="loadRecords()" style="min-width: 160px;">
+                        <option value="">全部</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label style="visibility:hidden;">_</label>
+                    <button class="btn btn-sm btn-default" onclick="resetRecordFilters()">重置筛选</button>
+                </div>
+                <div class="form-group" style="margin-left:auto;">
+                    <span style="color:var(--color-text-secondary); font-size:12px;"
+                        id="recordFilterHint">仅显示自己上传的记录</span>
+                </div>
             </div>
-            <div style="overflow-x: auto;">
-                <table class="table" id="recordTable">
+            <div class="tblx-scroll-wrap"
+                style="overflow-x: auto; overflow-y: auto; max-height: calc(100vh - 320px); min-height: 360px; border: 1px solid var(--color-border); border-radius: 6px;">
+                <table class="table has-sticky-right" id="recordTable">
                     <thead>
                         <tr>
                             <th><input type="checkbox" id="releaseSelectAll" onchange="toggleReleaseSelectAll(this)"
@@ -219,25 +249,27 @@
                             <th>项目</th>
                             <th>模块</th>
                             <th>版本</th>
+                            <th>full_dir (运行目录)</th>
                             <th>总面积</th>
                             <th>WNS</th>
                             <th>TNS</th>
                             <th>总功耗</th>
                             <th>单元数</th>
+                            <th>Owner (上传者)</th>
                             <th>记录时间</th>
                             <th>Release</th>
-                            <th>操作</th>
+                            <th class="col-sticky-right">操作</th>
                         </tr>
                     </thead>
                     <tbody id="recordTableBody"></tbody>
                 </table>
-                <div
-                    style="margin-top: 12px; padding: 10px; background: var(--color-surface, #f8f9fa); border-radius: 6px; display: flex; gap: 10px; align-items: center;">
-                    <button class="btn btn-success btn-sm" onclick="batchRelease(true)">批量发布</button>
-                    <button class="btn btn-default btn-sm" onclick="batchRelease(false)">批量撤回</button>
-                    <span id="releaseSelectionInfo"
-                        style="color: var(--color-text-secondary, #666); font-size: 13px;">已选 0 条</span>
-                </div>
+            </div>
+            <div
+                style="margin-top: 12px; padding: 10px; background: var(--color-surface, #f8f9fa); border-radius: 6px; display: flex; gap: 10px; align-items: center;">
+                <button class="btn btn-success btn-sm" onclick="batchRelease(true)">批量发布</button>
+                <button class="btn btn-default btn-sm" onclick="batchRelease(false)">批量撤回</button>
+                <span id="releaseSelectionInfo" style="color: var(--color-text-secondary, #666); font-size: 13px;">已选 0
+                    条</span>
             </div>
         </div>
     </div>
@@ -491,6 +523,11 @@
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
         document.getElementById('panel-' + tab).style.display = 'block';
         document.getElementById('tab-' + tab).classList.add('active');
+        // 切到记录管理时, 加载 owner 筛选下拉 + 拉取数据
+        if (tab === 'records') {
+            loadOwnerFilter();
+            loadRecords();
+        }
     }
 
     // ---- 项目管理 ----
@@ -606,10 +643,129 @@
     }
 
     async function deleteProject(id) {
-        if (!confirm('确认删除此项目及其所有模块和数据？')) return;
-        const resp = await fetch(`/api/admin/projects/${id}`, { method: 'DELETE' });
-        if (resp.ok) await loadProjects();
-        else alert('删除失败');
+        if (!confirm('确认隐藏此项目?\n\n提示: 隐藏后项目从系统列表消失, 但所有数据(模块/记录)仍保留在数据库中, 可在下方"已隐藏项目"中恢复.\n\n如需彻底删除 (不可恢复), 请先隐藏后进入"已隐藏项目"区域操作.')) return;
+        const btn = event && event.target ? event.target : null;
+        if (btn) { btn.disabled = true; btn.textContent = '隐藏中...'; }
+        try {
+            const resp = await fetch(`/api/admin/projects/${id}`, { method: 'DELETE' });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                alert((data.message || '已隐藏') + '\n\n数据保留, 可在"已隐藏项目"中恢复.');
+                await loadProjects();
+                await loadHiddenProjects();
+            } else {
+                alert('隐藏失败: ' + (data.error || resp.status));
+            }
+        } catch (err) {
+            console.error('deleteProject error:', err);
+            alert('隐藏出错: ' + err.message);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '删除项目'; }
+        }
+    }
+
+    // ---- 已隐藏项目 (软删除) ----
+    async function loadHiddenProjects() {
+        const container = document.getElementById('hiddenProjectList');
+        container.innerHTML = '<div class="empty-state">加载中...</div>';
+        try {
+            const resp = await fetch('/api/admin/projects/hidden');
+            if (!resp.ok) {
+                container.innerHTML = `<div class="empty-state">加载失败 (${resp.status})</div>`;
+                return;
+            }
+            const hidden = await resp.json();
+            if (hidden.length === 0) {
+                container.innerHTML = '<div class="empty-state">无已隐藏项目</div>';
+                return;
+            }
+            container.innerHTML = '';
+            hidden.forEach(p => {
+                const div = document.createElement('div');
+                div.className = 'project-item';
+                div.style.borderLeft = '3px solid var(--color-text-secondary)';
+                div.style.opacity = '0.85';
+                const hiddenDate = p.hidden_at ? new Date(p.hidden_at).toLocaleString('zh-CN') : '-';
+                div.innerHTML = `
+                    <div class="project-item-header">
+                        <div>
+                            <strong>${escapeHtml(p.name)}</strong>
+                            ${p.description ? `<span style="color:var(--color-text-secondary); margin-left:8px;">${escapeHtml(p.description)}</span>` : ''}
+                            <span class="tag">${p.module_count} 模块 / ${p.record_count} 记录</span>
+                        </div>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <span style="font-size:12px; color:var(--color-text-secondary);">
+                                由 <b>${escapeHtml(p.hidden_by_name || '-')}</b> 于 ${hiddenDate} 隐藏
+                            </span>
+                            <button class="btn btn-success btn-sm" onclick="restoreProject(${p.id}, '${escapeAttr(p.name)}')">恢复</button>
+                            <button class="btn btn-danger btn-sm" onclick="hardDeleteProject(${p.id}, '${escapeAttr(p.name)}', ${p.module_count}, ${p.record_count})">彻底删除</button>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        } catch (err) {
+            console.error('loadHiddenProjects error:', err);
+            container.innerHTML = `<div class="empty-state">加载出错: ${err.message}</div>`;
+        }
+    }
+
+    async function restoreProject(id, name) {
+        if (!confirm(`确认恢复项目 "${name}"?\n\n恢复后项目状态变更为 active, 重新出现在项目列表中.`)) return;
+        try {
+            const resp = await fetch(`/api/admin/projects/${id}/restore`, { method: 'POST' });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                alert(data.message || '已恢复');
+                await loadProjects();
+                await loadHiddenProjects();
+            } else {
+                alert('恢复失败: ' + (data.error || resp.status));
+            }
+        } catch (err) {
+            console.error('restoreProject error:', err);
+            alert('恢复出错: ' + err.message);
+        }
+    }
+
+    async function hardDeleteProject(id, name, moduleCount, recordCount) {
+        const msg = `⚠️ 警告: 即将彻底删除项目 "${name}"!\n\n` +
+                    `此操作:\n` +
+                    `  • 删除项目及 ${moduleCount} 个模块\n` +
+                    `  • 删除 ${recordCount} 条 QoR 记录\n` +
+                    `  • 删除所有相关快照/审核/告警\n` +
+                    `  • 不可恢复!\n\n` +
+                    `如需保留数据, 请使用"恢复"按钮.\n\n` +
+                    `确定要继续吗?`;
+        if (!confirm(msg)) return;
+        if (!confirm('再次确认: 真的要彻底删除吗? 此操作无法撤销!')) return;
+
+        try {
+            const resp = await fetch(`/api/admin/projects/${id}/hard_delete?confirm=true`, { method: 'DELETE' });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                alert(data.message || '已彻底删除');
+                await loadHiddenProjects();
+            } else {
+                alert('删除失败: ' + (data.error || resp.status));
+            }
+        } catch (err) {
+            console.error('hardDeleteProject error:', err);
+            alert('删除出错: ' + err.message);
+        }
+    }
+
+    function escapeHtml(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+    function escapeAttr(s) {
+        return escapeHtml(s);
     }
 
     function showAddModule(projectId) {
@@ -895,28 +1051,37 @@
         if (!moduleListText) { alert('请输入模块名称列表'); return; }
 
         const result = document.getElementById('batchResult');
+        const btn = event && event.target ? event.target : null;
+        if (btn) { btn.disabled = true; btn.textContent = '创建中...'; }
         result.innerHTML = '<div class="flash-message">创建中...</div>';
 
-        const resp = await fetch('/api/admin/modules/batch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `project_id=${projectId}&module_list=${encodeURIComponent(moduleListText)}`
-        });
-        const data = await resp.json();
+        try {
+            const resp = await fetch('/api/admin/modules/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `project_id=${projectId}&module_list=${encodeURIComponent(moduleListText)}`
+            });
+            const data = await resp.json().catch(() => ({}));
 
-        if (resp.ok && data.ok) {
-            let html = `<div class="flash-message flash-success">${data.message}</div>`;
-            if (data.created && data.created.length > 0) {
-                html += `<div style="margin-top:8px; font-size:13px;"><strong>已创建:</strong> ${data.created.join(', ')}</div>`;
+            if (resp.ok && data.ok) {
+                let html = `<div class="flash-message flash-success">${data.message}</div>`;
+                if (data.created && data.created.length > 0) {
+                    html += `<div style="margin-top:8px; font-size:13px;"><strong>已创建:</strong> ${data.created.join(', ')}</div>`;
+                }
+                if (data.skipped && data.skipped.length > 0) {
+                    html += `<div style="margin-top:4px; font-size:13px; color:var(--color-text-secondary);"><strong>已跳过(已存在):</strong> ${data.skipped.join(', ')}</div>`;
+                }
+                result.innerHTML = html;
+                document.getElementById('batchModuleList').value = '';
+                await loadProjects();
+            } else {
+                result.innerHTML = `<div class="flash-message flash-error">${data.error || '创建失败'}</div>`;
             }
-            if (data.skipped && data.skipped.length > 0) {
-                html += `<div style="margin-top:4px; font-size:13px; color:var(--color-text-secondary);"><strong>已跳过(已存在):</strong> ${data.skipped.join(', ')}</div>`;
-            }
-            result.innerHTML = html;
-            document.getElementById('batchModuleList').value = '';
-            await loadProjects();
-        } else {
-            result.innerHTML = `<div class="flash-message flash-error">${data.error || '创建失败'}</div>`;
+        } catch (err) {
+            console.error('batchCreateModules error:', err);
+            result.innerHTML = `<div class="flash-message flash-error">请求出错: ${err.message}</div>`;
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '批量创建'; }
         }
     }
 
@@ -1035,66 +1200,215 @@
     }
 
     // ---- 记录管理 ----
+    // 记录管理需要知道当前用户身份, 用来:
+    //   1. 默认仅显示自己上传的记录 (非 admin 用户的"我的记录"视图)
+    //   2. 控制删除按钮可见性 (owner / admin 可见)
+    //   3. 显示 owner 提示
+    // 全局 CURRENT_USER 来自 base.html (current_user 注入)
+    const CURRENT_USER_ID = (window.CURRENT_USER && window.CURRENT_USER.id) || null;
+    const CURRENT_USER_NAME = (window.CURRENT_USER && window.CURRENT_USER.username) || '';
+    const IS_ADMIN = (window.CURRENT_USER && window.CURRENT_USER.is_admin) || false;
+
+    async function loadOwnerFilter() {
+        // 仅 admin 才有 "全部 owner" 视角, 普通用户默认只看自己
+        const sel = document.getElementById('recordFilterOwner');
+        const grp = document.getElementById('recordFilterOwnerGroup');
+        if (!sel || !grp) return;
+        if (!IS_ADMIN) {
+            grp.style.display = 'none';
+            // 强制只看自己
+            sel.value = CURRENT_USER_NAME;
+            return;
+        }
+        grp.style.display = '';
+        // 保留当前选择
+        const prev = sel.value;
+        sel.innerHTML = '<option value="">全部</option>';
+        try {
+            const resp = await fetch('/api/admin/records/owners');
+            if (!resp.ok) {
+                sel.innerHTML = '<option value="">加载失败</option>';
+                return;
+            }
+            const owners = await resp.json();
+            for (const o of owners) {
+                const opt = document.createElement('option');
+                opt.value = o.username;
+                opt.textContent = o.display_name + ' (' + o.username + ')';
+                sel.appendChild(opt);
+            }
+            if (prev) sel.value = prev;
+        } catch (e) {
+            sel.innerHTML = '<option value="">加载失败</option>';
+        }
+    }
+
+    function resetRecordFilters() {
+        const projSel = document.getElementById('recordFilterProject');
+        if (projSel) projSel.value = '';
+        const ownerSel = document.getElementById('recordFilterOwner');
+        if (ownerSel && IS_ADMIN) ownerSel.value = '';
+        else if (ownerSel) ownerSel.value = CURRENT_USER_NAME;
+        loadRecords();
+    }
+
+    function updateRecordFilterHint() {
+        const el = document.getElementById('recordFilterHint');
+        if (!el) return;
+        const ownerSel = document.getElementById('recordFilterOwner');
+        const v = ownerSel ? ownerSel.value : '';
+        if (v) el.textContent = '当前筛选: 上传者 = ' + v;
+        else if (!IS_ADMIN) el.textContent = '默认仅显示自己上传的记录';
+        else el.textContent = '显示全部 owner 的记录';
+    }
+
     async function loadRecords() {
         const projId = document.getElementById('recordFilterProject').value;
+        const ownerSel = document.getElementById('recordFilterOwner');
+        let ownerVal = ownerSel ? ownerSel.value : '';
+        // 普通用户未显式选择 owner 时, 强制只看自己
+        if (!IS_ADMIN && !ownerVal) ownerVal = CURRENT_USER_NAME;
+
         let url = '/api/qor_data?';
         if (projId) url += `project_ids=${projId}&`;
+        if (ownerVal) url += `owner_username=${encodeURIComponent(ownerVal)}&`;
+
+        updateRecordFilterHint();
 
         const resp = await fetch(url);
+        if (!resp.ok) {
+            const tbody = document.getElementById('recordTableBody');
+            tbody.innerHTML = `<tr><td colspan="15" class="empty-state">加载失败 (${resp.status})</td></tr>`;
+            updateReleaseSelectionInfo();
+            return;
+        }
         const records = await resp.json();
         const tbody = document.getElementById('recordTableBody');
 
         if (records.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="13" class="empty-state">暂无数据</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="15" class="empty-state">暂无数据</td></tr>';
             updateReleaseSelectionInfo();
             return;
         }
 
-        tbody.innerHTML = records.map(r => `
-        <tr>
-            <td><input type="checkbox" class="release-checkbox" value="${r.id}" onchange="updateReleaseSelectionInfo()"></td>
-            <td>${r.id}</td>
+        tbody.innerHTML = records.map(r => {
+            // 删除权限: admin 全权; owner 本人可删; 其他不可见
+            const canDelete = IS_ADMIN || (r.owner_id && r.owner_id === CURRENT_USER_ID);
+            const ownerLabel = r.owner_username
+                ? `<span style="color:${(r.owner_id === CURRENT_USER_ID) ? 'var(--color-primary)' : 'var(--color-text)'}; font-weight:${(r.owner_id === CURRENT_USER_ID) ? '600' : '400'};">${escapeHtml(r.owner_display_name || r.owner_username)}</span>`
+                : '<span style="color:#999;">-</span>';
+            const ownerTag = (r.owner_id === CURRENT_USER_ID) ? ' <span style="font-size:10px; padding:1px 5px; background:var(--color-primary); color:#fff; border-radius:3px;">我</span>' : '';
+            return `
+        <tr class="record-row" data-record-id="${r.id}" style="cursor:pointer;"
+            onclick="if(!event.target.closest('button,input,a'))openRecordDetail(${r.id})">
+            <td onclick="event.stopPropagation()"><input type="checkbox" class="release-checkbox" value="${r.id}" onchange="updateReleaseSelectionInfo()"></td>
+            <td><a href="/qor_record/${r.id}" onclick="event.stopPropagation()" style="font-weight:500;">#${r.id}</a></td>
             <td>${r.project_name || '-'}</td>
             <td>${r.module_name || '-'}</td>
             <td>${r.version || '-'}</td>
+            <td title="${escapeHtml(r.full_dir || '')}" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:12px; color:#1976d2;">
+                ${r.full_dir || '<span style="color:#999;">-</span>'}
+            </td>
             <td>${r.area_total != null ? r.area_total.toFixed(2) : '-'}</td>
             <td>${r.wns_setup != null ? r.wns_setup.toFixed(3) : '-'}</td>
             <td>${r.tns_setup != null ? r.tns_setup.toFixed(3) : '-'}</td>
             <td>${r.power_total != null ? r.power_total.toFixed(3) : '-'}</td>
             <td>${r.cell_count || '-'}</td>
+            <td>${ownerLabel}${ownerTag}</td>
             <td>${r.recorded_at ? new Date(r.recorded_at).toLocaleString('zh-CN') : '-'}</td>
             <td>
                 ${r.is_released
-                ? '<span class="tag tag-success">已发布</span>'
-                : '<span class="tag" style="background:#999;color:#fff;">未发布</span>'}
+                    ? '<span class="tag tag-success">已发布</span>'
+                    : '<span class="tag" style="background:#999;color:#fff;">未发布</span>'}
             </td>
-            <td>
+            <td onclick="event.stopPropagation()" class="col-sticky-right" style="white-space:nowrap; background: var(--color-surface, #ffffff);">
+                <button class="btn btn-primary btn-sm" onclick="openRecordDetail(${r.id})" title="查看该记录详情 + 同 module+version 横向对比">详情</button>
+                <button class="btn btn-default btn-sm" onclick="openRecordDashboard(${r.id})" title="跳转到 Dashboard 并聚焦此记录">Dashboard</button>
                 <button class="btn ${r.is_released ? 'btn-default' : 'btn-success'} btn-sm" onclick="toggleRelease(${r.id})">${r.is_released ? '撤回' : '发布'}</button>
-                <button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button>
+                ${canDelete
+                    ? `<button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button>`
+                    : `<button class="btn btn-danger btn-sm" disabled title="仅 owner / 管理员可删除" style="opacity:0.4; cursor:not-allowed;">删除</button>`}
             </td>
         </tr>
-    `).join('');
+    `;
+        }).join('');
         updateReleaseSelectionInfo();
     }
 
+    function escapeHtml(s) {
+        if (s == null) return '';
+        return String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    function openRecordDetail(id) {
+        window.open('/qor_record/' + id, '_blank');
+    }
+
+    async function openRecordDashboard(id) {
+        try {
+            // 先拉详情拿到 module_id 和 full_dir
+            const r = await fetch('/api/qor/record/' + id);
+            if (!r.ok) { alert('记录不存在或无权限'); return; }
+            const d = await r.json();
+            const rec = d.record;
+            // 优先按 record_id 精确定位
+            const params = new URLSearchParams({ focus_record_id: String(id) });
+            if (rec.module && rec.module.project_id) params.set('project_id', rec.module.project_id);
+            params.set('module_id', rec.module_id);
+            params.set('version', rec.version || '');
+            if (rec.full_dir) params.set('full_dir', rec.full_dir);
+            window.open('/dashboard?' + params.toString(), '_blank');
+        } catch (e) {
+            alert('跳转失败: ' + e.message);
+        }
+    }
+
+    // 表格数据重渲染后, 刷新搜索过滤的行数统计 (不重复添加工具条)
+    (function () {
+        document.addEventListener('DOMContentLoaded', () => {
+            const t = document.getElementById('recordTable');
+            if (!t || !window.TBLX) return;
+            window.TBLX.enhance(t);
+            const tb = t.tBodies[0] || t;
+            new MutationObserver(() => window.TBLX.refresh(t)).observe(tb, { childList: true });
+        });
+    })();
+
     async function deleteRecord(id) {
         if (!confirm('确认删除此记录？')) return;
-        const resp = await fetch(`/api/admin/records/${id}`, { method: 'DELETE' });
-        if (resp.ok) loadRecords();
-        else alert('删除失败');
+        try {
+            const resp = await fetch(`/api/admin/records/${id}`, { method: 'DELETE' });
+            if (resp.ok) {
+                await loadRecords();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                alert('删除失败: ' + (err.error || resp.status));
+            }
+        } catch (err) {
+            console.error('deleteRecord error:', err);
+            alert('删除出错: ' + err.message);
+        }
     }
 
     // ---- Release 管理 ----
     async function toggleRelease(id) {
-        const resp = await fetch(`/api/admin/qor/${id}/release`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: '{}'
-        });
-        if (resp.ok) loadRecords();
-        else {
-            const err = await resp.json().catch(() => ({}));
-            alert('操作失败: ' + (err.error || resp.status));
+        try {
+            const resp = await fetch(`/api/admin/qor/${id}/release`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
+            });
+            if (resp.ok) {
+                await loadRecords();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                alert('操作失败: ' + (err.error || resp.status));
+            }
+        } catch (err) {
+            console.error('toggleRelease error:', err);
+            alert('操作出错: ' + err.message);
         }
     }
 
@@ -1121,19 +1435,61 @@
             return;
         }
         if (!confirm(`确认${released ? '发布' : '撤回'}选中的 ${ids.length} 条记录？`)) return;
-        const resp = await fetch('/api/admin/qor/batch_release', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ record_ids: ids, released: released })
+
+        // 锁定按钮 + 显示进度, 防止重复点击导致卡死
+        const btns = document.querySelectorAll('button[onclick^="batchRelease"]');
+        const origLabels = [];
+        btns.forEach((b, i) => {
+            origLabels[i] = b.textContent;
+            b.disabled = true;
+            b.textContent = (released ? '发布中...' : '撤回中...');
         });
-        if (resp.ok) {
-            const r = await resp.json();
-            alert(`成功${released ? '发布' : '撤回'} ${r.updated} 条`);
-            document.getElementById('releaseSelectAll').checked = false;
-            loadRecords();
-        } else {
-            const err = await resp.json().catch(() => ({}));
-            alert('批量操作失败: ' + (err.error || resp.status));
+        const selInfo = document.getElementById('releaseSelectionInfo');
+        const origSelInfo = selInfo ? selInfo.textContent : '';
+        if (selInfo) selInfo.textContent = '处理中, 请稍候...';
+
+        try {
+            const resp = await fetch('/api/admin/qor/batch_release', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ record_ids: ids, released: released })
+            });
+            const r = await resp.json().catch(() => ({}));
+
+            if (!resp.ok) {
+                alert('批量操作失败: ' + (r.error || resp.status));
+                return;
+            }
+
+            // 成功: 显示详细反馈
+            const updated = r.updated || 0;
+            const skipped = r.skipped || 0;
+            const failed = r.failed || [];
+            let msg = `成功${released ? '发布' : '撤回'} ${updated} 条`;
+            if (skipped > 0) msg += `, 跳过 ${skipped} 条`;
+            if (failed.length > 0) {
+                msg += `\n\n失败明细 (前 10 条):`;
+                failed.slice(0, 10).forEach(f => {
+                    msg += `\n  #${f.id}: ${f.reason}`;
+                });
+                if (failed.length > 10) msg += `\n  ... 还有 ${failed.length - 10} 条`;
+            }
+            alert(msg);
+
+            // 重置选择 + 刷新
+            const selectAll = document.getElementById('releaseSelectAll');
+            if (selectAll) selectAll.checked = false;
+            await loadRecords();
+        } catch (err) {
+            console.error('batchRelease error:', err);
+            alert('批量操作出错: ' + err.message + '\n请检查网络后重试');
+        } finally {
+            // 恢复按钮
+            btns.forEach((b, i) => {
+                b.disabled = false;
+                b.textContent = origLabels[i] || (released ? '批量发布' : '批量撤回');
+            });
+            if (selInfo) selInfo.textContent = origSelInfo;
         }
     }
 
@@ -1199,32 +1555,42 @@
         if (!usernames.trim()) { alert('请输入用户名列表'); return; }
 
         const resultDiv = document.getElementById('batchUserResult');
+        const btn = event && event.target ? event.target : null;
+        if (btn) { btn.disabled = true; btn.textContent = '创建中...'; }
         resultDiv.innerHTML = '<span style="color:var(--color-text-secondary);">创建中...</span>';
 
-        const resp = await fetch('/api/admin/users/batch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ usernames, password, role })
-        });
-        const data = await resp.json();
-        if (!resp.ok) {
-            resultDiv.innerHTML = `<div style="color:#c62828;">${data.error || '创建失败'}</div>`;
-            return;
-        }
+        try {
+            const resp = await fetch('/api/admin/users/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ usernames, password, role })
+            });
+            const data = await resp.json().catch(() => ({}));
 
-        const created = data.created || [];
-        const skipped = data.skipped || [];
-        let html = `<div style="padding:8px 12px;background:var(--color-surface-hover);border-radius:4px;font-size:13px;">
-            <b>完成:</b> 共 ${data.total} 个, 成功 ${created.length} 个, 跳过 ${skipped.length} 个, 默认密码: <code>${data.default_password}</code>
-        </div>`;
-        if (created.length > 0) {
-            html += `<div style="margin-top:6px;font-size:12px;color:var(--color-text-secondary);">已创建: ${created.map(u => u.username).join(', ')}</div>`;
+            if (!resp.ok) {
+                resultDiv.innerHTML = `<div style="color:#c62828;">${data.error || '创建失败'}</div>`;
+                return;
+            }
+
+            const created = data.created || [];
+            const skipped = data.skipped || [];
+            let html = `<div style="padding:8px 12px;background:var(--color-surface-hover);border-radius:4px;font-size:13px;">
+                <b>完成:</b> 共 ${data.total} 个, 成功 ${created.length} 个, 跳过 ${skipped.length} 个, 默认密码: <code>${data.default_password}</code>
+            </div>`;
+            if (created.length > 0) {
+                html += `<div style="margin-top:6px;font-size:12px;color:var(--color-text-secondary);">已创建: ${created.map(u => u.username).join(', ')}</div>`;
+            }
+            if (skipped.length > 0) {
+                html += `<div style="margin-top:4px;font-size:12px;color:#c62828;">已跳过: ${skipped.map(s => `${s.username}(${s.reason})`).join(', ')}</div>`;
+            }
+            resultDiv.innerHTML = html;
+            loadUsers();
+        } catch (err) {
+            console.error('batchCreateUsers error:', err);
+            resultDiv.innerHTML = `<div style="color:#c62828;">请求出错: ${err.message}</div>`;
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '批量创建'; }
         }
-        if (skipped.length > 0) {
-            html += `<div style="margin-top:4px;font-size:12px;color:#c62828;">已跳过: ${skipped.map(s => `${s.username}(${s.reason})`).join(', ')}</div>`;
-        }
-        resultDiv.innerHTML = html;
-        loadUsers();
     }
 
     // ===================== 管理员重置用户密码 =====================
