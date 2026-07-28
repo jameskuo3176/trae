@@ -287,10 +287,24 @@
                     <label style="visibility:hidden;">_</label>
                     <button class="btn btn-sm btn-default" onclick="resetRecordFilters()">重置筛选</button>
                 </div>
+                {# v5.0 数据范围开关: owner 用户可切换 "仅自己" / "显示所有" #}
+                {% if current_user.is_owner and not current_user.is_admin %}
                 <div class="form-group" style="margin-left:auto;">
-                    <span style="color:var(--color-text-secondary); font-size:12px;"
-                        id="recordFilterHint">仅显示自己上传的记录</span>
+                    <label>数据范围</label>
+                    <div class="scope-toggle" style="display:inline-flex; border:1px solid var(--color-border); border-radius:6px; overflow:hidden; background:var(--color-surface);">
+                        <button type="button" id="scopeBtnMine" class="scope-btn active"
+                            onclick="setRecordScope('mine', this)"
+                            style="padding:6px 14px; font-size:13px; border:none; cursor:pointer; background:var(--color-primary); color:#fff; transition:all 0.15s;">
+                            仅显示我上传的
+                        </button>
+                        <button type="button" id="scopeBtnAll" class="scope-btn"
+                            onclick="setRecordScope('all', this)"
+                            style="padding:6px 14px; font-size:13px; border:none; cursor:pointer; background:var(--color-surface); color:var(--color-text); transition:all 0.15s;">
+                            显示所有上传的
+                        </button>
+                    </div>
                 </div>
+                {% endif %}
             </div>
             <div class="tblx-scroll-wrap"
                 style="overflow-x: auto; overflow-y: auto; max-height: calc(100vh - 320px); min-height: 360px; border: 1px solid var(--color-border); border-radius: 6px;">
@@ -1468,31 +1482,54 @@
         const ownerSel = document.getElementById('recordFilterOwner');
         if (ownerSel && IS_ADMIN) ownerSel.value = '';
         else if (ownerSel) ownerSel.value = CURRENT_USER_NAME;
+        // 重置 scope toggle (owner 用户)
+        if (!IS_ADMIN && window.CURRENT_USER && window.CURRENT_USER.is_owner) {
+            setRecordScope('mine', document.getElementById('scopeBtnMine'));
+        }
+        loadRecords();
+    }
+
+    // v5.0 数据范围切换: owner 用户在 "仅自己" / "显示所有" 之间切换
+    // - admin: 不显示此开关, 始终看所有
+    // - owner: 切换后写入 window._recordScope, loadRecords 读取
+    // - viewer: 已被后端限制 (只看已发布)
+    function setRecordScope(scope, btn) {
+        window._recordScope = scope;
+        // 更新按钮样式
+        const btns = document.querySelectorAll('.scope-btn');
+        btns.forEach(b => {
+            b.classList.remove('active');
+            b.style.background = 'var(--color-surface)';
+            b.style.color = 'var(--color-text)';
+        });
+        if (btn) {
+            btn.classList.add('active');
+            btn.style.background = 'var(--color-primary)';
+            btn.style.color = '#fff';
+        }
         loadRecords();
     }
 
     function updateRecordFilterHint() {
-        const el = document.getElementById('recordFilterHint');
-        if (!el) return;
-        const ownerSel = document.getElementById('recordFilterOwner');
-        const v = ownerSel ? ownerSel.value : '';
-        if (v) el.textContent = '当前筛选: 上传者 = ' + v;
-        else if (!IS_ADMIN) el.textContent = '默认仅显示自己上传的记录';
-        else el.textContent = '显示全部 owner 的记录';
+        // 兼容老逻辑, hint 由 scope 按钮自身展示
     }
 
     async function loadRecords() {
         const projId = document.getElementById('recordFilterProject').value;
         const ownerSel = document.getElementById('recordFilterOwner');
         let ownerVal = ownerSel ? ownerSel.value : '';
-        // 普通用户未显式选择 owner 时, 强制只看自己
-        if (!IS_ADMIN && !ownerVal) ownerVal = CURRENT_USER_NAME;
+        // v5.0 数据范围: owner 用户可主动选择 "仅自己" / "所有"
+        // - admin: 始终看所有
+        // - owner: 默认 'mine', 可切到 'all'
+        // - viewer: 已被后端限制
+        const scope = (window._recordScope === 'all') ? 'all' : 'mine';
+        if (!IS_ADMIN && scope === 'mine' && !ownerVal) {
+            ownerVal = CURRENT_USER_NAME;  // 仅显示自己上传的
+        }
 
         let url = '/api/qor_data?';
         if (projId) url += `project_ids=${projId}&`;
         if (ownerVal) url += `owner_username=${encodeURIComponent(ownerVal)}&`;
-
-        updateRecordFilterHint();
 
         const resp = await fetch(url);
         if (!resp.ok) {

@@ -424,6 +424,12 @@
             padding: 10px 12px;
             text-align: left;
             border-bottom: 1px solid var(--color-border);
+            border-right: 1px solid var(--color-border);
+        }
+        /* 最后一列不需要右边框, 避免表格最右侧出现双线 */
+        .table th:last-child,
+        .table td:last-child {
+            border-right: none;
         }
 
         .table th {
@@ -467,6 +473,34 @@
         .table.has-sticky-right tr td.col-sticky-right,
         .table.has-sticky-right tr th.col-sticky-right {
             border-bottom: 1px solid var(--color-border);
+        }
+
+        /* chart-table: Dashboard 表格视图 (面积/时序/功耗/Cell 数量) - 完整横竖线 */
+        .chart-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            background: var(--color-surface, #ffffff);
+        }
+        .chart-table th,
+        .chart-table td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--color-border);
+            border-right: 1px solid var(--color-border);
+        }
+        .chart-table th:last-child,
+        .chart-table td:last-child {
+            border-right: none;
+        }
+        .chart-table th {
+            background: var(--color-surface-hover);
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+        }
+        .chart-table tbody tr:hover {
+            background: var(--color-surface-hover);
         }
 
         .tag {
@@ -895,6 +929,16 @@
 
         body[data-theme="neon"] .table td {
             border-bottom: 1px solid rgba(31, 42, 68, 0.6);
+            border-right: 1px solid rgba(31, 42, 68, 0.6);
+        }
+        body[data-theme="neon"] .table th {
+            border-bottom: 1px solid rgba(0, 212, 255, 0.25);
+            border-right: 1px solid rgba(0, 212, 255, 0.25);
+        }
+        body[data-theme="neon"] .chart-table th,
+        body[data-theme="neon"] .chart-table td {
+            border-bottom: 1px solid rgba(31, 42, 68, 0.6);
+            border-right: 1px solid rgba(31, 42, 68, 0.6);
         }
 
         /* 标签: 霓虹变体 */
