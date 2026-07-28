@@ -55,15 +55,8 @@ def api_get_projects():
         with switch_to_project(p.id):
             modules = Module.query.order_by(Module.name).all()
             for m in modules:
-                if current_user.is_release:
-                    n_rec = m.records.filter(QorRecord.is_released.is_(True)).count()
-                    m._record_count = n_rec
-                else:
-                    m._record_count = m.records.count()
-            if current_user.is_release:
-                modules = [m for m in modules if m._record_count > 0]
-                if not modules:
-                    continue
+                # release 角色现在可查看所有数据 (v4.x 权限升级)
+                m._record_count = m.records.count()
         result.append({
             'id': p.id,
             'name': p.name,
@@ -92,13 +85,8 @@ def api_get_modules(project_id):
         modules = Module.query.filter_by(project_id=project_id).order_by(Module.name).all()
         result = []
         for m in modules:
-            if current_user.is_release:
-                n_rec = m.records.filter(QorRecord.is_released.is_(True)).count()
-                if n_rec == 0:
-                    continue
-                m._record_count = n_rec
-            else:
-                m._record_count = m.records.count()
+            # release 角色现在可查看所有数据 (v4.x 权限升级)
+            m._record_count = m.records.count()
             result.append({
                 'id': m.id,
                 'name': m.name,
@@ -145,7 +133,7 @@ def api_get_qor_data():
         module_ids_str=module_ids,
         versions_str=versions,
         owner_id=owner_user_id,
-        release_only=current_user.is_release,
+        release_only=False,  # release 角色可查看所有数据 (v4.x 权限升级)
         order_desc=True,
         limit=5000,
     )
@@ -204,8 +192,7 @@ def api_qor_record_detail(record_id):
         ).first()
         if not member:
             return jsonify({'error': 'forbidden'}), 403
-    if current_user.is_release and not rec.is_released:
-        return jsonify({'error': 'not found'}), 404
+    # release 角色现在可查看所有记录 (v4.x 权限升级)
 
     siblings = QorRecord.query.filter_by(
         module_id=rec.module_id, version=rec.version,
@@ -268,8 +255,7 @@ def api_qor_aggregate():
     for pid in proj_id_list:
         with switch_to_project(pid):
             q = QorRecord.query
-            if current_user.is_release:
-                q = q.filter(QorRecord.is_released.is_(True))
+            # release 角色现在可查看所有数据 (v4.x 权限升级)
             if mod_id_filter:
                 q = q.filter(QorRecord.module_id.in_(mod_id_filter))
             if ver_filter:
@@ -377,7 +363,7 @@ def api_get_versions():
     records = query_records_by_projects(
         proj_id_list=_resolve_project_ids(project_ids) or None,
         module_ids_str=module_ids,
-        release_only=current_user.is_release,
+        release_only=False,  # release 角色可查看所有版本 (v4.x 权限升级)
         order_desc=True,
         limit=10000,
     )

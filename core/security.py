@@ -94,6 +94,10 @@ def register_security_before_request(app):
                     return redirect('/change_password')
 
         # release 角色: 禁止所有写操作 (POST/PUT/DELETE/PATCH)
+        # 允许:
+        #   - 改密 / 主题 / dashboard 等个人级设置
+        #   - 切换自己发布的记录 (admin_toggle_release / admin_batch_release)
+        #     (release 角色的语义: 可撤回自己发布的记录, 不可发布他人未发布的)
         if (current_user.is_authenticated
                 and current_user.is_release
                 and request.method in ('POST', 'PUT', 'DELETE', 'PATCH')):
@@ -103,6 +107,10 @@ def register_security_before_request(app):
                 'save_dashboard_config',
                 'delete_dashboard_config',
                 'save_user_theme',
+                'admin_toggle_release',          # 短名
+                'admin.admin_toggle_release',     # 蓝图全名
+                'admin_batch_release',
+                'admin.admin_batch_release',
             }
             if request.endpoint not in allowed_write_endpoints:
                 app.logger.warning(

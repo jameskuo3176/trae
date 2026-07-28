@@ -85,7 +85,7 @@ def test_qor_record_detail():
 
 
 def test_release_role_access():
-    """release 账号只能看已发布记录的详情"""
+    """release 账号现在可查看所有记录 (v4.x 权限升级)"""
     with app.app_context():
         client = app.test_client()
         # 找 release 角色账号
@@ -96,11 +96,12 @@ def test_release_role_access():
         with client.session_transaction() as sess:
             sess['_user_id'] = str(release.id)
             sess['_fresh'] = True
+        # release 现在可查看所有数据 (含未发布)
         rec = QorRecord.query.filter_by(is_released=False).first()
         if rec:
             r = client.get(f'/api/qor/record/{rec.id}')
-            assert r.status_code == 404, f'release 看到未发布: {r.status_code}'
-            print('  ✓ release 看不到未发布记录 404')
+            assert r.status_code == 200, f'release 应可看未发布 200, 实际 {r.status_code}'
+            print('  ✓ release 可看未发布记录 (权限升级)')
         rec2 = QorRecord.query.filter_by(is_released=True).first()
         if rec2:
             r = client.get(f'/api/qor/record/{rec2.id}')

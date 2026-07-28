@@ -2,14 +2,25 @@
 {% block title %}数据管理 - QoR Recorder{% endblock %}
 
 {% block content %}
-<h2 style="font-size: 22px; margin-bottom: 16px;">数据管理 <span class="tag tag-danger">管理员</span></h2>
+<h2 style="font-size: 22px; margin-bottom: 16px;">
+    数据管理
+    {% if current_user.is_admin %}
+    <span class="tag tag-danger">管理员</span>
+    {% elif current_user.is_release %}
+    <span class="tag" style="background:#3aa655;color:#fff;">Release</span>
+    {% endif %}
+</h2>
 
 <!-- 标签切换 -->
 <div style="display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 2px solid var(--color-border);">
+    {% if current_user.is_admin %}
     <button class="tab-btn active" onclick="switchTab('upload')" id="tab-upload">上传数据</button>
     <button class="tab-btn" onclick="switchTab('projects')" id="tab-projects">项目管理</button>
     <button class="tab-btn" onclick="switchTab('records')" id="tab-records">记录管理</button>
     <button class="tab-btn" onclick="switchTab('users')" id="tab-users">用户管理</button>
+    {% elif current_user.is_release %}
+    <button class="tab-btn active" onclick="switchTab('records')" id="tab-records">记录管理</button>
+    {% endif %}
 </div>
 
 <!-- 上传数据 -->
@@ -266,7 +277,10 @@
             </div>
             <div
                 style="margin-top: 12px; padding: 10px; background: var(--color-surface, #f8f9fa); border-radius: 6px; display: flex; gap: 10px; align-items: center;">
+                {# release 角色仅可批量撤回, 不能批量发布 #}
+                {% if not current_user.is_release %}
                 <button class="btn btn-success btn-sm" onclick="batchRelease(true)">批量发布</button>
+                {% endif %}
                 <button class="btn btn-default btn-sm" onclick="batchRelease(false)">批量撤回</button>
                 <span id="releaseSelectionInfo" style="color: var(--color-text-secondary, #666); font-size: 13px;">已选 0
                     条</span>
@@ -513,16 +527,26 @@
         });
         // 支持 URL hash 自动切 tab: /admin#projects / #records / #users
         const hash = (window.location.hash || '').replace('#', '');
-        if (['projects', 'records', 'users', 'upload'].includes(hash)) {
+        const ALLOWED_TABS = window.CURRENT_USER.is_admin
+            ? ['projects', 'records', 'users', 'upload']
+            : ['records'];  // release 角色: 仅记录管理
+        if (ALLOWED_TABS.includes(hash)) {
             switchTab(hash);
+        } else {
+            // 默认: release -> records, admin -> upload (原默认)
+            if (window.CURRENT_USER.is_release) {
+                switchTab('records');
+            }
         }
     });
 
     function switchTab(tab) {
         document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.getElementById('panel-' + tab).style.display = 'block';
-        document.getElementById('tab-' + tab).classList.add('active');
+        const panel = document.getElementById('panel-' + tab);
+        const btn = document.getElementById('tab-' + tab);
+        if (panel) panel.style.display = 'block';
+        if (btn) btn.classList.add('active');
         // 切到记录管理时, 加载 owner 筛选下拉 + 拉取数据
         if (tab === 'records') {
             loadOwnerFilter();
@@ -1292,8 +1316,16 @@
         }
 
         tbody.innerHTML = records.map(r => {
-            // 删除权限: admin 全权; owner 本人可删; 其他不可见
-            const canDelete = IS_ADMIN || (r.owner_id && r.owner_id === CURRENT_USER_ID);
+            // 删除权限: admin 全权; owner 本人可删; release 角色一律不可删
+            const canDelete = !window.CURRENT_USER.is_release
+                && (IS_ADMIN || (r.owner_id && r.owner_id === CURRENT_USER_ID));
+            // 发布/撤回权限:
+            //   - admin: 全权
+            //   - release: 仅当记录是自己发布 (released_by=自己) 时可撤回, 不能发布
+            //   - user:    (与原逻辑一致, owner 本人可发布/撤回)
+            const IS_RELEASE = window.CURRENT_USER.is_release;
+            const canRelease = !IS_RELEASE;  // 默认: 可发布/撤回
+            const canRecall  = !IS_RELEASE || (r.released_by && r.released_by === CURRENT_USER_ID);
             const ownerLabel = r.owner_username
                 ? `<span style="color:${(r.owner_id === CURRENT_USER_ID) ? 'var(--color-primary)' : 'var(--color-text)'}; font-weight:${(r.owner_id === CURRENT_USER_ID) ? '600' : '400'};">${escapeHtml(r.owner_display_name || r.owner_username)}</span>`
                 : '<span style="color:#999;">-</span>';
@@ -1324,7 +1356,9 @@
             <td onclick="event.stopPropagation()" class="col-sticky-right" style="white-space:nowrap; background: var(--color-surface, #ffffff);">
                 <button class="btn btn-primary btn-sm" onclick="openRecordDetail(${r.id})" title="查看该记录详情 + 同 module+version 横向对比">详情</button>
                 <button class="btn btn-default btn-sm" onclick="openRecordDashboard(${r.id})" title="跳转到 Dashboard 并聚焦此记录">Dashboard</button>
-                <button class="btn ${r.is_released ? 'btn-default' : 'btn-success'} btn-sm" onclick="toggleRelease(${r.id})">${r.is_released ? '撤回' : '发布'}</button>
+                ${(r.is_released ? canRecall : canRelease)
+                    ? `<button class="btn ${r.is_released ? 'btn-default' : 'btn-success'} btn-sm" onclick="toggleRelease(${r.id})">${r.is_released ? '撤回' : '发布'}</button>`
+                    : `<button class="btn btn-default btn-sm" disabled style="opacity:0.4; cursor:not-allowed;" title="${IS_RELEASE ? 'release 角色仅能管理自己发布的记录' : '无权限'}">${r.is_released ? '撤回' : '发布'}</button>`}
                 ${canDelete
                     ? `<button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button>`
                     : `<button class="btn btn-danger btn-sm" disabled title="仅 owner / 管理员可删除" style="opacity:0.4; cursor:not-allowed;">删除</button>`}

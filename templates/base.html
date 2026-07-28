@@ -1177,10 +1177,9 @@
         <div class="navbar-nav">
             <a href="{{ url_for('dashboard') }}"
                 class="nav-item {% if request.endpoint == 'dashboard' %}active{% endif %}">Dashboard</a>
-            {% if not current_user.is_release %}
+            {# 数据对比: admin / user / release 均可访问 (v4.x 权限升级) #}
             <a href="{{ url_for('compare') }}"
                 class="nav-item {% if request.endpoint == 'compare' %}active{% endif %}">数据对比</a>
-            {% endif %}
             {% if current_user.is_admin %}
             <a href="{{ url_for('admin_page') }}#projects"
                 class="nav-item {% if request.endpoint == 'admin_page' %}active{% endif %}">项目管理</a>
@@ -1192,6 +1191,10 @@
             <a href="{{ url_for('db_admin') }}"
                 class="nav-item {% if request.endpoint == 'db_admin' %}active{% endif %}">DB 可视化</a>
             {% endif %}
+            {% elif current_user.is_release %}
+            {# release 角色: 仅记录管理 (管理自己 release 的数据) #}
+            <a href="{{ url_for('admin_page') }}#records"
+                class="nav-item {% if request.endpoint == 'admin_page' %}active{% endif %}">记录管理</a>
             {% endif %}
         </div>
         <div class="navbar-user">

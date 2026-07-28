@@ -23,7 +23,7 @@ from api_auth import (
     check_project_writable, check_data_lock,
 )
 from core.db import with_db_retry
-from core.db_routing import switch_to_project
+from core.db_routing import switch_to_project, project_commit
 from models import (
     db, User, Project, Module, QorRecord, DataSnapshot, BackupRecord,
     ProjectMember, ViolationPath,
@@ -1183,21 +1183,103 @@ def admin_upload_csv_preview():
 @login_required
 @with_db_retry()
 def admin_toggle_release(record_id):
-    """切换记录的发布状态"""
-    r = QorRecord.query.get_or_404(record_id)
-    if not current_user.is_admin:
-        if r.module and r.module.project:
-            if not can_edit_project(current_user, r.module.project.id):
-                return jsonify({'error': '无权限'}), 403
-    r.is_released = not r.is_released
-    if r.is_released:
-        r.released_at = datetime.utcnow()
-        r.released_by = current_user.id
-    else:
-        r.released_at = None
-        r.released_by = None
-    db.session.commit()
-    return jsonify({'id': r.id, 'is_released': r.is_released})
+    """切换记录的发布状态
+
+    跨项目分库: QorRecord.id 在每个项目库内独立自增, 不全局唯一。
+    需遍历所有项目库找到该 record_id (通常前端从列表拿到, 知道在哪个项目)。
+
+    权限矩阵:
+      - admin:           任意记录的发布/撤回
+      - project editor/owner: 任意记录 (保留旧逻辑)
+      - release 角色:    只能管理自己发布的记录 (released_by=自己)
+                         不能发布他人未发布的, 不能发布无 owner 的记录
+    """
+    # 1) 遍历项目库找记录所在项目
+    project_id = _find_qor_record_project(record_id)
+    if project_id is None:
+        return jsonify({'error': '记录不存在'}), 404
+
+    # 2) 切到该项目库执行操作
+    with switch_to_project(project_id):
+        r = QorRecord.query.get(record_id)
+        if r is None:
+            return jsonify({'error': '记录不存在'}), 404
+
+        if current_user.is_release:
+            # release 角色: 只能操作自己发布的记录
+            if r.released_by != current_user.id:
+                return jsonify({
+                    'error': 'release 角色仅能管理自己发布的记录',
+                }), 403
+            # 既然只能操作自己发布的, 那么本端点只允许 "撤回" 方向
+            # 不允许"重新发布" (避免绕过 "不能发布他人未发布" 的限制)
+            if r.is_released:
+                r.is_released = False
+                r.released_at = None
+                r.released_by = None
+            else:
+                return jsonify({
+                    'error': 'release 角色不能重新发布记录',
+                }), 403
+        elif not current_user.is_admin:
+            if r.module and r.module.project:
+                if not can_edit_project(current_user, r.module.project.id):
+                    return jsonify({'error': '无权限'}), 403
+            r.is_released = not r.is_released
+            if r.is_released:
+                r.released_at = datetime.utcnow()
+                r.released_by = current_user.id
+            else:
+                r.released_at = None
+                r.released_by = None
+        else:
+            # admin
+            r.is_released = not r.is_released
+            if r.is_released:
+                r.released_at = datetime.utcnow()
+                r.released_by = current_user.id
+            else:
+                r.released_at = None
+                r.released_by = None
+
+        # 在项目库 commit 之前先缓存字段值, 避免 commit/expire 后主 session 查不到项目数据
+        r_id = r.id
+        r_is_released = r.is_released
+        r_released_by = r.released_by
+        r_released_at = r.released_at
+        project_commit()
+        return jsonify({
+            'id': r_id,
+            'is_released': r_is_released,
+            'released_by': r_released_by,
+            'released_at': r_released_at.isoformat() if r_released_at else None,
+        })
+
+
+def _find_qor_record_project(record_id):
+    """跨项目库查找 QorRecord 所在 project_id
+
+    QorRecord.id 在每个项目库内独立自增, 不全局唯一。
+    遍历所有项目库找到第一条匹配的 (实际很少冲突, 因为项目库 id 空间独立)。
+    """
+    import os
+    from core.project_db import project_db_path
+    from sqlalchemy import create_engine, text
+    for p in Project.query.all():
+        path = project_db_path(p.id)
+        if not os.path.exists(path):
+            continue
+        engine = create_engine(f'sqlite:///{path}')
+        try:
+            with engine.connect() as c:
+                row = c.execute(text(
+                    f'SELECT id FROM qor_records WHERE id={int(record_id)}'
+                )).fetchone()
+            if row is not None:
+                return p.id
+        finally:
+            engine.dispose()
+    return None
 
 
 @bp.route('/qor/batch_release', methods=['POST'])
@@ -1208,6 +1290,11 @@ def admin_batch_release():
 
     请求: {record_ids: [int], released: bool}
     响应: {ok: True, updated: int, skipped: int, failed: [{id, reason}]}
+
+    权限矩阵 (与单条一致):
+      - admin:           全权
+      - project editor/owner: 仅自己 owner 的记录
+      - release 角色:    仅自己发布的记录 + 仅支持 released=False (撤回方向)
     """
     data = request.get_json() or {}
     record_ids = data.get('record_ids', [])
@@ -1224,40 +1311,83 @@ def admin_batch_release():
     skipped = 0
     failed = []  # [{id, reason}]
 
-    # 一次性查出所有记录, 避免 N+1
-    records = QorRecord.query.filter(QorRecord.id.in_(record_ids)).all()
-    records_map = {r.id: r for r in records}
-
+    # 跨项目分库: 按 record_id 找到所在 project_id, 切到该项目库再操作
+    # 同一个 batch 跨多个项目库时, 按 project_id 分组处理
+    rid_to_project = {}
     for rid in record_ids:
-        r = records_map.get(rid)
-        if not r:
-            skipped += 1
-            failed.append({'id': rid, 'reason': '记录不存在'})
-            continue
-        # 权限检查: 非 admin 必须有项目编辑权 + 是该记录 owner
-        if not current_user.is_admin:
-            if not (r.module and r.module.project and can_edit_project(current_user, r.module.project.id)):
-                skipped += 1
-                failed.append({'id': rid, 'reason': '无项目编辑权限'})
-                continue
-            if r.owner_id != current_user.id:
-                skipped += 1
-                failed.append({'id': rid, 'reason': '非记录 owner'})
-                continue
-        r.is_released = released
-        if released:
-            r.released_at = datetime.utcnow()
-            r.released_by = current_user.id
-        else:
-            r.released_at = None
-            r.released_by = None
-        updated += 1
+        pid = _find_qor_record_project(int(rid))
+        if pid is not None:
+            rid_to_project[rid] = pid
 
-    try:
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': f'数据库提交失败: {e}'}), 500
+    # 按 project_id 分组, 一次性 commit 每个项目库
+    by_project = {}
+    for rid, pid in rid_to_project.items():
+        by_project.setdefault(pid, []).append(rid)
+
+    for pid, rids in by_project.items():
+        with switch_to_project(pid):
+            # 一次性查出该项目的所有目标记录
+            records = QorRecord.query.filter(QorRecord.id.in_(rids)).all()
+            records_map = {r.id: r for r in records}
+
+            for rid in rids:
+                r = records_map.get(rid)
+                if not r:
+                    skipped += 1
+                    failed.append({'id': rid, 'reason': '记录不存在'})
+                    continue
+
+                if current_user.is_release:
+                    # release 角色: 仅可撤回自己发布的 (released_by=自己)
+                    if r.released_by != current_user.id or not r.is_released:
+                        skipped += 1
+                        failed.append({'id': rid, 'reason': 'release 角色仅可撤回自己发布的记录'})
+                        continue
+                    r.is_released = False
+                    r.released_at = None
+                    r.released_by = None
+                    updated += 1
+                elif not current_user.is_admin:
+                    # 普通用户: 项目编辑权 + 是该记录 owner
+                    if not (r.module and r.module.project and can_edit_project(current_user, r.module.project.id)):
+                        skipped += 1
+                        failed.append({'id': rid, 'reason': '无项目编辑权限'})
+                        continue
+                    if r.owner_id != current_user.id:
+                        skipped += 1
+                        failed.append({'id': rid, 'reason': '非记录 owner'})
+                        continue
+                    r.is_released = released
+                    if released:
+                        r.released_at = datetime.utcnow()
+                        r.released_by = current_user.id
+                    else:
+                        r.released_at = None
+                        r.released_by = None
+                    updated += 1
+                else:
+                    # admin
+                    r.is_released = released
+                    if released:
+                        r.released_at = datetime.utcnow()
+                        r.released_by = current_user.id
+                    else:
+                        r.released_at = None
+                        r.released_by = None
+                    updated += 1
+
+            try:
+                db.session.expire_all()
+                project_commit()
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.exception('batch_release commit failed project=%s', pid)
+                # 把这个项目的所有 rid 标记为失败
+                for rid in rids:
+                    if rid in records_map:
+                        failed.append({'id': rid, 'reason': f'数据库提交失败: {e}'})
+                        skipped += 1
+                updated = max(0, updated - len(records_map))
 
     return jsonify({
         'ok': True,

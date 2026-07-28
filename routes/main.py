@@ -64,8 +64,13 @@ def review():
 
 @login_required
 def admin_page():
-    """管理员页面"""
-    if not current_user.is_admin:
+    """管理员 / Release 页面
+
+    release 角色现在也可访问此页面 (v4.x 权限升级),
+    但只能管理自己发布的记录 (见 admin.html 前端权限控制
+    + admin_toggle_release / admin_batch_release 端点内校验)。
+    """
+    if not (current_user.is_admin or current_user.is_release):
         abort(403)
     return render_template('admin.html', user=current_user)
 
@@ -73,7 +78,7 @@ def admin_page():
 @bp.route('/qor_record/<int:record_id>')
 @login_required
 def qor_record_detail_page(record_id):
-    """QoR 记录详情页"""
+    """QoR 记录详情页 (release 角色现在可查看所有记录)"""
     from models import QorRecord, ProjectMember
     rec = QorRecord.query.get_or_404(record_id)
     if not current_user.is_admin and not current_user.is_release:
