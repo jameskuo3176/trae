@@ -86,7 +86,16 @@ def qor_record_detail_page(record_id):
     - viewer: 仅可看已发布记录 (未发布 404)
     """
     from models import QorRecord, ProjectMember
-    rec = QorRecord.query.get_or_404(record_id)
+    # QorRecord 在项目库, 需先跨项目库定位 + 切上下文, 否则 get_or_404 会 404
+    from routes.admin import _find_qor_record_project
+    from core.db_routing import switch_to_project
+    pid = _find_qor_record_project(record_id)
+    if pid is None:
+        abort(404)
+    with switch_to_project(pid):
+        rec = QorRecord.query.get(record_id)
+    if rec is None:
+        abort(404)
     # v5.0 viewer: 未发布记录视同不存在
     if current_user.is_viewer and not rec.is_released:
         abort(404)

@@ -551,6 +551,67 @@
         justify-content: space-between;
         align-items: center;
     }
+
+    /* 3级折叠树样式: proj > module > record */
+    .tree-toggle {
+        cursor: pointer;
+        user-select: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .tree-toggle::before {
+        content: '▶';
+        display: inline-block;
+        font-size: 10px;
+        color: var(--color-text-secondary);
+        transition: transform 0.15s;
+        width: 12px;
+    }
+    .tree-toggle.expanded::before {
+        transform: rotate(90deg);
+    }
+    .tree-children {
+        display: none;
+        margin-left: 18px;
+        border-left: 2px dashed var(--color-border);
+        padding-left: 12px;
+        margin-top: 6px;
+    }
+    .tree-children.expanded {
+        display: block;
+    }
+    .record-item {
+        padding: 4px 8px;
+        font-size: 13px;
+        color: var(--color-text);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-radius: 3px;
+        margin: 2px 0;
+    }
+    .record-item:hover {
+        background: var(--color-surface, #f8f9fa);
+    }
+    .record-tag {
+        display: inline-block;
+        padding: 2px 8px;
+        background: var(--color-primary, #1a237e);
+        color: white;
+        border-radius: 10px;
+        font-size: 12px;
+        text-decoration: none;
+        cursor: pointer;
+        transition: opacity 0.15s;
+    }
+    .record-tag:hover {
+        opacity: 0.85;
+        color: white;
+    }
+    .record-tag.unreleased {
+        background: var(--color-text-secondary, #999);
+    }
 </style>
 {% endblock %}
 
@@ -655,35 +716,125 @@
         }
         container.innerHTML = '';
         allProjects.forEach(p => {
-            const div = document.createElement('div');
-            div.className = 'project-item';
+            // 3级折叠结构: project > module > record (默认全部折叠)
+            const projId = p.id;
+            const projModulesId = `proj-modules-${projId}`;
+            const projDesc = p.description
+                ? `<span style="color:var(--color-text-secondary); margin-left:8px;">${escapeHtml(p.description)}</span>`
+                : '';
+            const projTag = `<span class="tag">${p.module_count} 个模块</span>`;
             let modulesHtml = '';
             if (p.modules.length === 0) {
-                modulesHtml = '<div class="module-item">无模块</div>';
+                modulesHtml = `<div class="module-item" style="color:var(--color-text-secondary);">无模块</div>`;
             } else {
                 p.modules.forEach(m => {
-                    modulesHtml += `<div class="module-item">
-                    <span>${m.name} <span class="tag">${m.record_count} 条记录</span></span>
-                    <button class="btn btn-danger btn-sm" onclick="deleteModule(${m.id})">删除模块</button>
-                </div>`;
+                    const modChildrenId = `mod-records-${projId}-${m.id}`;
+                    modulesHtml += `
+                        <div class="module-item">
+                            <span class="tree-toggle" data-target="${modChildrenId}" onclick="toggleModule(${projId}, ${m.id}, this)">
+                                <strong>${escapeHtml(m.name)}</strong>
+                                <span class="tag" style="margin-left:4px;">${m.record_count} 条记录</span>
+                            </span>
+                            <button class="btn btn-danger btn-sm" onclick="deleteModule(${m.id})">删除模块</button>
+                        </div>
+                        <div class="tree-children" id="${modChildrenId}">
+                            <div class="empty-state" style="padding:6px 12px; font-size:12px;">点击上方模块名加载记录...</div>
+                        </div>
+                    `;
                 });
             }
-            div.innerHTML = `
-            <div class="project-item-header">
-                <div>
-                    <strong>${p.name}</strong>
-                    ${p.description ? `<span style="color:var(--color-text-secondary); margin-left:8px;">${p.description}</span>` : ''}
-                    <span class="tag">${p.module_count} 个模块</span>
+            const html = `
+                <div class="project-item">
+                    <div class="project-item-header">
+                        <div>
+                            <span class="tree-toggle" data-target="${projModulesId}" onclick="toggleProject(${projId}, this)">
+                                <strong>${escapeHtml(p.name)}</strong>
+                            </span>
+                            ${projDesc}${projTag}
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-default btn-sm" onclick="showAddModule(${p.id})">+ 模块</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteProject(${p.id})">删除项目</button>
+                        </div>
+                    </div>
+                    <div class="tree-children" id="${projModulesId}">
+                        ${modulesHtml}
+                    </div>
                 </div>
-                <div style="display:flex; gap:8px;">
-                    <button class="btn btn-default btn-sm" onclick="showAddModule(${p.id})">+ 模块</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteProject(${p.id})">删除项目</button>
-                </div>
-            </div>
-            ${modulesHtml}
-        `;
-            container.appendChild(div);
+            `;
+            container.insertAdjacentHTML('beforeend', html);
         });
+    }
+
+    // 折叠/展开项目
+    function toggleProject(projectId, toggleEl) {
+        const childId = toggleEl.dataset.target;
+        const child = document.getElementById(childId);
+        if (child) {
+            child.classList.toggle('expanded');
+            toggleEl.classList.toggle('expanded');
+        }
+    }
+
+    // 折叠/展开模块, 并懒加载该模块下的记录
+    let _moduleRecordsCache = {};  // key: "proj-mod" -> records[]
+    async function toggleModule(projectId, moduleId, toggleEl) {
+        const childId = toggleEl.dataset.target;
+        const child = document.getElementById(childId);
+        if (!child) return;
+        const isExpanded = child.classList.toggle('expanded');
+        toggleEl.classList.toggle('expanded');
+        if (isExpanded) {
+            // 懒加载该模块下的记录
+            const cacheKey = `${projectId}-${moduleId}`;
+            if (!_moduleRecordsCache[cacheKey]) {
+                child.innerHTML = '<div class="empty-state" style="padding:6px 12px; font-size:12px;">加载中...</div>';
+                try {
+                    const resp = await fetch(`/api/modules/${projectId}/${moduleId}/records`);
+                    if (!resp.ok) {
+                        child.innerHTML = `<div class="empty-state" style="padding:6px 12px; font-size:12px; color:#c00;">加载失败 (${resp.status})</div>`;
+                        return;
+                    }
+                    const records = await resp.json();
+                    _moduleRecordsCache[cacheKey] = records;
+                } catch (err) {
+                    child.innerHTML = `<div class="empty-state" style="padding:6px 12px; font-size:12px; color:#c00;">加载出错: ${err.message}</div>`;
+                    return;
+                }
+            }
+            renderModuleRecords(projectId, moduleId, child);
+        }
+    }
+
+    function renderModuleRecords(projectId, moduleId, container) {
+        const cacheKey = `${projectId}-${moduleId}`;
+        const records = _moduleRecordsCache[cacheKey] || [];
+        if (records.length === 0) {
+            container.innerHTML = '<div class="empty-state" style="padding:6px 12px; font-size:12px;">无记录</div>';
+            return;
+        }
+        let html = '';
+        records.forEach(r => {
+            // 显示 version+tag (此处 tag 即 version, 显示全路径 full_dir 作为副标题)
+            const tagClass = r.is_released ? 'record-tag' : 'record-tag unreleased';
+            const fullDir = r.full_dir ? `<span style="color:var(--color-text-secondary); font-size:11px; margin-left:8px;">${escapeHtml(r.full_dir)}</span>` : '';
+            // 点击跳转到 dashboard, 并通过 focus_record_id 定位该条记录
+            html += `
+                <div class="record-item">
+                    <span>
+                        <a class="${tagClass}" href="/dashboard?focus_record_id=${r.id}&project_id=${projectId}&module_id=${moduleId}&version=${encodeURIComponent(r.version || '')}" title="点击在 Dashboard 查看 ${escapeHtml(r.version || '')} 的数据">
+                            ${escapeHtml(r.version || 'v1')}
+                        </a>
+                        ${fullDir}
+                    </span>
+                    <span style="font-size:11px; color:var(--color-text-secondary);">
+                        ${r.recorded_at ? new Date(r.recorded_at).toLocaleDateString('zh-CN') : ''}
+                        ${r.is_released ? '' : '<span style="color:#999; margin-left:6px;">未发布</span>'}
+                    </span>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
     }
 
     function showAddProject() {

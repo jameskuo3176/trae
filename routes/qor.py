@@ -95,6 +95,36 @@ def api_get_modules(project_id):
         return jsonify(result)
 
 
+@bp.route('/api/modules/<int:project_id>/<int:module_id>/records')
+@login_required
+def api_get_module_records(project_id, module_id):
+    """获取指定模块下的记录摘要 (用于 3 级折叠树)
+
+    返回字段: id, version, tag, full_dir, recorded_at, is_released
+    v5.0: viewer 仅能看到 is_released=True 的记录
+    """
+    project = Project.query.get_or_404(project_id)
+    with switch_to_project(project_id):
+        mod = Module.query.filter_by(id=module_id, project_id=project_id).first_or_404()
+        q = QorRecord.query.filter_by(module_id=module_id)
+        # v5.0 viewer: 过滤掉未发布记录
+        if current_user.is_viewer:
+            q = q.filter(QorRecord.is_released.is_(True))
+        records = q.order_by(QorRecord.version.asc(), QorRecord.recorded_at.desc()).limit(500).all()
+        result = []
+        for r in records:
+            result.append({
+                'id': r.id,
+                'version': r.version or 'v1',
+                'tag': r.version or 'v1',  # tag 即 version
+                'full_dir': r.full_dir or '',
+                'recorded_at': r.recorded_at.isoformat() if r.recorded_at else None,
+                'is_released': bool(r.is_released),
+                'owner_id': r.owner_id,
+            })
+    return jsonify(result)
+
+
 # =========================================================================
 # QoR 数据查询
 # =========================================================================
@@ -187,7 +217,16 @@ QOR_METRIC_DIRECTION = {
 @login_required
 def api_qor_record_detail(record_id):
     """单条 QoR 记录详情 + 同 module+version 横向对比"""
-    rec = QorRecord.query.get_or_404(record_id)
+    # QorRecord 在项目库, 必须先跨项目库定位 + 切上下文
+    from routes.admin import _find_qor_record_project
+    from core.db_routing import switch_to_project
+    pid = _find_qor_record_project(record_id)
+    if pid is None:
+        return jsonify({'error': '记录不存在'}), 404
+    with switch_to_project(pid):
+        rec = QorRecord.query.get(record_id)
+    if rec is None:
+        return jsonify({'error': '记录不存在'}), 404
     # v5.0 viewer: 仅可看已发布记录, 未发布记录视同不存在
     if current_user.is_viewer and not rec.is_released:
         return jsonify({'error': '记录不存在'}), 404
