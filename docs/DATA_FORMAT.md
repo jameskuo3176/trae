@@ -808,7 +808,7 @@ Draft → Submitted → Approved
 | owner    | 项目内所有操作                        |
 | editor   | 提交 / 修订                            |
 | viewer   | 只读                                  |
-| release  | 仅查看已发布数据（看不到未审核 run）   |
+| release  | 查看所有数据 + 访问对比页 + 管理自己 release 的记录 (撤回) |
 
 ### 19.4 页面
 

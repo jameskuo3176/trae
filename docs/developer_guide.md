@@ -289,7 +289,7 @@ DataSnapshot (独立)
   - QoR 记录详情页（`/qor_record/<id>`）的路径展示
 - **extra_fields (JSON)**：存储未映射到固定列的字段（如 `comment`、各 clock 的 period/wns/tns/path）。高频查询字段建为固定列并可索引，低频字段入 JSON，兼顾性能与灵活性
 - `(module_id, version)` 作为业务唯一键，上传时做 upsert（已存在则更新）
-- `is_released` 标记是否已发布（release 角色账号只能看到 `is_released=True` 的数据）
+- `is_released` 标记是否已发布（v4.x 起 release 角色账号可查看所有数据，含 `is_released=False` 的记录；release 可在管理页面"记录管理"标签内撤回自己发布的记录）
 
 #### 跨库关系声明（关键代码模式）
 
@@ -638,7 +638,7 @@ python migrate_sqlite_to_mongo.py
 - CSRF 保护: 所有 POST/PUT/DELETE/PATCH 端点强制校验 CSRF Token (API Key 认证的请求豁免)
 - 登录限流: 每 IP 每分钟最多 5 次 `/login` 请求
 - Session Cookie: `HttpOnly=True`, `SameSite='Lax'`, HTTPS 部署时启用 `Secure`
-- 角色权限: admin / user / release 三级, release 仅可查看已发布数据 (`is_released=True`)
+- 角色权限: admin / user / release 三级, release 可查看所有数据 + 访问对比页 + 在管理页面管理自己 release 的记录 (仅可"撤回", 不可"重新发布")
 - API 认证: 支持 Session + X-API-Key 双轨认证, 适用于 DC 流程自动化
 - 项目库物理锁定: `status=locked` 时 DB 文件 `chmod 0444`，防止绕过应用层的写入
 - 密码强度校验: `security.validate_password()` 要求 >= 8 位 + 字母 + 数字 + 非弱口令黑名单 (`12345678` / `password` / `admin123` 等), 改密和重置密码端点统一调用
