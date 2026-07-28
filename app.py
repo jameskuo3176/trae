@@ -50,18 +50,21 @@ def init_default_data():
         if master_tables:
             db.metadata.create_all(db.engine, tables=master_tables)
 
-        # 初始化默认管理员
+        # 初始化默认管理员 (首次登录必须改密)
         if User.query.filter_by(username='admin').first() is None:
             admin = User(username='admin', role='admin', display_name='管理员')
             admin.set_password('admin@2026')
+            admin.must_change_password = True
             db.session.add(admin)
         if User.query.filter_by(username='user').first() is None:
             user = User(username='user', role='user', display_name='普通用户')
             user.set_password('user@2026')
+            user.must_change_password = True
             db.session.add(user)
         if User.query.filter_by(username='release').first() is None:
             rel = User(username='release', role='release', display_name='Release 客户')
             rel.set_password('release@2026')
+            rel.must_change_password = True
             db.session.add(rel)
             print('[INIT] 已创建默认 release 账号: release / release@2026 (仅可查看已发布数据)')
         db.session.commit()
@@ -73,6 +76,22 @@ def init_default_data():
             print('  当前默认: admin@2026 (或历史版本 admin123)')
             print('  请立即登录修改为强密码')
             print('=' * 60)
+
+        # 强制改密兜底: 若任何默认账号仍使用出厂默认密码, 强制标记必须改密
+        # (用户通过 user_change_own_password 改密后, 标志会被清零,
+        #  不会再次被设回 True)
+        _DEFAULT_PASSWORDS = {
+            'admin': ['admin@2026', 'admin123'],
+            'user':  ['user@2026', 'user123'],
+            'release': ['release@2026', 'release123'],
+        }
+        for uname, default_pws in _DEFAULT_PASSWORDS.items():
+            u = User.query.filter_by(username=uname).first()
+            if u and any(u.check_password(p) for p in default_pws):
+                if not u.must_change_password:
+                    u.must_change_password = True
+                    print(f'[SECURITY] {uname} 仍使用出厂默认密码, 已标记 must_change_password=True')
+        db.session.commit()
 
         # 按项目分库: 为所有现有项目确保 DB 文件存在
         # (已迁移的项目跳过; 新创建项目已由 admin_create_project 处理)

@@ -108,6 +108,11 @@ class User(UserMixin, db.Model):
     display_name = db.Column(db.String(120))
     # 用户自定义主题 (JSON), null 时使用默认主题
     theme = db.Column(db.Text)
+    # 强制改密标志: True 时用户除改密/登出外, 任何操作都被拦截
+    # 触发场景: 管理员重置密码、首次创建账号、检测到出厂默认密码仍在使用
+    must_change_password = db.Column(db.Boolean, nullable=False, default=False)
+    # 最近一次成功改密的时间 (审计用)
+    password_changed_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     dashboards = db.relationship('UserDashboard', backref='user', lazy='dynamic')

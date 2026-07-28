@@ -121,7 +121,7 @@ def _register_legacy_endpoints(app):
     例如 url_for('dashboard') 仍可工作 (等价于 main.dashboard)。
     """
     from routes.main import dashboard, compare, admin_page, db_admin
-    from routes.auth import login, logout
+    from routes.auth import login, logout, change_password_page
 
     # 将函数注册到 app 级别, 使用旧版端点名
     app.add_url_rule('/', endpoint='dashboard', view_func=dashboard)
@@ -132,3 +132,7 @@ def _register_legacy_endpoints(app):
     app.add_url_rule('/dbadmin/<path:subpath>', endpoint='db_admin', view_func=db_admin)
     app.add_url_rule('/login', endpoint='login', view_func=login, methods=['GET', 'POST'])
     app.add_url_rule('/logout', endpoint='logout', view_func=logout)
+    app.add_url_rule(
+        '/change_password', endpoint='change_password_page',
+        view_func=change_password_page, methods=['GET'],
+    )

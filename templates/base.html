@@ -1169,6 +1169,7 @@
             display_name: {{ (current_user.display_name or '') | tojson }},
             is_admin: {{ 'true' if current_user.is_admin else 'false' }},
             is_release: {{ 'true' if current_user.is_release else 'false' }},
+            must_change_password: {{ 'true' if current_user.must_change_password else 'false' }},
         };
     </script>
     <nav class="navbar">

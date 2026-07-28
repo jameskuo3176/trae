@@ -27,6 +27,9 @@ bp = Blueprint('auth', __name__)
 def login():
     """用户登录"""
     if current_user.is_authenticated:
+        # 已登录但需改密: 跳改密页
+        if getattr(current_user, 'must_change_password', False):
+            return redirect(url_for('change_password_page'))
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
@@ -38,6 +41,9 @@ def login():
             login_user(user)
             generate_csrf_token()
             next_url = request.args.get('next')
+            # 强制改密: 忽略 next, 跳改密页
+            if getattr(user, 'must_change_password', False):
+                return redirect(url_for('change_password_page'))
             return redirect(next_url or url_for('dashboard'))
         current_app.logger.warning('[AUTH] 登录失败: username=%s ip=%s', username, get_client_ip())
         flash('用户名或密码错误', 'error')
@@ -49,6 +55,22 @@ def logout():
     """用户登出"""
     logout_user()
     return redirect(url_for('login'))
+
+
+# =========================================================================
+# 强制改密页面 (must_change_password=True 时唯一可访问的页面)
+# =========================================================================
+
+@login_required
+def change_password_page():
+    """强制改密页 (HTML)
+
+    当 user.must_change_password=True 时, before_request 钩子
+    会把所有其他页面请求都重定向到这里, 改密成功后清零标志。
+    """
+    if not getattr(current_user, 'must_change_password', False):
+        return redirect(url_for('dashboard'))
+    return render_template('change_password.html', user=current_user)
 
 
 # =========================================================================

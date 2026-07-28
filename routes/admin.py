@@ -29,6 +29,7 @@ from models import (
     ProjectMember, ViolationPath,
 )
 from qor_parser import parse_csv_file, parse_violation_csv, parse_notes_csv
+from security import validate_password
 from services.qor_import import (
     save_records_to_db, merge_power_to_db, save_violations_to_db,
     save_notes_to_db, _sync_congestion,
@@ -1368,7 +1369,11 @@ def admin_batch_create_users():
 @bp.route('/users/<int:user_id>/reset-password', methods=['POST'])
 @login_required
 def admin_reset_user_password(user_id):
-    """管理员重置指定用户的密码"""
+    """管理员重置指定用户的密码
+
+    - 密码强度通过 security.validate_password 校验 (>=8位 + 字母 + 数字 + 非弱口令)
+    - 重置后 user.must_change_password=True, 强制用户下次登录必须改密
+    """
     if not current_user.is_admin:
         return jsonify({'error': '无权限'}), 403
     user = db.session.get(User, user_id)
@@ -1376,11 +1381,22 @@ def admin_reset_user_password(user_id):
         return jsonify({'error': '用户不存在'}), 404
 
     data = request.get_json(silent=True) or {}
-    new_password = data.get('password') or 'Reset@123'
+    new_password = (data.get('password') or '').strip() or 'Reset@123'
+
+    ok, err = validate_password(new_password)
+    if not ok:
+        return jsonify({'error': f'密码强度不足: {err}'}), 400
 
     user.set_password(new_password)
+    user.must_change_password = True
+    user.password_changed_at = None  # 重置后未由用户主动改, 清空以便后续审计
     db.session.commit()
-    return jsonify({'ok': True, 'username': user.username, 'reset_to': new_password})
+    return jsonify({
+        'ok': True,
+        'username': user.username,
+        'reset_to': new_password,
+        'must_change_password': True,
+    })
 
 
 # =========================================================================
@@ -1390,7 +1406,12 @@ def admin_reset_user_password(user_id):
 @bp.route('/user/password', methods=['POST'])
 @login_required
 def user_change_own_password():
-    """用户修改自己的密码"""
+    """用户修改自己的密码
+
+    - 校验旧密码
+    - 强制密码强度 (security.validate_password: >=8位 + 字母 + 数字 + 非弱口令)
+    - 改密成功自动清零 must_change_password
+    """
     data = request.get_json() or {}
     old_password = data.get('old_password', '')
     new_password = data.get('new_password', '')
@@ -1402,6 +1423,13 @@ def user_change_own_password():
     if old_password == new_password:
         return jsonify({'error': '新密码不能与旧密码相同'}), 400
 
+    # 密码强度校验
+    ok, err = validate_password(new_password)
+    if not ok:
+        return jsonify({'error': err or '密码强度不足'}), 400
+
     current_user.set_password(new_password)
+    current_user.must_change_password = False
+    current_user.password_changed_at = datetime.utcnow()
     db.session.commit()
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'must_change_password': False})

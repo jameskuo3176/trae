@@ -641,6 +641,61 @@ python migrate_sqlite_to_mongo.py
 - 角色权限: admin / user / release 三级, release 仅可查看已发布数据 (`is_released=True`)
 - API 认证: 支持 Session + X-API-Key 双轨认证, 适用于 DC 流程自动化
 - 项目库物理锁定: `status=locked` 时 DB 文件 `chmod 0444`，防止绕过应用层的写入
+- 密码强度校验: `security.validate_password()` 要求 >= 8 位 + 字母 + 数字 + 非弱口令黑名单 (`12345678` / `password` / `admin123` 等), 改密和重置密码端点统一调用
+- 强制改密: `User.must_change_password` 标志位, 触发场景包括首次创建账号 (默认 admin/user/release) + 管理员重置密码, before_request 钩子拦截所有非改密/登出端点, 强制跳转 `/change_password` 页
+
+### 7.4 强制改密流程 (must_change_password)
+
+**触发场景**：
+
+| 场景 | 设置 `must_change_password=True` 的位置 |
+|---|---|
+| 系统初始化默认账号 | `app.py::init_default_data` 创建 admin / user / release 时 |
+| 管理员重置密码 | `routes/admin.py::admin_reset_user_password` |
+| 兜底检查 | `app.py::init_default_data` 启动时检测到账号仍用出厂默认密码时 |
+
+**清零场景**：
+
+- `routes/admin.py::user_change_own_password` 改密成功后, 同时更新 `password_changed_at = utcnow()`
+
+**拦截实现** ([core/security.py](file:///d:/trae/trace_clock/qor_recorder/QoR_Recorder/core/security.py))：
+
+```python
+MUST_CHANGE_ALLOWED_EP = {
+    'user_change_own_password',       # API
+    'admin.user_change_own_password',  # 蓝图全名
+    'logout',
+    'change_password_page',
+}
+
+@app.before_request
+def _security_before_request():
+    if (current_user.is_authenticated
+            and getattr(current_user, 'must_change_password', False)):
+        ep = request.endpoint
+        if ep not in MUST_CHANGE_ALLOWED_EP:
+            # 写操作: 403
+            if request.method in ('POST','PUT','DELETE','PATCH'):
+                return jsonify({'error':'请先修改密码后再操作',
+                                'must_change_password':True}), 403
+            # GET 受保护页面: 重定向到 /change_password
+            if request.method == 'GET' and ep in MUST_CHANGE_REDIRECT_EP:
+                return redirect('/change_password')
+    ...
+```
+
+**端点 endpoint 名约定**：
+
+- 蓝图下路由的 endpoint 是 `<bp>.<func>` 形式 (如 `admin.user_change_own_password`)
+- `factory.add_url_rule(..., endpoint='xxx', ...)` 注册的端点是 `xxx` (无前缀)
+- 白名单必须同时列出短名和全名 (因为 url_for 接受两者)
+
+**前端改密页** ([templates/change_password.html](file:///d:/trae/trace_clock/qor_recorder/QoR_Recorder/templates/change_password.html))：
+
+- 实时显示密码强度 (弱/中/强, 列出未通过项)
+- 必须填旧密码 + 新密码 + 确认新密码
+- 提交时带 `X-CSRF-Token` 头
+- 改密成功后跳转回首页 (或仍留在改密页若后端返回 must_change_password=True)
 
 ## 8. 性能考量
 

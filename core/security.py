@@ -2,7 +2,7 @@
 
 封装 SECRET_KEY 启动检查、CSRF 初始化、请求前安全钩子。
 """
-from flask import jsonify, request
+from flask import jsonify, redirect, request
 from flask_login import current_user
 
 # 在函数内部引用 security 模块, 允许测试时通过 monkey patch 替换
@@ -59,14 +59,47 @@ def register_security_before_request(app):
 
     Rate Limiting 通过 @rate_limit 装饰器按端点配置。
     """
+    # must_change_password=True 的用户唯一可访问的端点
+    # 注意: 蓝图下的 endpoint 形如 '<bp>.<func>' (如 admin.user_change_own_password)
+    MUST_CHANGE_ALLOWED_EP = {
+        'user_change_own_password',       # admin.* 蓝图下 API
+        'admin.user_change_own_password',  # 显式列全名
+        'logout',                          # 工厂 add_url_rule 注册
+        'change_password_page',            # 工厂 add_url_rule 注册
+    }
+    # must_change_password=True 的用户访问这些 GET 端点时, 强制重定向到改密页
+    MUST_CHANGE_REDIRECT_EP = {
+        'dashboard', 'compare', 'admin_page',
+        'review', 'main.review',
+        'qor_record_detail_page', 'db_admin',
+    }
+
     @app.before_request
     def _security_before_request():
+        # 强制改密: must_change_password=True 的用户除改密/登出外, 任何操作都拦截
+        if (current_user.is_authenticated
+                and getattr(current_user, 'must_change_password', False)):
+            ep = request.endpoint
+            if ep not in MUST_CHANGE_ALLOWED_EP:
+                # 写操作: 403 拦截
+                if request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
+                    app.logger.warning(
+                        '[AUTH] must_change_password 写操作被拒: user=%s endpoint=%s path=%s',
+                        current_user.username, ep, request.path,
+                    )
+                    return jsonify({'error': '请先修改密码后再操作',
+                                    'must_change_password': True}), 403
+                # GET: 重定向到 /change_password
+                if request.method == 'GET' and ep in MUST_CHANGE_REDIRECT_EP:
+                    return redirect('/change_password')
+
         # release 角色: 禁止所有写操作 (POST/PUT/DELETE/PATCH)
         if (current_user.is_authenticated
                 and current_user.is_release
                 and request.method in ('POST', 'PUT', 'DELETE', 'PATCH')):
             allowed_write_endpoints = {
                 'user_change_own_password',
+                'admin.user_change_own_password',
                 'save_dashboard_config',
                 'delete_dashboard_config',
                 'save_user_theme',

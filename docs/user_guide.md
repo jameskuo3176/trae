@@ -471,6 +471,12 @@ POST /api/user/theme                 # 保存主题
 
 所有主题接口需登录访问，仅能操作当前登录用户的主题。
 
+### 8.6 强制改密提示
+
+- 首次登录 / 密码被管理员重置后, 系统会强制跳转到 `/change_password` 改密页
+- 改密成功之前, 所有其他页面 (Dashboard / Admin / 上传等) 都会被拦截并跳转回改密页
+- 改密成功后自动跳回首页
+
 ## 9. 常见问题
 
 ### Q1: 上传 CSV 提示「未识别到任何列」？
@@ -502,18 +508,32 @@ from models import User
 app.app_context().push()
 admin = User.query.filter_by(username='admin').first()
 admin.set_password('new_password')
+admin.must_change_password = True   # 强制用户下次登录必须改密
 db.session.commit()
 ```
 
-### Q6: 数据库多大算太大？性能会下降吗？
+### Q6: 密码强度要求是什么？
+
+**A**: 改密和重置密码时, 系统会校验:
+
+| 要求     | 说明                            |
+|----------|---------------------------------|
+| 最少 8 位 | 长度 < 8 直接拒绝               |
+| 含字母   | 至少 1 个 a-z / A-Z             |
+| 含数字   | 至少 1 个 0-9                   |
+| 非弱口令 | 拒绝 `12345678` / `password` / `admin123` / `qwerty123` / `11111111` / `00000000` 等 |
+
+弱密码会被前端实时显示, 改密按钮会提交但被后端拒绝。
+
+### Q7: 数据库多大算太大？性能会下降吗？
 
 **A**: SQLite 在万条记录量级性能良好。若记录超过 10 万条，建议迁移到 PostgreSQL/MySQL。系统启动时会自动备份数据库到 `backups/` 目录，防止数据丢失。
 
-### Q7: 如何查看某条记录的完整 extra\_fields？
+### Q8: 如何查看某条记录的完整 extra\_fields？
 
 **A**: 在 Dashboard 的图表上悬停，或通过 API `/api/qor_data` 查询，返回的 JSON 中包含 `extra_fields` 字段（含 comment、full\_dir、各 clock 的详细信息）。
 
-### Q8: 多人能同时使用吗？
+### Q9: 多人能同时使用吗？
 
 **A**: 可以。Flask 支持多线程并发，多用户可同时查看。但建议避免多人同时上传大量数据，SQLite 的写入并发有限。
 
