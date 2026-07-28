@@ -22,6 +22,12 @@ from models import (
     db, User, Project, Module, QorRecord, ProjectMember, RunNote,
 )
 
+from core.db_routing import (
+    switch_to_project,
+    query_records_by_projects,
+    _resolve_project_ids,
+)
+
 bp = Blueprint('qor', __name__)
 
 
@@ -46,11 +52,6 @@ def api_get_projects():
     for p in projects:
         # 跨库关系 p.modules 是 viewonly InstrumentedList, 不支持 order_by
         # 改用直接查询 + ORM bind 路由 (先切换到该项目上下文)
-        from core.db_routing import (
-    switch_to_project,
-    query_records_by_projects,
-    _resolve_project_ids,
-)
         with switch_to_project(p.id):
             modules = Module.query.order_by(Module.name).all()
             for m in modules:
@@ -257,11 +258,6 @@ def api_qor_aggregate():
     if versions:
         ver_filter = set(v.strip() for v in versions.split(',') if v.strip())
 
-    from core.db_routing import (
-    switch_to_project,
-    query_records_by_projects,
-    _resolve_project_ids,
-)
     records = []
     for pid in proj_id_list:
         with switch_to_project(pid):
@@ -272,21 +268,27 @@ def api_qor_aggregate():
                 q = q.filter(QorRecord.module_id.in_(mod_id_filter))
             if ver_filter:
                 q = q.filter(QorRecord.version.in_(ver_filter))
-            records.extend(
-                q.order_by(QorRecord.recorded_at.asc()).limit(10000).all()
-            )
+            # 在项目库上下文内预先取出 (module_id, module_name), 防止 lazy-load 跨上下文掉到主库
+            for r in q.order_by(QorRecord.recorded_at.asc()).limit(10000).all():
+                mod_name = r.module.name if r.module is not None else ''
+                records.append({
+                    'record': r,
+                    'module_id': r.module_id,
+                    'module_name': mod_name,
+                })
 
     # 按 group_by 分组聚合
     groups = {}
-    for r in records:
+    for item in records:
+        r = item['record']
         d = parse_full_dir(r.full_dir or '')
         if group_by == 'base_dir':
             key = d['base_dir'] or '(root)'
         elif group_by == 'module':
-            key = r.module.name
+            key = item['module_name'] or f'#{r.module_id}'
         else:  # run: 用 full_dir 全路径作为唯一 key, 跨 base_dir 区分同名 run
             key = (r.full_dir or '').strip() or f'#{r.id}'
-        groups.setdefault(key, []).append((r, d))
+        groups.setdefault(key, []).append((r, d, item))
 
     metric_fields = [
         'area_total', 'area_combinational', 'area_sequential',
@@ -304,15 +306,16 @@ def api_qor_aggregate():
         return (s[n // 2 - 1] + s[n // 2]) / 2
 
     result = []
-    for key, recs_with_d in groups.items():
-        recs = [x[0] for x in recs_with_d]
-        first_d = recs_with_d[0][1]
+    for key, items in groups.items():
+        recs = [x[0] for x in items]
+        first_d = items[0][1]
+        first_item = items[0][2]
         agg = {
             'label': key,
             'count': len(recs),
             'base_dir': first_d.get('base_dir', '') if group_by == 'run' else key if group_by == 'base_dir' else '',
             'run_name': first_d.get('run_name', '') if group_by == 'run' else '',
-            'module_name': recs[0].module.name if group_by in ('run', 'base_dir') else key,
+            'module_name': first_item['module_name'] if group_by in ('run', 'base_dir') else key,
         }
         for f in metric_fields:
             vals = [getattr(r, f) for r in recs if getattr(r, f) is not None]
