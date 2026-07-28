@@ -87,18 +87,24 @@ def api_get_projects():
 def api_get_modules(project_id):
     """获取指定项目的模块列表"""
     project = Project.query.get_or_404(project_id)
-    # 注意: project.modules 是 viewonly 跨库关系, 加载为 list, 不支持 order_by
-    # 改用直接查询, 由 ORM bind 路由自动选项目库
-    modules = Module.query.filter_by(project_id=project_id).order_by(Module.name).all()
-    if current_user.is_release:
-        modules = [m for m in modules
-                   if m.records.filter(QorRecord.is_released.is_(True)).count() > 0]
-    return jsonify([{
-        'id': m.id,
-        'name': m.name,
-        'record_count': m.records.filter(QorRecord.is_released.is_(True)).count()
-                         if current_user.is_release else m.records.count(),
-    } for m in modules])
+    # 跨库 viewonly 关系: 切到项目库直接查 Module, 避免 ORM 兜底用第一个项目库
+    with switch_to_project(project_id):
+        modules = Module.query.filter_by(project_id=project_id).order_by(Module.name).all()
+        result = []
+        for m in modules:
+            if current_user.is_release:
+                n_rec = m.records.filter(QorRecord.is_released.is_(True)).count()
+                if n_rec == 0:
+                    continue
+                m._record_count = n_rec
+            else:
+                m._record_count = m.records.count()
+            result.append({
+                'id': m.id,
+                'name': m.name,
+                'record_count': m._record_count,
+            })
+        return jsonify(result)
 
 
 # =========================================================================

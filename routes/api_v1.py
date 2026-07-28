@@ -23,6 +23,7 @@ from api_auth import (
     check_project_writable, check_data_lock,
 )
 from core.db import with_db_retry
+from core.db_routing import switch_to_project
 from models import (
     db, User, Project, Module, ProjectMember, QorRecord,
     DataLock, ApiKey, AlertRule, AlertEvent,
@@ -50,13 +51,22 @@ def api_v1_list_projects():
     for p in projects:
         if not can_access_project(user, p.id):
             continue
+        # 跨库 viewonly 关系: 用 switch_to_project 切到项目库查 module 数
+        try:
+            with switch_to_project(p.id):
+                module_count = Module.query.filter_by(project_id=p.id).count()
+        except Exception:
+            current_app.logger.exception(
+                'api_v1_list_projects: stats failed for project_id=%s', p.id,
+            )
+            module_count = 0
         result.append({
             'id': p.id,
             'name': p.name,
             'description': p.description,
             'created_at': p.created_at.isoformat() if p.created_at else None,
             'my_role': get_user_project_role(user, p.id),
-            'module_count': p.modules.count(),
+            'module_count': module_count,
         })
     return jsonify(result)
 

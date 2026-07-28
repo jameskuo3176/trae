@@ -23,6 +23,7 @@ from api_auth import (
     check_project_writable, check_data_lock,
 )
 from core.db import with_db_retry
+from core.db_routing import switch_to_project
 from models import (
     db, User, Project, Module, QorRecord, DataSnapshot, BackupRecord,
     ProjectMember, ViolationPath,
@@ -35,6 +36,31 @@ from services.qor_import import (
 from alerts import check_alerts_for_new_record
 
 bp = Blueprint('admin', __name__)
+
+
+def _project_module_record_counts(project_id: int):
+    """在项目库上下文内安全统计 module/record 数量
+
+    跨库 viewonly 关系 p.modules 是 list, .count() 是 Python list.count()
+    会报 TypeError. 这里改用 switch_to_project + Module.query.count()
+    走 ORM bind 路由. 若项目库文件丢失, 返回 (0, 0, False).
+    """
+    from core.project_db import project_db_path
+    db_path = project_db_path(project_id)
+    if not os.path.exists(db_path):
+        return 0, 0, False
+    try:
+        with switch_to_project(project_id):
+            module_count = Module.query.filter_by(project_id=project_id).count()
+            record_count = QorRecord.query.join(
+                Module, QorRecord.module_id == Module.id,
+            ).filter(Module.project_id == project_id).count()
+        return module_count, record_count, True
+    except Exception:
+        current_app.logger.exception(
+            'project_db stats failed for project_id=%s', project_id,
+        )
+        return 0, 0, False
 
 
 # =========================================================================
@@ -117,8 +143,7 @@ def admin_list_hidden_projects():
     projects = Project.query.filter_by(status='hidden').order_by(Project.hidden_at.desc()).all()
     result = []
     for p in projects:
-        module_count = p.modules.count()
-        record_count = sum(m.records.count() for m in p.modules)
+        module_count, record_count, db_ok = _project_module_record_counts(p.id)
         hider = User.query.get(p.hidden_by) if p.hidden_by else None
         result.append({
             'id': p.id,
@@ -127,6 +152,7 @@ def admin_list_hidden_projects():
             'status': p.status,
             'module_count': module_count,
             'record_count': record_count,
+            'project_db_exists': db_ok,
             'hidden_at': p.hidden_at.isoformat() if p.hidden_at else None,
             'hidden_by': p.hidden_by,
             'hidden_by_name': hider.username if hider else None,
@@ -178,10 +204,11 @@ def admin_hard_delete_project(project_id):
     # 二次确认: 调用方需传 confirm=true
     data = request.get_json(silent=True) or request.args
     if str(data.get('confirm', '')).lower() not in ('1', 'true', 'yes'):
+        module_count, record_count, _ = _project_module_record_counts(p.id)
         return jsonify({
             'error': '此操作不可逆! 请传 confirm=true 二次确认',
-            'warning': f'将永久删除项目 "{p.name}" 及其 {p.modules.count()} 个模块, '
-                       f'{sum(m.records.count() for m in p.modules)} 条记录',
+            'warning': f'将永久删除项目 "{p.name}" 及其 {module_count} 个模块, '
+                       f'{record_count} 条记录',
         }), 400
 
     project_name = p.name
