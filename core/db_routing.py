@@ -99,15 +99,121 @@ def setup_binds(app):
     必须在 db.init_app 之后调用.
 
     工作原理:
-      - 监听 Session 的 do_orm_execute 事件 (ORM 层执行前)
-      - 检查执行语句的 mapper, 若是 project bind 模型则替换 bind 为项目库 engine
-      - 项目库 engine 从 g.current_project_id 选
+      - Monkey-patch flask_sqlalchemy Session.get_bind, 拦截对 __bind_key__='project'
+        模型的查询, 动态返回项目库 engine.
+      - 同时保留 do_orm_execute 事件作为兜底.
     """
-    # 使用 Session 类级别监听, 覆盖所有 session 实例
+    from flask_sqlalchemy import session as _fs_session
+
+    _original_get_bind = _fs_session.Session.get_bind
+
+    def _patched_get_bind(self, mapper=None, clause=None, bind=None, **kw):
+        """替代 Flask-SQLAlchemy 的 get_bind, 支持动态 project bind"""
+        if bind is not None:
+            return bind
+
+        # 1) 从 mapper 找 bind_key
+        bind_key = None
+        if mapper is not None:
+            try:
+                insp = __import__('sqlalchemy').inspect(mapper)
+            except Exception:
+                insp = None
+            if insp is not None:
+                bind_key = getattr(insp.class_, '__bind_key__', None)
+
+        # 2) 从 clause (table) 找 bind_key (兼容 Flask-SQLAlchemy 原始方式)
+        if bind_key is None and clause is not None:
+            table = None
+            if isinstance(clause, __import__('sqlalchemy').Table):
+                table = clause
+            elif hasattr(clause, 'table') and isinstance(clause.table, __import__('sqlalchemy').Table):
+                table = clause.table
+            if table is not None:
+                bind_key = table.metadata.info.get('bind_key')
+
+        # 3) 非 project bind -> 走 Flask-SQLAlchemy 原始逻辑
+        if bind_key != PROJECT_BIND:
+            return _original_get_bind(self, mapper=mapper, clause=clause, bind=bind, **kw)
+
+        # 4) 已是项目库 session -> 直接返回
+        if self.bind is not None:
+            bind_str = str(getattr(self.bind, 'url', ''))
+            if 'qor_p_' in bind_str:
+                return self.bind
+
+        # 5) 从 Flask g 取 active project_id
+        try:
+            pid = get_active_project_id()
+        except RuntimeError:
+            pid = None
+        if pid is None:
+            # 兜底 1: 从 mapper 的 instance dict 拿 project_id (e.g. Module(project_id=X))
+            try:
+                from sqlalchemy import inspect as _sa_inspect
+                if mapper is not None:
+                    for obj in self.new:
+                        if isinstance(obj, mapper.class_):
+                            pid = getattr(obj, 'project_id', None)
+                            if pid:
+                                break
+            except Exception:
+                pass
+        if pid is None:
+            # 兜底 2: 第 1 个项目库
+            from core.project_db import list_all_project_dbs
+            dbs = list_all_project_dbs()
+            if dbs:
+                pid = dbs[0]['project_id']
+        if pid is None:
+            # 兜底 3: 主库 (兼容 seed/test 阶段无项目库)
+            return _original_get_bind(self, mapper=mapper, clause=clause, bind=bind, **kw)
+        # 确保项目库存在, 否则自动创建
+        from core.project_db import project_db_path, create_project_db
+        if not os.path.exists(project_db_path(pid)):
+            try:
+                create_project_db(pid)
+            except Exception:
+                pass
+        return get_project_engine(pid)
+
+    _fs_session.Session.get_bind = _patched_get_bind
+
+    # Monkey-patch db._call_for_binds: 拦截 'project' bind, 遍历所有项目库
+    # 避免 Flask-SQLAlchemy 默认逻辑查 SQLALCHEMY_BINDS 找不到 'project' 而报错
+    from core.db import db as _db_ext
+    from flask_sqlalchemy.extension import SQLAlchemy as _FSA
+
+    # 取原方法副本 (在替换前, 否则会无限递归)
+    _orig_call_for_binds = _FSA._call_for_binds
+
+    def _do_for_project_dbs(self, op_name):
+        from core.project_db import list_all_project_dbs
+        for info in list_all_project_dbs():
+            eng = get_project_engine(info['project_id'])
+            getattr(self.metadata, op_name)(bind=eng)
+
+    def _patched_call_for_binds(self, bind_key, op_name):
+        if bind_key == '__all__':
+            _do_for_project_dbs(self, op_name)
+            # 主库
+            try:
+                _orig_call_for_binds(self, None, op_name)
+            except Exception:
+                pass
+            return
+        if bind_key == PROJECT_BIND:
+            _do_for_project_dbs(self, op_name)
+            return
+        # 其他 (主库) -> 走原始
+        return _orig_call_for_binds(self, bind_key, op_name)
+
+    # 在 class 上替换 (不要在 instance 上, 否则 self 不会自动绑定)
+    _FSA._call_for_binds = _patched_call_for_binds
+
+    # 兼容: 监听 do_orm_execute 拦截显式 bind 替换
     @event.listens_for(Session, 'do_orm_execute')
     def _route_query(execute_state):
-        """拦截 ORM 查询, 根据 model 自动路由到项目库"""
-        # 只处理 ORM DML/DQL, 跳过 bulk 等
         if execute_state.is_orm_statement:
             bind_arguments = execute_state.bind_arguments
             if not bind_arguments:
@@ -117,11 +223,17 @@ def setup_binds(app):
                 return
             bind_key = getattr(mapper.class_, '__bind_key__', None)
             if bind_key != PROJECT_BIND:
-                return  # 走主库
-
-            pid = get_active_project_id()
+                return
+            session = execute_state.session
+            if session is not None and session.bind is not None:
+                bind_str = str(getattr(session.bind, 'url', ''))
+                if 'qor_p_' in bind_str:
+                    return
+            try:
+                pid = get_active_project_id()
+            except RuntimeError:
+                pid = None
             if pid is None:
-                # 没切项目, 但查的是项目库模型 -> 用第 1 个项目库 (兜底)
                 from core.project_db import list_all_project_dbs
                 dbs = list_all_project_dbs()
                 if not dbs:
@@ -130,8 +242,6 @@ def setup_binds(app):
                         '(current_project_id=None) 且无任何项目库'
                     )
                 pid = dbs[0]['project_id']
-
-            # 把 bind 替换为项目库 engine
             bind_arguments['bind'] = get_project_engine(pid)
 
 

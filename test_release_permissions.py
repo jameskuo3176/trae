@@ -53,7 +53,8 @@ def _ensure_release_account():
     with app.app_context():
         r = User.query.filter_by(username='release').first()
         if r is None:
-            r = User(username='release', role='release', display_name='Release')
+            # v5.0: 默认 owner 角色 (兼容 release 测试账户)
+            r = User(username='release', role='owner', display_name='Release')
             r.set_password('Release@2026')
             r.must_change_password = False
             db.session.add(r)
@@ -164,7 +165,9 @@ def test_release_cannot_release_others():
                    headers={'X-CSRF-Token': csrf})
         body = r.get_json() or {}
         assert r.status_code == 403, f'发布应 403, 实际 {r.status_code} {body}'
-        assert 'release 角色' in (body.get('error') or ''), f'错误信息应提到 release, 实际 {body}'
+        # v5.0: release 已合并为 owner, 错误信息应提到 owner 角色
+        err = body.get('error') or ''
+        assert ('owner 角色' in err or 'release 角色' in err), f'错误信息应提到 owner/release, 实际 {body}'
     print('[5] release 拒绝发布他人未发布记录 403 OK')
 
 
@@ -229,7 +232,7 @@ def test_release_cannot_delete():
         page = c.get('/admin').data.decode()
         m = re.search(r'csrf-token" content="([^"]+)"', page)
         csrf = m.group(1) if m else ''
-        r = c.delete(f'/api/admin/qor/{rid}',
+        r = c.delete(f'/api/admin/records/{rid}',
                      headers={'X-CSRF-Token': csrf})
         # 端点内有 if current_user.is_release: 403
         body = r.get_json() or {}

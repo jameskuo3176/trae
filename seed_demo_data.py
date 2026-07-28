@@ -202,22 +202,25 @@ def write_one_project(proj_def, rand, mark_released=True, verbose=True):
     db.session.add(proj)
     db.session.flush()  # 拿 id
 
-    plan = plan_one_project(proj_def, rand)
-    # 按 module 名聚合 records
-    mod_index = {}  # name -> Module
-    for item in plan:
-        m = mod_index.get(item['module'])
-        if not m:
-            m = Module(project_id=proj.id, name=item['module'], description='')
-            db.session.add(m)
-            db.session.flush()
-            mod_index[item['module']] = m
-        rec = _build_record(m, item['version'], item['full_dir'],
-                            item['base_seed'], rand, item['days_ago'])
-        if mark_released:
-            rec.is_released = True
-        db.session.add(rec)
-    db.session.commit()
+    # 切到该项目库, 后续 Module/Record 操作都在项目库
+    from core.db_routing import switch_to_project
+    with switch_to_project(proj.id):
+        plan = plan_one_project(proj_def, rand)
+        # 按 module 名聚合 records
+        mod_index = {}  # name -> Module
+        for item in plan:
+            m = mod_index.get(item['module'])
+            if not m:
+                m = Module(project_id=proj.id, name=item['module'], description='')
+                db.session.add(m)
+                db.session.flush()
+                mod_index[item['module']] = m
+            rec = _build_record(m, item['version'], item['full_dir'],
+                                item['base_seed'], rand, item['days_ago'])
+            if mark_released:
+                rec.is_released = True
+            db.session.add(rec)
+        db.session.commit()
     if verbose:
         print(f'  + 项目 {proj.name}: {len(mod_index)} 模块 / {len(plan)} records')
     return proj, len(mod_index), len(plan)

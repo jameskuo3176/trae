@@ -29,6 +29,9 @@ def _ensure_columns_in_app(app):
         ('qor_records', 'released_by', "INTEGER"),
         # RunNote: full_dir 字段
         ('run_notes', 'full_dir', "VARCHAR(1000)"),
+        # Module: v5.0 模块所有者 + 协作者
+        ('modules', 'owner_id', "INTEGER"),
+        ('modules', 'collaborators', "TEXT DEFAULT '[]'"),
     ]
     uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
     is_sqlite = uri.startswith('sqlite')
@@ -63,6 +66,66 @@ def _ensure_columns_in_app(app):
             db.metadata.create_all(db.engine, tables=master_tables)
     except Exception as e:
         print(f"[DB] create_all 异常: {e}")
+
+    # v5.0 角色迁移: user -> owner, release -> owner
+    # 同步所有项目库 (按项目分库) 内的 modules.owner_id 也补上
+    try:
+        _migrate_v5_roles(app)
+    except Exception as e:
+        print(f"[DB] v5 角色迁移异常: {e}")
+
+
+def _migrate_v5_roles(app):
+    """v5.0 角色迁移:
+      - users 表 role='user' 改为 'owner', role='release' 改为 'owner'
+      - 新增默认 viewer 账户 (viewer / viewer@2026)
+      - 同步各项目库内的 modules 表 (新列 owner_id / collaborators)
+    """
+    from models import User, db
+    # 1) 主库用户角色迁移
+    n_user = User.query.filter_by(role='user').update({'role': 'owner'})
+    n_release = User.query.filter_by(role='release').update({'role': 'owner'})
+    if n_user or n_release:
+        db.session.commit()
+        print(f"[DB] v5 角色迁移: user→owner x{n_user}, release→owner x{n_release}")
+
+    # 1.5) 确保默认 'viewer' 账户角色为 viewer (即便之前被其他代码覆盖)
+    viewer_user = User.query.filter_by(username='viewer').first()
+    if viewer_user is not None and viewer_user.role != 'viewer':
+        viewer_user.role = 'viewer'
+        db.session.commit()
+        print(f"[DB] viewer 账户角色修正为 viewer (原: {viewer_user.role})")
+
+    # 2) 默认 viewer 账户
+    if not User.query.filter_by(username='viewer').first():
+        v = User(username='viewer', role='viewer', display_name='Viewer (只读)')
+        v.set_password('viewer@2026')
+        v.must_change_password = False
+        db.session.add(v)
+        db.session.commit()
+        print('[DB] 已创建默认 viewer 账户 (viewer / viewer@2026)')
+
+    # 3) 各项目库补 modules 表的新列
+    from models import Project
+    from core.project_db import project_db_path
+    from sqlalchemy import create_engine
+    for p in Project.query.all():
+        path = project_db_path(p.id)
+        if not os.path.exists(path):
+            continue
+        eng = create_engine(f'sqlite:///{path}')
+        try:
+            with eng.begin() as conn:
+                cols = conn.execute(text("PRAGMA table_info(modules)")).fetchall()
+                col_names = {c[1] for c in cols}
+                if 'owner_id' not in col_names:
+                    conn.execute(text("ALTER TABLE modules ADD COLUMN owner_id INTEGER"))
+                if 'collaborators' not in col_names:
+                    conn.execute(text("ALTER TABLE modules ADD COLUMN collaborators TEXT DEFAULT '[]'"))
+        except Exception as e:
+            print(f'[DB] v5 项目库迁移失败 project={p.id}: {e}')
+        finally:
+            eng.dispose()
 
 
 def init_db_concurrency(app):

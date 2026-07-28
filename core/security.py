@@ -93,13 +93,10 @@ def register_security_before_request(app):
                 if request.method == 'GET' and ep in MUST_CHANGE_REDIRECT_EP:
                     return redirect('/change_password')
 
-        # release 角色: 禁止所有写操作 (POST/PUT/DELETE/PATCH)
-        # 允许:
-        #   - 改密 / 主题 / dashboard 等个人级设置
-        #   - 切换自己发布的记录 (admin_toggle_release / admin_batch_release)
-        #     (release 角色的语义: 可撤回自己发布的记录, 不可发布他人未发布的)
+        # v5.0 viewer 角色: 禁止所有写操作 (POST/PUT/DELETE/PATCH)
+        # 允许: 改密 / 主题 / dashboard 等纯个人级设置
         if (current_user.is_authenticated
-                and current_user.is_release
+                and current_user.is_viewer
                 and request.method in ('POST', 'PUT', 'DELETE', 'PATCH')):
             allowed_write_endpoints = {
                 'user_change_own_password',
@@ -107,15 +104,11 @@ def register_security_before_request(app):
                 'save_dashboard_config',
                 'delete_dashboard_config',
                 'save_user_theme',
-                'admin_toggle_release',          # 短名
-                'admin.admin_toggle_release',     # 蓝图全名
-                'admin_batch_release',
-                'admin.admin_batch_release',
             }
             if request.endpoint not in allowed_write_endpoints:
                 app.logger.warning(
-                    '[AUTH] release 角色尝试写操作被拒: endpoint=%s path=%s ip=%s',
+                    '[AUTH] viewer 角色尝试写操作被拒: endpoint=%s path=%s ip=%s',
                     request.endpoint, request.path, get_client_ip(),
                 )
-                return jsonify({'error': 'release 账号为只读权限, 不允许此操作'}), 403
+                return jsonify({'error': 'viewer 账号为只读权限, 不允许此操作'}), 403
         return _csrf_protect()

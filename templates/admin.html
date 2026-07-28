@@ -6,6 +6,10 @@
     数据管理
     {% if current_user.is_admin %}
     <span class="tag tag-danger">管理员</span>
+    {% elif current_user.is_viewer %}
+    <span class="tag" style="background:#888;color:#fff;">Viewer</span>
+    {% elif current_user.is_owner %}
+    <span class="tag" style="background:#3aa655;color:#fff;">Owner</span>
     {% elif current_user.is_release %}
     <span class="tag" style="background:#3aa655;color:#fff;">Release</span>
     {% endif %}
@@ -18,8 +22,10 @@
     <button class="tab-btn" onclick="switchTab('projects')" id="tab-projects">项目管理</button>
     <button class="tab-btn" onclick="switchTab('records')" id="tab-records">记录管理</button>
     <button class="tab-btn" onclick="switchTab('users')" id="tab-users">用户管理</button>
-    {% elif current_user.is_release %}
-    <button class="tab-btn active" onclick="switchTab('records')" id="tab-records">记录管理</button>
+    {% elif current_user.is_owner or current_user.is_release %}
+    {# v5.0 owner: 可上传数据 + 记录管理 (含模块协作) #}
+    <button class="tab-btn active" onclick="switchTab('upload')" id="tab-upload">上传数据</button>
+    <button class="tab-btn" onclick="switchTab('records')" id="tab-records">记录管理</button>
     {% endif %}
 </div>
 
@@ -227,6 +233,43 @@
             <button class="btn btn-sm" onclick="loadRecords()">刷新</button>
         </div>
         <div class="card-body">
+            {# v5.0 owner: 模块协作者管理 #}
+            {% if current_user.is_owner or current_user.is_release %}
+            <details style="margin-bottom: 12px; padding: 10px; background: var(--color-surface, #f8f9fa); border-radius: 6px;">
+                <summary style="cursor:pointer; font-weight: 500; color: var(--color-text);">
+                    <i class="icon-users"></i> 模块协作者管理 (v5.0 team 协作)
+                </summary>
+                <div style="margin-top: 10px; padding-left: 20px;">
+                    <div style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px;">
+                        <div class="form-group" style="margin: 0;">
+                            <label>选择模块</label>
+                            <select id="collabModuleSelect" onchange="loadCollaborators()" style="min-width: 220px;">
+                                <option value="">请选择模块...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="collabInfo" style="font-size: 13px; color: var(--color-text-secondary);">
+                        <div>模块所有者: <span id="collabOwner">-</span></div>
+                        <div style="margin-top:6px;">
+                            协作者列表:
+                            <ul id="collabList" style="margin: 6px 0 0 0; padding-left: 20px;"></ul>
+                        </div>
+                        <div id="collabAddArea" style="margin-top: 10px; display: none;">
+                            <div style="display: flex; gap: 8px; align-items: flex-end;">
+                                <div class="form-group" style="margin: 0;">
+                                    <label>添加 owner 用户为协作者</label>
+                                    <select id="collabNewUser" style="min-width: 200px;">
+                                        <option value="">请选择用户...</option>
+                                    </select>
+                                </div>
+                                <button class="btn btn-sm btn-success" onclick="addCollaborator()">添加</button>
+                            </div>
+                        </div>
+                        <div id="collabHint" style="margin-top: 6px; color: #999; font-size: 12px;"></div>
+                    </div>
+                </div>
+            </details>
+            {% endif %}
             <div class="filter-bar" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
                 <div class="form-group">
                     <label>项目筛选</label>
@@ -277,8 +320,8 @@
             </div>
             <div
                 style="margin-top: 12px; padding: 10px; background: var(--color-surface, #f8f9fa); border-radius: 6px; display: flex; gap: 10px; align-items: center;">
-                {# release 角色仅可批量撤回, 不能批量发布 #}
-                {% if not current_user.is_release %}
+                {# v5.0 owner 可批量发布/撤回自己拥有/被授权的模块下记录 (后端二次校验) #}
+                {% if not (current_user.is_release and not current_user.is_owner) %}
                 <button class="btn btn-success btn-sm" onclick="batchRelease(true)">批量发布</button>
                 {% endif %}
                 <button class="btn btn-default btn-sm" onclick="batchRelease(false)">批量撤回</button>
@@ -375,9 +418,9 @@
             <div class="form-group">
                 <label>角色</label>
                 <select id="newUserRole" style="width: 100%;">
-                    <option value="user">普通用户</option>
+                    <option value="owner">Owner (数据全权)</option>
                     <option value="admin">管理员</option>
-                    <option value="release">Release (只读外部)</option>
+                    <option value="viewer">Viewer (只读)</option>
                 </select>
             </div>
             <div class="form-group">
@@ -412,8 +455,9 @@
             <div class="form-group">
                 <label>角色</label>
                 <select id="batchUserRole" style="width: 100%;">
-                    <option value="user">普通用户</option>
+                    <option value="owner">Owner (数据全权)</option>
                     <option value="admin">管理员</option>
+                    <option value="viewer">Viewer (只读)</option>
                 </select>
             </div>
             <div id="batchUserResult" style="margin-top: 12px;"></div>
@@ -529,13 +573,13 @@
         const hash = (window.location.hash || '').replace('#', '');
         const ALLOWED_TABS = window.CURRENT_USER.is_admin
             ? ['projects', 'records', 'users', 'upload']
-            : ['records'];  // release 角色: 仅记录管理
+            : ['records', 'upload'];  // v5.0 owner: 上传 + 记录管理
         if (ALLOWED_TABS.includes(hash)) {
             switchTab(hash);
         } else {
-            // 默认: release -> records, admin -> upload (原默认)
-            if (window.CURRENT_USER.is_release) {
-                switchTab('records');
+            // 默认: owner -> upload (创建者)
+            if (!window.CURRENT_USER.is_admin) {
+                switchTab('upload');
             }
         }
     });
@@ -1316,16 +1360,19 @@
         }
 
         tbody.innerHTML = records.map(r => {
-            // 删除权限: admin 全权; owner 本人可删; release 角色一律不可删
-            const canDelete = !window.CURRENT_USER.is_release
+            // v5.0 删除权限: admin 全权; owner/viewer 不可删; release 不可删
+            // (前端仅做 UI 提示, 后端再次校验)
+            const canDelete = !window.CURRENT_USER.is_viewer
                 && (IS_ADMIN || (r.owner_id && r.owner_id === CURRENT_USER_ID));
-            // 发布/撤回权限:
-            //   - admin: 全权
-            //   - release: 仅当记录是自己发布 (released_by=自己) 时可撤回, 不能发布
-            //   - user:    (与原逻辑一致, owner 本人可发布/撤回)
-            const IS_RELEASE = window.CURRENT_USER.is_release;
-            const canRelease = !IS_RELEASE;  // 默认: 可发布/撤回
-            const canRecall  = !IS_RELEASE || (r.released_by && r.released_by === CURRENT_USER_ID);
+            // v5.0 发布/撤回权限:
+            //   - admin:  全权
+            //   - owner:  自己上传/拥有/被授权的模块下记录
+            //   - viewer: 无
+            // 前端简化判断: admin / 本人上传的 record 即可 (后端会校验模块 owner/协作者)
+            const IS_VIEWER = window.CURRENT_USER.is_viewer;
+            const IS_OWNER = window.CURRENT_USER.is_owner;
+            const canRelease = !IS_VIEWER;  // 默认: admin/owner 可发布/撤回
+            const canRecall  = !IS_VIEWER;  // v5.0: owner 也能撤回
             const ownerLabel = r.owner_username
                 ? `<span style="color:${(r.owner_id === CURRENT_USER_ID) ? 'var(--color-primary)' : 'var(--color-text)'}; font-weight:${(r.owner_id === CURRENT_USER_ID) ? '600' : '400'};">${escapeHtml(r.owner_display_name || r.owner_username)}</span>`
                 : '<span style="color:#999;">-</span>';
@@ -1358,7 +1405,7 @@
                 <button class="btn btn-default btn-sm" onclick="openRecordDashboard(${r.id})" title="跳转到 Dashboard 并聚焦此记录">Dashboard</button>
                 ${(r.is_released ? canRecall : canRelease)
                     ? `<button class="btn ${r.is_released ? 'btn-default' : 'btn-success'} btn-sm" onclick="toggleRelease(${r.id})">${r.is_released ? '撤回' : '发布'}</button>`
-                    : `<button class="btn btn-default btn-sm" disabled style="opacity:0.4; cursor:not-allowed;" title="${IS_RELEASE ? 'release 角色仅能管理自己发布的记录' : '无权限'}">${r.is_released ? '撤回' : '发布'}</button>`}
+                    : `<button class="btn btn-default btn-sm" disabled style="opacity:0.4; cursor:not-allowed;" title="${IS_VIEWER ? 'viewer 角色无发布权限' : '无权限'}">${r.is_released ? '撤回' : '发布'}</button>`}
                 ${canDelete
                     ? `<button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button>`
                     : `<button class="btn btn-danger btn-sm" disabled title="仅 owner / 管理员可删除" style="opacity:0.4; cursor:not-allowed;">删除</button>`}
@@ -1526,6 +1573,155 @@
             if (selInfo) selInfo.textContent = origSelInfo;
         }
     }
+
+    // ---- v5.0 模块协作者管理 ----
+    async function loadCollabModuleSelect() {
+        const sel = document.getElementById('collabModuleSelect');
+        if (!sel) return;
+        // 复用现有的项目下拉数据 (loadProjects 已加载)
+        const proj = document.getElementById('recordFilterProject');
+        const projId = proj ? proj.value : '';
+        sel.innerHTML = '<option value="">请选择模块...</option>';
+        if (!projId) return;
+        try {
+            const resp = await fetch(`/api/modules/${projId}`);
+            const mods = await resp.json();
+            mods.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.name;
+                sel.appendChild(opt);
+            });
+        } catch (e) {
+            console.error('loadCollabModuleSelect:', e);
+        }
+    }
+
+    async function loadCollabUserOptions() {
+        const sel = document.getElementById('collabNewUser');
+        if (!sel) return;
+        try {
+            const resp = await fetch('/api/admin/owner_users');
+            const users = await resp.json();
+            sel.innerHTML = '<option value="">请选择用户...</option>';
+            users.forEach(u => {
+                if (u.id === CURRENT_USER_ID) return;  // 不能授权给自己
+                const opt = document.createElement('option');
+                opt.value = u.id;
+                opt.textContent = `${u.username} (${u.display_name || u.username})`;
+                sel.appendChild(opt);
+            });
+        } catch (e) {
+            console.error('loadCollabUserOptions:', e);
+        }
+    }
+
+    async function loadCollaborators() {
+        const sel = document.getElementById('collabModuleSelect');
+        const ownerSpan = document.getElementById('collabOwner');
+        const listUl = document.getElementById('collabList');
+        const addArea = document.getElementById('collabAddArea');
+        const hint = document.getElementById('collabHint');
+        if (!sel || !sel.value) {
+            ownerSpan.textContent = '-';
+            listUl.innerHTML = '<li style="color:#999;">请先选择模块</li>';
+            addArea.style.display = 'none';
+            return;
+        }
+        try {
+            const resp = await fetch(`/api/admin/modules/${sel.value}/collaborators`);
+            if (resp.status === 403) {
+                ownerSpan.textContent = '-';
+                listUl.innerHTML = '<li style="color:#c00;">无权限查看</li>';
+                addArea.style.display = 'none';
+                return;
+            }
+            const data = await resp.json();
+            ownerSpan.textContent = data.owner
+                ? `${data.owner.username} (${data.owner.display_name || data.owner.username})`
+                : '<span style="color:#999;">无</span>';
+            listUl.innerHTML = '';
+            if (data.collaborators.length === 0) {
+                listUl.innerHTML = '<li style="color:#999;">暂无协作者</li>';
+            } else {
+                data.collaborators.forEach(c => {
+                    const li = document.createElement('li');
+                    li.style.display = 'flex';
+                    li.style.alignItems = 'center';
+                    li.style.gap = '8px';
+                    li.style.margin = '3px 0';
+                    li.innerHTML = `
+                        <span>${escapeHtml(c.username)} (${escapeHtml(c.display_name || c.username)})</span>
+                        <button class="btn btn-xs btn-danger" onclick="removeCollaborator(${data.module_id}, ${c.id})">移除</button>
+                    `;
+                    listUl.appendChild(li);
+                });
+            }
+            // 仅模块创建者可添加/删除
+            const isOwner = data.owner && data.owner.id === CURRENT_USER_ID;
+            const isAdmin = window.CURRENT_USER.is_admin;
+            addArea.style.display = (isOwner || isAdmin) ? '' : 'none';
+            hint.textContent = isOwner
+                ? '您是此模块创建者, 可添加/移除协作者 (授权后, 该用户可管理此模块下所有数据)'
+                : (isAdmin ? '您是管理员, 可管理所有模块的协作者' : '您不是此模块的创建者, 只读查看');
+        } catch (e) {
+            console.error('loadCollaborators:', e);
+        }
+    }
+
+    async function addCollaborator() {
+        const sel = document.getElementById('collabModuleSelect');
+        const userSel = document.getElementById('collabNewUser');
+        if (!sel.value || !userSel.value) {
+            alert('请先选择模块和用户');
+            return;
+        }
+        const csrf = getCsrfToken();
+        try {
+            const resp = await fetch(`/api/admin/modules/${sel.value}/collaborators`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                body: JSON.stringify({ user_id: parseInt(userSel.value) }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                alert('添加失败: ' + (data.error || resp.status));
+                return;
+            }
+            await loadCollaborators();
+        } catch (e) {
+            alert('添加失败: ' + e.message);
+        }
+    }
+
+    async function removeCollaborator(moduleId, userId) {
+        if (!confirm('确定要移除此协作者吗?')) return;
+        const csrf = getCsrfToken();
+        try {
+            const resp = await fetch(`/api/admin/modules/${moduleId}/collaborators/${userId}`, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-Token': csrf },
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                alert('移除失败: ' + (data.error || resp.status));
+                return;
+            }
+            await loadCollaborators();
+        } catch (e) {
+            alert('移除失败: ' + e.message);
+        }
+    }
+
+    // 项目筛选变化时刷新协作者模块下拉
+    document.addEventListener('DOMContentLoaded', function() {
+        const projSel = document.getElementById('recordFilterProject');
+        if (projSel) {
+            projSel.addEventListener('change', loadCollabModuleSelect);
+        }
+        // 初始化协作者管理
+        loadCollabUserOptions();
+    });
 
     // ---- 用户管理 ----
     async function loadUsers() {

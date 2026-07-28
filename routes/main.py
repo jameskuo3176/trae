@@ -53,10 +53,10 @@ def compare():
 @login_required
 def review():
     """Review 流程主页面"""
-    if current_user.is_release:
+    if current_user.is_viewer:
         return render_template(
             'error.html',
-            message='release 角色无 Review 权限',
+            message='viewer 角色无 Review 权限',
             user=current_user,
         ), 403
     return render_template('review.html', user=current_user)
@@ -64,13 +64,15 @@ def review():
 
 @login_required
 def admin_page():
-    """管理员 / Release 页面
+    """管理员 / 数据用户页面 (v5.0)
 
-    release 角色现在也可访问此页面 (v4.x 权限升级),
-    但只能管理自己发布的记录 (见 admin.html 前端权限控制
-    + admin_toggle_release / admin_batch_release 端点内校验)。
+    - admin:  完整管理权限 (项目管理/用户管理/数据上传/记录管理)
+    - owner:  数据管理权限 (数据上传/记录管理, 含协作者授权)
+    - viewer: 拒绝访问
     """
-    if not (current_user.is_admin or current_user.is_release):
+    if current_user.is_viewer:
+        abort(403)
+    if not (current_user.is_admin or current_user.is_owner or current_user.is_release):
         abort(403)
     return render_template('admin.html', user=current_user)
 
@@ -78,10 +80,17 @@ def admin_page():
 @bp.route('/qor_record/<int:record_id>')
 @login_required
 def qor_record_detail_page(record_id):
-    """QoR 记录详情页 (release 角色现在可查看所有记录)"""
+    """QoR 记录详情页 (v5.0)
+
+    - admin / owner: 可查看所有记录
+    - viewer: 仅可看已发布记录 (未发布 404)
+    """
     from models import QorRecord, ProjectMember
     rec = QorRecord.query.get_or_404(record_id)
-    if not current_user.is_admin and not current_user.is_release:
+    # v5.0 viewer: 未发布记录视同不存在
+    if current_user.is_viewer and not rec.is_released:
+        abort(404)
+    if not current_user.is_admin and not current_user.is_release and not current_user.is_owner:
         member = ProjectMember.query.filter_by(
             project_id=rec.module.project_id, user_id=current_user.id,
         ).first()

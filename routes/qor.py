@@ -128,12 +128,14 @@ def api_get_qor_data():
 
     # 按项目分库: 用 helper 安全查询
     proj_id_list = _resolve_project_ids(project_ids) or None
+    # v5.0: viewer 仅可查看已发布数据 (is_released=True)
+    release_only = current_user.is_viewer
     records = query_records_by_projects(
         proj_id_list=proj_id_list,
         module_ids_str=module_ids,
         versions_str=versions,
         owner_id=owner_user_id,
-        release_only=False,  # release 角色可查看所有数据 (v4.x 权限升级)
+        release_only=release_only,
         order_desc=True,
         limit=5000,
     )
@@ -186,13 +188,15 @@ QOR_METRIC_DIRECTION = {
 def api_qor_record_detail(record_id):
     """单条 QoR 记录详情 + 同 module+version 横向对比"""
     rec = QorRecord.query.get_or_404(record_id)
-    if not current_user.is_admin and not current_user.is_release:
+    # v5.0 viewer: 仅可看已发布记录, 未发布记录视同不存在
+    if current_user.is_viewer and not rec.is_released:
+        return jsonify({'error': '记录不存在'}), 404
+    if not current_user.is_admin and not current_user.is_release and not current_user.is_owner:
         member = ProjectMember.query.filter_by(
             project_id=rec.module.project_id, user_id=current_user.id,
         ).first()
         if not member:
             return jsonify({'error': 'forbidden'}), 403
-    # release 角色现在可查看所有记录 (v4.x 权限升级)
 
     siblings = QorRecord.query.filter_by(
         module_id=rec.module_id, version=rec.version,

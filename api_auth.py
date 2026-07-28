@@ -4,12 +4,19 @@
   1. X-API-Key 请求头 (自动化场景, DC 流程上传)
   2. Flask-Login session (浏览器场景, 兼容现有 Jinja2 UI)
 
-项目级权限:
-  - admin: 全部访问
+v5.0 角色模型:
+  - admin  : 系统管理员 (所有权限)
+  - owner  : 数据全权用户 (上传/管理自己+协作者模块/发布/授权)
+  - viewer : 只读用户 (仅可查看已发布数据)
+
+项目级权限 (兼容保留):
   - owner: 项目所有者
   - editor: 可上传/修改数据
   - viewer: 只读
-  - 非成员: 不可见该项目
+
+模块级协作 (v5.0 新增):
+  - 模块 owner (Module.owner_id) 唯一
+  - 协作者列表 (Module.collaborators) 可管理该模块下所有数据
 """
 from functools import wraps
 from flask import request, g, jsonify
@@ -196,16 +203,73 @@ def filter_projects_by_permission(user, query=None):
     """过滤用户可访问的项目查询
 
     admin: 返回全部
-    其他: 返回其所在项目 + 公开项目 (暂无公开概念, 仅成员项目)
+    owner:  返回其所在项目 (旧 ProjectMember 概念, v5.0 起 owner 全项目可读)
+    viewer: 仅其所在项目 (is_released 过滤在数据层做)
     """
     if user.is_admin:
         if query is not None:
             return query
         return Project.query
 
+    # v5.0 owner/viewer: 项目级成员关系 (ProjectMember) + 公开项目
     member_project_ids = db.session.query(ProjectMember.project_id).filter_by(
         user_id=user.id
     ).subquery()
     if query is not None:
         return query.filter(Project.id.in_(member_project_ids))
     return Project.query.filter(Project.id.in_(member_project_ids))
+
+
+# =========================================================================
+# v5.0 模块级协作权限
+# =========================================================================
+
+def can_manage_module(user, module) -> bool:
+    """用户是否可管理指定模块 (admin / 模块owner / 协作者)
+
+    用于 v5.0 owner 角色:
+      - admin: 所有模块
+      - module.owner_id == user.id: 模块创建者
+      - user.id in module.get_collaborator_ids(): 被授权协作者
+    viewer 角色永远返回 False.
+    """
+    if user is None:
+        return False
+    if not getattr(user, 'is_authenticated', False):
+        return False
+    if user.is_admin:
+        return True
+    if user.is_viewer:
+        return False
+    # owner 角色: 模块 owner 或 协作者
+    if module is None:
+        return False
+    if getattr(module, 'owner_id', None) == user.id:
+        return True
+    try:
+        return user.id in module.get_collaborator_ids()
+    except Exception:
+        return False
+
+
+def can_view_unpublished_data(user) -> bool:
+    """用户是否可查看未发布数据 (admin / owner = 是, viewer = 否)"""
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return False
+    if user.is_admin or user.is_owner:
+        return True
+    return False
+
+
+def can_manage_collaborators(user, module) -> bool:
+    """仅模块 owner (创建者) 和 admin 可管理协作者列表
+
+    协作者 (非 owner) 不能添加/删除其他协作者, 避免权限扩散
+    """
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return False
+    if user.is_admin:
+        return True
+    if module is None:
+        return False
+    return getattr(module, 'owner_id', None) == user.id

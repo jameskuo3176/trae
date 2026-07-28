@@ -98,13 +98,20 @@ THEME_PRESETS = {
 
 
 class User(UserMixin, db.Model):
-    """用户表"""
+    """用户表
+
+    v5.0 角色模型 (商业软件风格):
+      - admin  : 系统管理员, 所有权限
+      - owner  : 数据全权用户, 可上传/管理自己+协作者模块数据/发布/授权
+      - viewer : 只读用户, 仅能查看已发布数据
+    """
     __tablename__ = 'users'
 
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(256), nullable=False)
-    role = db.Column(db.String(20), nullable=False, default='user')  # admin / user / release
+    # v5.0 角色: admin / owner / viewer (历史值 user / release 自动迁移)
+    role = db.Column(db.String(20), nullable=False, default='owner')
     display_name = db.Column(db.String(120))
     # 用户自定义主题 (JSON), null 时使用默认主题
     theme = db.Column(db.Text)
@@ -128,9 +135,22 @@ class User(UserMixin, db.Model):
         return self.role == 'admin'
 
     @property
+    def is_owner(self):
+        """owner 角色: 合并后的 user+release, 可上传/管理自己数据+发布+授权协作者"""
+        return self.role == 'owner'
+
+    @property
+    def is_viewer(self):
+        """viewer 角色: 只读, 仅可查看已发布数据 (is_released=True)"""
+        return self.role == 'viewer'
+
+    @property
     def is_release(self):
-        """release 角色: 仅能查看已 release 的数据, 无管理权限"""
-        return self.role == 'release'
+        """release 角色 (兼容保留, v5.0 起视为 owner 同义)
+
+        历史 release 账户已自动迁移为 owner. 此属性仅用于旧代码兼容, 新代码请用 is_owner.
+        """
+        return self.role in ('owner', 'release')
 
     def get_theme(self):
         """获取用户主题, 未设置时返回默认主题"""
@@ -212,7 +232,12 @@ class Project(db.Model):
 
 
 class Module(db.Model):
-    """模块表 - 项目库 (按项目分库)"""
+    """模块表 - 项目库 (按项目分库)
+
+    v5.0 引入模块级协作:
+      - owner_id     : 创建者, 唯一, 可管理模块和模块下记录
+      - collaborators: JSON 数组 [user_id, ...], 被授权的同 owner 角色用户, 可管理该模块下数据
+    """
     __tablename__ = 'modules'
     __bind_key__ = 'project'
 
@@ -221,6 +246,10 @@ class Module(db.Model):
     project_id = db.Column(db.Integer, nullable=False, index=True)
     name = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text)
+    # v5.0: 模块所有者 (创建者)
+    owner_id = db.Column(db.Integer, index=True)
+    # v5.0: 协作者列表 (JSON: [user_id, ...])
+    collaborators = db.Column(db.Text, default='[]')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     records = db.relationship('QorRecord', backref='module', lazy='dynamic', cascade='all, delete-orphan')
@@ -231,8 +260,58 @@ class Module(db.Model):
         primaryjoin='foreign(Module.project_id)==Project.id',
         viewonly=True,
     )
+    # 跨库: Module -> User (主库), 模块所有者
+    owner = db.relationship(
+        'User',
+        primaryjoin='foreign(Module.owner_id)==User.id',
+        viewonly=True,
+    )
 
     __table_args__ = (db.UniqueConstraint('project_id', 'name', name='uq_module_project_name'),)
+
+    def get_collaborator_ids(self):
+        """获取协作者 user_id 列表 (解析 JSON)"""
+        if not self.collaborators:
+            return []
+        try:
+            ids = json.loads(self.collaborators)
+            if isinstance(ids, list):
+                return [int(x) for x in ids if x is not None]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        return []
+
+    def set_collaborator_ids(self, ids):
+        """设置协作者列表"""
+        if ids is None:
+            self.collaborators = '[]'
+        else:
+            cleaned = sorted(set(int(x) for x in ids if x is not None))
+            self.collaborators = json.dumps(cleaned)
+
+    def add_collaborator(self, user_id):
+        ids = self.get_collaborator_ids()
+        if int(user_id) not in ids:
+            ids.append(int(user_id))
+            self.set_collaborator_ids(ids)
+
+    def remove_collaborator(self, user_id):
+        ids = self.get_collaborator_ids()
+        if int(user_id) in ids:
+            ids.remove(int(user_id))
+            self.set_collaborator_ids(ids)
+
+    def can_be_managed_by(self, user) -> bool:
+        """用户是否可管理此模块 (admin / 模块owner / 协作者)"""
+        if user is None:
+            return False
+        if user.is_admin:
+            return True
+        if self.owner_id == user.id:
+            return True
+        if user.id in self.get_collaborator_ids():
+            return True
+        return False
 
 
 class QorRecord(db.Model):

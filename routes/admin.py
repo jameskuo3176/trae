@@ -478,7 +478,16 @@ def admin_verify_all_backups():
 @login_required
 @with_db_retry()
 def admin_create_module():
-    """创建模块"""
+    """创建模块 (v5.0)
+
+    权限:
+      - admin: 任意项目 (无需 ProjectMember)
+      - owner:  自己有 ProjectMember editor/owner 角色的项目
+      - viewer: 拒绝
+    创建后, 模块的 owner 自动设为当前用户
+    """
+    if current_user.is_viewer:
+        return jsonify({'error': 'viewer 角色无创建模块权限'}), 403
     data = request.get_json() or request.form
     project_id = data.get('project_id')
     name = (data.get('name') or '').strip()
@@ -488,35 +497,234 @@ def admin_create_module():
         pid = int(project_id)
     except (ValueError, TypeError):
         return jsonify({'error': '无效的 project_id'}), 400
-    if not can_edit_project(current_user, pid):
-        return jsonify({'error': '无权限在此项目创建模块 (需要 editor 及以上角色)'}), 403
+    # 校验: admin 直接放行; owner 需有 ProjectMember 角色
+    if not current_user.is_admin and not can_edit_project(current_user, pid):
+        return jsonify({'error': '无权限在此项目创建模块'}), 403
     Project.query.get_or_404(project_id)
-    if Module.query.filter_by(project_id=project_id, name=name).first():
-        return jsonify({'error': '模块已存在'}), 400
-    m = Module(project_id=project_id, name=name, description=data.get('description', ''))
-    db.session.add(m)
-    db.session.commit()
-    return jsonify({'id': m.id, 'name': m.name})
+    # v5.0: 记录模块所有者 = 创建者
+    # Module 在项目库, 必须用 project_add/project_commit 才能正确写入
+    from core.db_routing import switch_to_project, project_add, project_commit, project_query
+    with switch_to_project(pid):
+        if project_query(Module).filter_by(project_id=pid, name=name).first():
+            return jsonify({'error': '模块已存在'}), 400
+        m = Module(
+            project_id=pid, name=name,
+            description=data.get('description', ''),
+            owner_id=current_user.id,
+            collaborators='[]',
+        )
+        project_add(m)
+        project_commit()
+    return jsonify({'id': m.id, 'name': m.name, 'owner_id': m.owner_id})
 
 
 @bp.route('/modules/<int:module_id>', methods=['DELETE'])
 @login_required
 @with_db_retry()
 def admin_delete_module(module_id):
-    """删除模块"""
+    """删除模块 (v5.0)
+
+    权限:
+      - admin: 任意
+      - owner: 自己创建的模块 (Module.owner_id == current_user.id)
+      - viewer: 拒绝
+    """
+    if current_user.is_viewer:
+        return jsonify({'error': 'viewer 角色无删除模块权限'}), 403
     m = Module.query.get_or_404(module_id)
     if m.project:
-        if not can_manage_project(current_user, m.project.id):
-            return jsonify({'error': '无权限删除模块 (需要 owner 及以上角色)'}), 403
         writable, err = check_project_writable(m.project.id)
         if not writable:
             return jsonify({'error': err}), 403
+    # v5.0: admin / 模块所有者 (创建者) 可删除
+    if current_user.is_admin:
+        pass  # 允许
+    elif m.owner_id == current_user.id:
+        pass  # 模块创建者可删除自己的
     else:
-        if not current_user.is_admin:
-            return jsonify({'error': '无权限'}), 403
+        return jsonify({'error': '仅 admin 或模块创建者可删除模块'}), 403
     db.session.delete(m)
     db.session.commit()
     return jsonify({'ok': True})
+
+
+# =========================================================================
+# v5.0 模块级协作 - 协作者管理
+# =========================================================================
+
+def _find_module_project_id(module_id: int):
+    """仅查找模块所在的 project_id (不返回 Module 实例)
+
+    由于 Module 在项目库, 且 URL 不带 project_id, 需要遍历所有项目库定位.
+    返回 project_id 或 None.
+    """
+    from core.project_db import list_all_project_dbs
+    from sqlalchemy import create_engine, text
+    dbs = list_all_project_dbs()
+    for info in dbs:
+        pid = info['project_id']
+        eng = create_engine(f'sqlite:///{info["path"]}')
+        try:
+            with eng.connect() as conn:
+                row = conn.execute(text(
+                    'SELECT project_id FROM modules WHERE id=:i'
+                ), {'i': module_id}).fetchone()
+                if row:
+                    return int(row[0])
+        except Exception:
+            pass
+        finally:
+            eng.dispose()
+    return None
+
+
+def _project_module_session(project_id: int):
+    """获取/构建项目库 session (不依赖 db.session, 避免与主库 session 冲突)"""
+    from core.db_routing import _build_project_session
+    return _build_project_session(project_id)
+
+
+@bp.route('/modules/<int:module_id>/collaborators', methods=['GET'])
+@login_required
+def admin_list_module_collaborators(module_id):
+    """列出模块的协作者 (v5.0)
+
+    权限: admin / 模块 owner / 协作者 / 兼容旧 ProjectMember 角色
+    """
+    pid = _find_module_project_id(module_id)
+    if pid is None:
+        return jsonify({'error': '模块不存在'}), 404
+    # 直接用 project session 查 (避免主库 session 冲突)
+    sess = _project_module_session(pid)
+    m = sess.query(Module).get(module_id)
+    if m is None:
+        return jsonify({'error': '模块不存在'}), 404
+    # 校验: 有权访问
+    if not (current_user.is_admin
+            or m.can_be_managed_by(current_user)
+            or can_edit_project(current_user, pid)):
+        return jsonify({'error': '无权限'}), 403
+    collab_ids = list(m.get_collaborator_ids())
+    owner_id = m.owner_id
+    module_name = m.name
+    user_ids = list(set(collab_ids + ([owner_id] if owner_id else [])))
+    users = User.query.filter(User.id.in_(user_ids)).all() if user_ids else []
+    user_map = {u.id: u for u in users}
+    owner_info = None
+    if owner_id and owner_id in user_map:
+        o = user_map[owner_id]
+        owner_info = {
+            'id': o.id, 'username': o.username,
+            'display_name': o.display_name or o.username, 'role': o.role,
+        }
+    collaborators = []
+    for uid in collab_ids:
+        if uid in user_map:
+            u = user_map[uid]
+            collaborators.append({
+                'id': u.id, 'username': u.username,
+                'display_name': u.display_name or u.username, 'role': u.role,
+            })
+    return jsonify({
+        'module_id': module_id,
+        'module_name': module_name,
+        'owner': owner_info,
+        'collaborators': collaborators,
+    })
+
+
+@bp.route('/modules/<int:module_id>/collaborators', methods=['POST'])
+@login_required
+@with_db_retry()
+def admin_add_module_collaborator(module_id):
+    """添加模块协作者 (v5.0)
+
+    权限: admin / 模块 owner (创建者)
+    只能授权给同 owner 角色的用户 (team 内部协作)
+    """
+    if current_user.is_viewer:
+        return jsonify({'error': 'viewer 角色无协作者管理权限'}), 403
+    pid = _find_module_project_id(module_id)
+    if pid is None:
+        return jsonify({'error': '模块不存在'}), 404
+
+    data = request.get_json() or {}
+    user_id = data.get('user_id')
+    if user_id is None:
+        return jsonify({'error': 'user_id 必填'}), 400
+    try:
+        uid = int(user_id)
+    except (ValueError, TypeError):
+        return jsonify({'error': '无效的 user_id'}), 400
+
+    target = User.query.get(uid)
+    if target is None:
+        return jsonify({'error': '用户不存在'}), 404
+    if not target.is_owner:
+        return jsonify({'error': '仅可授权给 owner 角色用户 (team 内部协作)'}), 400
+
+    # 直接用 project session 查和改, 不走主库 db.session
+    sess = _project_module_session(pid)
+    m = sess.query(Module).get(module_id)
+    if m is None:
+        return jsonify({'error': '模块不存在'}), 404
+    if not (current_user.is_admin or m.owner_id == current_user.id):
+        return jsonify({'error': '仅 admin 或模块创建者可管理协作者'}), 403
+    if uid == m.owner_id:
+        return jsonify({'error': '模块创建者已在协作者列表中'}), 400
+    m.add_collaborator(uid)
+    sess.commit()
+    collab_ids = m.get_collaborator_ids()
+    return jsonify({
+        'ok': True,
+        'module_id': module_id,
+        'collaborators': collab_ids,
+    })
+
+
+@bp.route('/modules/<int:module_id>/collaborators/<int:user_id>', methods=['DELETE'])
+@login_required
+@with_db_retry()
+def admin_remove_module_collaborator(module_id, user_id):
+    """移除模块协作者 (v5.0)
+
+    权限: admin / 模块 owner
+    """
+    if current_user.is_viewer:
+        return jsonify({'error': 'viewer 角色无协作者管理权限'}), 403
+    pid = _find_module_project_id(module_id)
+    if pid is None:
+        return jsonify({'error': '模块不存在'}), 404
+    sess = _project_module_session(pid)
+    m = sess.query(Module).get(module_id)
+    if m is None:
+        return jsonify({'error': '模块不存在'}), 404
+    if not (current_user.is_admin or m.owner_id == current_user.id):
+        return jsonify({'error': '仅 admin 或模块创建者可管理协作者'}), 403
+    if user_id not in m.get_collaborator_ids():
+        return jsonify({'error': '该用户不在协作者列表中'}), 400
+    m.remove_collaborator(user_id)
+    sess.commit()
+    collab_ids = m.get_collaborator_ids()
+    return jsonify({
+        'ok': True,
+        'module_id': module_id,
+        'collaborators': collab_ids,
+    })
+
+
+# 可授权的 owner 用户列表 (供前端 "添加协作者" UI)
+@bp.route('/owner_users')
+@login_required
+def admin_list_owner_users():
+    """列出所有 owner 角色的用户 (供模块协作者授权 UI)"""
+    if current_user.is_viewer:
+        return jsonify({'error': '无权限'}), 403
+    users = User.query.filter_by(role='owner').order_by(User.username).all()
+    return jsonify([{
+        'id': u.id, 'username': u.username,
+        'display_name': u.display_name or u.username,
+    } for u in users])
 
 
 @bp.route('/modules/batch', methods=['POST'])
@@ -579,11 +787,17 @@ def admin_batch_create_modules():
 @login_required
 @with_db_retry()
 def admin_delete_record(record_id):
-    """删除单条 QoR 记录"""
+    """删除单条 QoR 记录 (v5.0)
+
+    权限:
+      - admin:   任意记录
+      - owner:   自己上传的, 或所在模块 owner, 或被授权为模块协作者
+      - viewer:  拒绝
+    """
     r = QorRecord.query.get_or_404(record_id)
 
-    if current_user.is_release:
-        return jsonify({'error': '无权限 (release 角色不可删除)'}), 403
+    if current_user.is_viewer:
+        return jsonify({'error': '无权限 (viewer 角色不可删除)'}), 403
 
     if r.module and r.module.project:
         writable, err = check_project_writable(r.module.project.id)
@@ -593,12 +807,22 @@ def admin_delete_record(record_id):
     is_admin = bool(current_user.is_admin)
 
     if not is_admin:
-        if not (r.module and r.module.project and can_edit_project(current_user, r.module.project.id)):
-            return jsonify({'error': '无权限删除此项目记录 (需要项目 owner/editor 角色)'}), 403
-        if r.owner_id != current_user.id:
+        # v5.0 owner: 通过模块 owner / 协作者 / 自己上传的 record 三种方式授权
+        allowed = False
+        if current_user.is_owner or current_user.is_release:
+            # 1) 自己上传的 record
+            if r.owner_id == current_user.id:
+                allowed = True
+            # 2) 模块 owner / 协作者
+            elif r.module and r.module.can_be_managed_by(current_user):
+                allowed = True
+            # 3) 兼容旧 ProjectMember 角色 (owner/editor)
+            elif r.module and r.module.project and can_edit_project(
+                    current_user, r.module.project.id):
+                allowed = True
+        if not allowed:
             return jsonify({
-                'error': '无权限: 该记录由其他用户上传, 您只能删除自己上传的记录',
-                'owner_username': r.owner.username if r.owner else None,
+                'error': '无权限删除此记录 (需要 admin / owner 角色, 且为该模块 owner/协作者或上传者)',
             }), 403
 
     db.session.delete(r)
@@ -1188,11 +1412,10 @@ def admin_toggle_release(record_id):
     跨项目分库: QorRecord.id 在每个项目库内独立自增, 不全局唯一。
     需遍历所有项目库找到该 record_id (通常前端从列表拿到, 知道在哪个项目)。
 
-    权限矩阵:
-      - admin:           任意记录的发布/撤回
-      - project editor/owner: 任意记录 (保留旧逻辑)
-      - release 角色:    只能管理自己发布的记录 (released_by=自己)
-                         不能发布他人未发布的, 不能发布无 owner 的记录
+    v5.0 权限矩阵:
+      - admin:  任意记录的发布/撤回
+      - owner:  所在模块 owner, 或被授权为协作者, 或自己上传的记录
+      - viewer: 拒绝
     """
     # 1) 遍历项目库找记录所在项目
     project_id = _find_qor_record_project(record_id)
@@ -1205,22 +1428,34 @@ def admin_toggle_release(record_id):
         if r is None:
             return jsonify({'error': '记录不存在'}), 404
 
-        if current_user.is_release:
-            # release 角色: 只能操作自己发布的记录
-            if r.released_by != current_user.id:
+        if current_user.is_viewer:
+            return jsonify({'error': 'viewer 角色无发布权限'}), 403
+
+        # v5.0 owner: 可发布/撤回自己 + 协作者模块下的记录
+        if current_user.is_owner or current_user.is_release:
+            # 必须满足以下任一条件:
+            #   1) 自己上传的 record
+            #   2) 模块 owner / 协作者
+            #   3) 兼容旧 ProjectMember 角色 (owner/editor)
+            allowed = False
+            if r.owner_id == current_user.id:
+                allowed = True
+            elif r.module and r.module.can_be_managed_by(current_user):
+                allowed = True
+            elif r.module and r.module.project and can_edit_project(
+                    current_user, r.module.project.id):
+                allowed = True
+            if not allowed:
                 return jsonify({
-                    'error': 'release 角色仅能管理自己发布的记录',
+                    'error': 'owner 角色只能管理自己上传/拥有/被授权的模块下的记录',
                 }), 403
-            # 既然只能操作自己发布的, 那么本端点只允许 "撤回" 方向
-            # 不允许"重新发布" (避免绕过 "不能发布他人未发布" 的限制)
+            r.is_released = not r.is_released
             if r.is_released:
-                r.is_released = False
+                r.released_at = datetime.utcnow()
+                r.released_by = current_user.id
+            else:
                 r.released_at = None
                 r.released_by = None
-            else:
-                return jsonify({
-                    'error': 'release 角色不能重新发布记录',
-                }), 403
         elif not current_user.is_admin:
             if r.module and r.module.project:
                 if not can_edit_project(current_user, r.module.project.id):
@@ -1291,11 +1526,14 @@ def admin_batch_release():
     请求: {record_ids: [int], released: bool}
     响应: {ok: True, updated: int, skipped: int, failed: [{id, reason}]}
 
-    权限矩阵 (与单条一致):
-      - admin:           全权
-      - project editor/owner: 仅自己 owner 的记录
-      - release 角色:    仅自己发布的记录 + 仅支持 released=False (撤回方向)
+    v5.0 权限矩阵 (与单条一致):
+      - admin:  全权
+      - owner:  自己上传/拥有/被授权的模块下的记录
+      - viewer: 拒绝
     """
+    if current_user.is_viewer:
+        return jsonify({'error': 'viewer 角色无发布权限'}), 403
+
     data = request.get_json() or {}
     record_ids = data.get('record_ids', [])
     if not record_ids:
@@ -1337,18 +1575,33 @@ def admin_batch_release():
                     failed.append({'id': rid, 'reason': '记录不存在'})
                     continue
 
-                if current_user.is_release:
-                    # release 角色: 仅可撤回自己发布的 (released_by=自己)
-                    if r.released_by != current_user.id or not r.is_released:
+                if current_user.is_owner or current_user.is_release:
+                    # owner: 自己上传 / 模块 owner / 协作者 / 兼容旧 ProjectMember
+                    allowed = False
+                    if r.owner_id == current_user.id:
+                        allowed = True
+                    elif r.module and r.module.can_be_managed_by(current_user):
+                        allowed = True
+                    elif r.module and r.module.project and can_edit_project(
+                            current_user, r.module.project.id):
+                        allowed = True
+                    if not allowed:
                         skipped += 1
-                        failed.append({'id': rid, 'reason': 'release 角色仅可撤回自己发布的记录'})
+                        failed.append({
+                            'id': rid,
+                            'reason': 'owner 角色仅可管理自己上传/拥有/被授权的模块下记录',
+                        })
                         continue
-                    r.is_released = False
-                    r.released_at = None
-                    r.released_by = None
+                    r.is_released = released
+                    if released:
+                        r.released_at = datetime.utcnow()
+                        r.released_by = current_user.id
+                    else:
+                        r.released_at = None
+                        r.released_by = None
                     updated += 1
                 elif not current_user.is_admin:
-                    # 普通用户: 项目编辑权 + 是该记录 owner
+                    # 普通用户: 项目编辑权 + 是该记录 owner (兼容历史)
                     if not (r.module and r.module.project and can_edit_project(current_user, r.module.project.id)):
                         skipped += 1
                         failed.append({'id': rid, 'reason': '无项目编辑权限'})
@@ -1431,7 +1684,8 @@ def admin_create_user():
 
     if not username or not password:
         return jsonify({'error': '用户名和密码不能为空'}), 400
-    if role not in ('admin', 'user', 'release'):
+    # v5.0 角色: admin / owner / viewer (历史值 user / release 自动迁移)
+    if role not in ('admin', 'owner', 'viewer', 'user', 'release'):
         return jsonify({'error': '无效的角色'}), 400
     if User.query.filter_by(username=username).first():
         return jsonify({'error': '用户名已存在'}), 400
@@ -1461,8 +1715,8 @@ def admin_batch_create_users():
         return jsonify({'error': '用户名列表不能为空'}), 400
 
     password = data.get('password') or '123456'
-    role = data.get('role', 'user')
-    if role not in ('admin', 'user', 'release'):
+    role = data.get('role', 'owner')
+    if role not in ('admin', 'owner', 'viewer', 'user', 'release'):
         return jsonify({'error': '无效的角色'}), 400
 
     created = []

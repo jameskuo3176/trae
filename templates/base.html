@@ -1168,6 +1168,8 @@
             username: {{ current_user.username | tojson }},
             display_name: {{ (current_user.display_name or '') | tojson }},
             is_admin: {{ 'true' if current_user.is_admin else 'false' }},
+            is_owner: {{ 'true' if current_user.is_owner else 'false' }},
+            is_viewer: {{ 'true' if current_user.is_viewer else 'false' }},
             is_release: {{ 'true' if current_user.is_release else 'false' }},
             must_change_password: {{ 'true' if current_user.must_change_password else 'false' }},
         };
@@ -1177,7 +1179,7 @@
         <div class="navbar-nav">
             <a href="{{ url_for('dashboard') }}"
                 class="nav-item {% if request.endpoint == 'dashboard' %}active{% endif %}">Dashboard</a>
-            {# 数据对比: admin / user / release 均可访问 (v4.x 权限升级) #}
+            {# 数据对比: admin / owner / viewer 均可访问 (v5.0) #}
             <a href="{{ url_for('compare') }}"
                 class="nav-item {% if request.endpoint == 'compare' %}active{% endif %}">数据对比</a>
             {% if current_user.is_admin %}
@@ -1191,19 +1193,24 @@
             <a href="{{ url_for('db_admin') }}"
                 class="nav-item {% if request.endpoint == 'db_admin' %}active{% endif %}">DB 可视化</a>
             {% endif %}
-            {% elif current_user.is_release %}
-            {# release 角色: 仅记录管理 (管理自己 release 的数据) #}
+            {% elif current_user.is_owner or current_user.is_release %}
+            {# v5.0 owner (含旧 release): 完整数据管理 (上传 + 记录管理 + 模块协作) #}
+            <a href="{{ url_for('admin_page') }}#upload"
+                class="nav-item {% if request.endpoint == 'admin_page' %}active{% endif %}">数据上传</a>
             <a href="{{ url_for('admin_page') }}#records"
                 class="nav-item {% if request.endpoint == 'admin_page' %}active{% endif %}">记录管理</a>
             {% endif %}
+            {# viewer 角色: 不显示任何管理入口 #}
         </div>
         <div class="navbar-user">
             <button class="theme-btn" onclick="openThemeModal()" title="主题设置" aria-label="主题设置">◐</button>
             <span>{{ current_user.display_name or current_user.username }}</span>
             {% if current_user.is_admin %}
             <span class="role-badge admin">管理员</span>
-            {% elif current_user.is_release %}
-            <span class="role-badge" style="background:#3aa655;color:#fff;">Release</span>
+            {% elif current_user.is_viewer %}
+            <span class="role-badge" style="background:#888;color:#fff;">Viewer</span>
+            {% elif current_user.is_owner %}
+            <span class="role-badge" style="background:#3aa655;color:#fff;">Owner</span>
             {% else %}
             <span class="role-badge">用户</span>
             {% endif %}
