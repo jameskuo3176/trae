@@ -169,6 +169,7 @@
         <div class="card-header">
             <span>面积对比</span>
             <select id="chartAreaMetric" multiple onchange="renderAreaChart()" class="btn-sm"
+                data-multi
                 style="font-size: 12px; min-width: 180px; min-height: 90px;">
                 <option value="area_total" selected>总面积</option>
                 <option value="area_combinational" selected>组合逻辑面积</option>
@@ -198,6 +199,7 @@
         <div class="card-header">
             <span>功耗分析 (多选对比)</span>
             <select id="chartPowerMetric" multiple onchange="renderPowerChart()" class="btn-sm"
+                data-multi
                 style="font-size: 12px; min-width: 220px; min-height: 90px; vertical-align: top;">
                 <option value="power_total" selected>总功耗</option>
                 <option value="power_internal">内部功耗</option>
@@ -213,6 +215,7 @@
         <div class="card-header">
             <span>Cell 数量对比</span>
             <select id="chartCellMetric" multiple onchange="renderCellChart()" class="btn-sm"
+                data-multi
                 style="font-size: 12px; min-width: 180px; min-height: 90px;">
                 <option value="cell_count" selected>总单元数</option>
                 <option value="sequential_cell_count" selected>时序单元数</option>
@@ -227,6 +230,7 @@
         <div class="card-header">
             <span>面积构成 (饼图 - 多选对比)</span>
             <select id="chartPieTarget" multiple onchange="renderPieChart()" class="btn-sm"
+                data-multi
                 style="font-size: 12px; min-width: 220px; min-height: 90px; vertical-align: top;">
             </select>
         </div>

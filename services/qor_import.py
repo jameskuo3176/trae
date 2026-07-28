@@ -25,7 +25,7 @@ def _sync_congestion(rec):
 
 
 def save_records_to_db(records, project, module_id, version, source_filename,
-                        mark_released=False, owner_id=None):
+                        mark_released=False, owner_id=None, default_release_dir=None):
     """将解析后的记录保存到数据库
 
     保护措施:
@@ -35,6 +35,10 @@ def save_records_to_db(records, project, module_id, version, source_filename,
       - 单行异常不影响整体
 
     mark_released=True 时, 新建/更新的记录会被标记为已发布
+
+    default_release_dir: 整批统一指定的 release_dir (如通过上传表单指定),
+      - 优先于记录自带的 release_dir (覆盖)
+      - 缺省/None 时不修改记录自带的 release_dir
 
     Returns:
         (saved_count, skipped_count, updated_count)
@@ -160,6 +164,16 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                         _ef = {}
                 if isinstance(_ef, dict) and _ef.get('full_dir') and not existing.full_dir:
                     existing.full_dir = str(_ef['full_dir'])[:500]
+                # release_dir: 优先 default_release_dir (整批统一), 其次 CSV 提供的值
+                _rd_csv = record.get('release_dir')
+                if default_release_dir is not None:
+                    _rd_final = str(sanitize_str(default_release_dir))[:500] if str(default_release_dir).strip() else None
+                elif _rd_csv:
+                    _rd_final = str(sanitize_str(_rd_csv))[:500]
+                else:
+                    _rd_final = None
+                if _rd_final is not None or (default_release_dir is not None):
+                    existing.release_dir = _rd_final
                 if mark_released:
                     existing.is_released = True
                     if not existing.released_at:
@@ -179,12 +193,21 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                             _fd = _ne2.get('full_dir', '') or ''
                     except (ValueError, TypeError):
                         _fd = ''
+                _rd = record.get('release_dir')
+                # 整批 default_release_dir 优先于 CSV 自带值
+                if default_release_dir is not None:
+                    _rd_final = str(sanitize_str(default_release_dir))[:500] if str(default_release_dir).strip() else None
+                elif _rd:
+                    _rd_final = str(sanitize_str(_rd))[:500]
+                else:
+                    _rd_final = None
                 qor = QorRecord(
                     module_id=mod.id,
                     version=rec_version,
                     full_dir=str(_fd)[:500] if _fd else None,
                     source_file=sanitize_str(source_filename),
                     owner_id=owner_id,
+                    release_dir=_rd_final,
                 )
                 for f in FLOAT_FIELDS_SET:
                     if f in record:

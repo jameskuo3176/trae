@@ -863,6 +863,10 @@ def admin_upload_csv():
     data_type = request.form.get('data_type', 'qor')
     mark_released = request.form.get('mark_released') in ('1', 'true', 'on', 'yes')
     upload_full_dir = request.form.get('full_dir', '').strip() if data_type == 'notes' else ''
+    # 整批统一 release_dir (覆盖 CSV 自带值)
+    upload_release_dir = request.form.get('release_dir', '').strip() or None
+    if upload_release_dir and len(upload_release_dir) > 500:
+        return jsonify({'error': 'release_dir 长度不能超过 500'}), 400
 
     if not project_id:
         return jsonify({'error': '缺少 project_id'}), 400
@@ -1013,6 +1017,7 @@ def admin_upload_csv():
                     records, project, module_id, version, file.filename,
                     mark_released=mark_released,
                     owner_id=current_user.id if current_user.is_authenticated else None,
+                    default_release_dir=upload_release_dir,
                 )
                 db.session.commit()
                 affected_mods = set()
@@ -1416,11 +1421,25 @@ def admin_toggle_release(record_id):
       - admin:  任意记录的发布/撤回
       - owner:  所在模块 owner, 或被授权为协作者, 或自己上传的记录
       - viewer: 拒绝
+
+    请求体 (可选):
+      release_dir: str  - 发布目录; 若提供则覆盖现有值 (撤回时清空)
+                          若未提供且记录从"未发布→已发布", 保留原值
+                          若未提供且记录从"已发布→已发布", 保留原值
     """
     # 1) 遍历项目库找记录所在项目
     project_id = _find_qor_record_project(record_id)
     if project_id is None:
         return jsonify({'error': '记录不存在'}), 404
+
+    # 解析请求体中的 release_dir (可选)
+    data = request.get_json(silent=True) or {}
+    new_release_dir = data.get('release_dir', None)
+    # 校验: 若提供则必须是字符串; 若为 None 不修改; 若为空字符串视为清空
+    if new_release_dir is not None and not isinstance(new_release_dir, str):
+        return jsonify({'error': 'release_dir 必须是字符串'}), 400
+    if isinstance(new_release_dir, str) and len(new_release_dir) > 500:
+        return jsonify({'error': 'release_dir 长度不能超过 500'}), 400
 
     # 2) 切到该项目库执行操作
     with switch_to_project(project_id):
@@ -1449,45 +1468,107 @@ def admin_toggle_release(record_id):
                 return jsonify({
                     'error': 'owner 角色只能管理自己上传/拥有/被授权的模块下的记录',
                 }), 403
-            r.is_released = not r.is_released
-            if r.is_released:
-                r.released_at = datetime.utcnow()
-                r.released_by = current_user.id
-            else:
-                r.released_at = None
-                r.released_by = None
         elif not current_user.is_admin:
             if r.module and r.module.project:
                 if not can_edit_project(current_user, r.module.project.id):
                     return jsonify({'error': '无权限'}), 403
-            r.is_released = not r.is_released
-            if r.is_released:
-                r.released_at = datetime.utcnow()
-                r.released_by = current_user.id
-            else:
-                r.released_at = None
-                r.released_by = None
+
+        # 切换发布状态
+        r.is_released = not r.is_released
+        if r.is_released:
+            r.released_at = datetime.utcnow()
+            r.released_by = current_user.id
+            # 若本次发布时提供了 release_dir, 覆盖; 否则保留原值
+            if new_release_dir is not None:
+                r.release_dir = new_release_dir.strip()[:500] if new_release_dir.strip() else None
         else:
-            # admin
-            r.is_released = not r.is_released
-            if r.is_released:
-                r.released_at = datetime.utcnow()
-                r.released_by = current_user.id
-            else:
-                r.released_at = None
-                r.released_by = None
+            r.released_at = None
+            r.released_by = None
+            # 撤回: 若请求体中显式提供了 release_dir (即使为空), 按用户意图更新
+            # 否则保留 release_dir 值 (方便下次发布)
+            if new_release_dir is not None:
+                r.release_dir = new_release_dir.strip()[:500] if new_release_dir.strip() else None
 
         # 在项目库 commit 之前先缓存字段值, 避免 commit/expire 后主 session 查不到项目数据
         r_id = r.id
         r_is_released = r.is_released
         r_released_by = r.released_by
         r_released_at = r.released_at
+        r_release_dir = r.release_dir
+        r_full_dir = r.full_dir
         project_commit()
         return jsonify({
             'id': r_id,
             'is_released': r_is_released,
             'released_by': r_released_by,
             'released_at': r_released_at.isoformat() if r_released_at else None,
+            'release_dir': r_release_dir or '',
+            'release_dir_effective': r_release_dir or r_full_dir or '',
+        })
+
+
+@bp.route('/qor/<int:record_id>/release_dir', methods=['POST'])
+@login_required
+@with_db_retry()
+def admin_update_release_dir(record_id):
+    """单独更新记录的 release_dir (不切换 is_released)
+
+    用途: 发布者先发布记录, 然后补充 release_dir; 或者调整已发布的 release_dir.
+    权限与 toggle_release 一致.
+
+    请求体:
+      release_dir: str (必填, 允许空字符串表示清空)
+    """
+    project_id = _find_qor_record_project(record_id)
+    if project_id is None:
+        return jsonify({'error': '记录不存在'}), 404
+
+    data = request.get_json(silent=True) or {}
+    new_release_dir = data.get('release_dir', None)
+    if new_release_dir is None or not isinstance(new_release_dir, str):
+        return jsonify({'error': 'release_dir 必填且为字符串'}), 400
+    if len(new_release_dir) > 500:
+        return jsonify({'error': 'release_dir 长度不能超过 500'}), 400
+
+    with switch_to_project(project_id):
+        r = QorRecord.query.get(record_id)
+        if r is None:
+            return jsonify({'error': '记录不存在'}), 404
+
+        if current_user.is_viewer:
+            return jsonify({'error': 'viewer 角色无发布权限'}), 403
+
+        # 权限校验 (与 toggle_release 一致)
+        if current_user.is_owner or current_user.is_release:
+            allowed = False
+            if r.owner_id == current_user.id:
+                allowed = True
+            elif r.module and r.module.can_be_managed_by(current_user):
+                allowed = True
+            elif r.module and r.module.project and can_edit_project(
+                    current_user, r.module.project.id):
+                allowed = True
+            if not allowed:
+                return jsonify({
+                    'error': 'owner 角色只能管理自己上传/拥有/被授权的模块下的记录',
+                }), 403
+        elif not current_user.is_admin:
+            if r.module and r.module.project:
+                if not can_edit_project(current_user, r.module.project.id):
+                    return jsonify({'error': '无权限'}), 403
+
+        cleaned = new_release_dir.strip()[:500] if new_release_dir.strip() else None
+        r.release_dir = cleaned
+
+        r_id = r.id
+        r_release_dir = r.release_dir
+        r_full_dir = r.full_dir
+        project_commit()
+        return jsonify({
+            'ok': True,
+            'id': r_id,
+            'release_dir': r_release_dir or '',
+            'release_dir_effective': r_release_dir or r_full_dir or '',
         })
 
 
@@ -1545,6 +1626,16 @@ def admin_batch_release():
         return jsonify({'error': f'单次最多 1000 条, 当前 {len(record_ids)} 条'}), 400
 
     released = bool(data.get('released', True))
+    # 批量 release_dir: 仅当 released=True 时生效
+    #   - 字符串 (非空): 覆盖所有选中记录的 release_dir
+    #   - 字符串 (空):  清空所有选中记录的 release_dir
+    #   - null/缺省:    保留原 release_dir (不修改)
+    batch_release_dir = data.get('release_dir', '__NOT_PROVIDED__')
+    if batch_release_dir != '__NOT_PROVIDED__':
+        if not isinstance(batch_release_dir, str):
+            return jsonify({'error': 'release_dir 必须是字符串或缺省'}), 400
+        if len(batch_release_dir) > 500:
+            return jsonify({'error': 'release_dir 长度不能超过 500'}), 400
     updated = 0
     skipped = 0
     failed = []  # [{id, reason}]
@@ -1596,9 +1687,13 @@ def admin_batch_release():
                     if released:
                         r.released_at = datetime.utcnow()
                         r.released_by = current_user.id
+                        if batch_release_dir != '__NOT_PROVIDED__':
+                            r.release_dir = batch_release_dir.strip()[:500] if batch_release_dir.strip() else None
                     else:
                         r.released_at = None
                         r.released_by = None
+                        if batch_release_dir != '__NOT_PROVIDED__':
+                            r.release_dir = batch_release_dir.strip()[:500] if batch_release_dir.strip() else None
                     updated += 1
                 elif not current_user.is_admin:
                     # 普通用户: 项目编辑权 + 是该记录 owner (兼容历史)
@@ -1614,9 +1709,13 @@ def admin_batch_release():
                     if released:
                         r.released_at = datetime.utcnow()
                         r.released_by = current_user.id
+                        if batch_release_dir != '__NOT_PROVIDED__':
+                            r.release_dir = batch_release_dir.strip()[:500] if batch_release_dir.strip() else None
                     else:
                         r.released_at = None
                         r.released_by = None
+                        if batch_release_dir != '__NOT_PROVIDED__':
+                            r.release_dir = batch_release_dir.strip()[:500] if batch_release_dir.strip() else None
                     updated += 1
                 else:
                     # admin
@@ -1624,9 +1723,13 @@ def admin_batch_release():
                     if released:
                         r.released_at = datetime.utcnow()
                         r.released_by = current_user.id
+                        if batch_release_dir != '__NOT_PROVIDED__':
+                            r.release_dir = batch_release_dir.strip()[:500] if batch_release_dir.strip() else None
                     else:
                         r.released_at = None
                         r.released_by = None
+                        if batch_release_dir != '__NOT_PROVIDED__':
+                            r.release_dir = batch_release_dir.strip()[:500] if batch_release_dir.strip() else None
                     updated += 1
 
             try:

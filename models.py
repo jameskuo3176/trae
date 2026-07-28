@@ -399,6 +399,12 @@ class QorRecord(db.Model):
     released_at = db.Column(db.DateTime)
     released_by = db.Column(db.Integer)
 
+    # ---- Release 目录 (对外发布路径) ----
+    # 已发布记录的对外目录路径; 优先使用用户提交的 release_dir,
+    # 缺省时 fallback 到 full_dir (运行时目录) 以保证 release 角色能定位到数据.
+    # 上传 CSV 时可携带 release_dir 列, 发布页面亦可单独提交.
+    release_dir = db.Column(db.String(500), index=True)
+
     def to_dict(self):
         """转换为字典"""
         import json
@@ -411,6 +417,10 @@ class QorRecord(db.Model):
                     extra = json.loads(extra)
             except (json.JSONDecodeError, TypeError):
                 extra = {}
+        full_dir = self.full_dir or (extra.get('full_dir', '') if isinstance(extra, dict) else '')
+        # release_dir_effective: 优先取用户提交的 release_dir, 否则 fallback 到 full_dir
+        # 仅当记录已发布时, 这个字段才有意义 (未发布时 release_dir 通常为空)
+        release_dir_effective = self.release_dir or full_dir
         result = {
             'id': self.id,
             'module_id': self.module_id,
@@ -419,7 +429,10 @@ class QorRecord(db.Model):
             'version': self.version,
             'tag': self.version,  # tag 即 version，用于图表标签显示
             'comment': extra.get('comment', '') if isinstance(extra, dict) else '',
-            'full_dir': self.full_dir or (extra.get('full_dir', '') if isinstance(extra, dict) else ''),
+            'full_dir': full_dir,
+            # release_dir: 用户提交的对外发布目录 (可空); release_dir_effective: 实际生效的目录 (fallback 到 full_dir)
+            'release_dir': self.release_dir or '',
+            'release_dir_effective': release_dir_effective,
             # ---- Owner 信息 ----
             'owner_id': self.owner_id,
             'owner_username': self.owner.username if self.owner else None,

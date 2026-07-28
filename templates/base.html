@@ -1648,6 +1648,181 @@
         })();
     </script>
 
+    <!-- AppUI: 全局 UI 辅助组件 (统一规范, 各页面通用) -->
+    <!-- 用法:
+         1. 多选框全选/清空:  <select multiple data-multi>  即可自动附加按钮
+         2. Toast 提示:        window.AppUI.toast('msg', 'success')
+         3. 一次性提示标志:    AppUI.oncePerSession('key', fn)
+         4. 异步按钮锁:        AppUI.lockButton(btn, label) / AppUI.unlockButton(btn)
+    -->
+    <script>
+        (function () {
+            const AppUI = window.AppUI = {};
+
+            // ===== 多选框全选/清空 =====
+            // 用法: <select multiple data-multi>
+            // 自定义: data-multi="hide-empty"  隐藏空值 (如 v1.0 选项 value="")
+            //       data-multi="exclude-search"  不附加 (用于需要自定义布局的场合)
+            // 容器: 在 select 后插入 .multi-select-actions div
+            function attachMultiActions(sel) {
+                if (sel.dataset.multiAttached === '1') return;
+                sel.dataset.multiAttached = '1';
+                const container = document.createElement('div');
+                container.className = 'multi-select-actions';
+                container.style.cssText = 'margin-top:4px; display:flex; gap:6px;';
+                container.innerHTML =
+                    '<button type="button" class="btn btn-sm" data-action="all" ' +
+                    'style="font-size:11px; padding:2px 8px;">全选</button>' +
+                    '<button type="button" class="btn btn-sm" data-action="none" ' +
+                    'style="font-size:11px; padding:2px 8px;">清空</button>';
+                sel.parentNode.insertBefore(container, sel.nextSibling);
+                const btnAll = container.querySelector('[data-action="all"]');
+                const btnNone = container.querySelector('[data-action="none"]');
+                btnAll.addEventListener('click', function () {
+                    let count = 0;
+                    Array.from(sel.options).forEach(function (opt) {
+                        if (opt.style.display === 'none') return;
+                        if (opt.value === '' && sel.dataset.multi === 'hide-empty') return;
+                        opt.selected = true;
+                        count++;
+                    });
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                });
+                btnNone.addEventListener('click', function () {
+                    Array.from(sel.options).forEach(function (opt) {
+                        opt.selected = false;
+                    });
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                });
+            }
+            function attachAllMulti() {
+                document.querySelectorAll('select[multiple][data-multi]').forEach(attachMultiActions);
+            }
+            // 监听 DOM 变化 (异步加载的 select 也自动附加)
+            const mo = new MutationObserver(function () {
+                attachAllMulti();
+            });
+            if (document.body) {
+                mo.observe(document.body, { childList: true, subtree: true });
+            }
+            document.addEventListener('DOMContentLoaded', attachAllMulti);
+            // 立即执行一次 (DOMContentLoaded 可能在监听注册前已触发)
+            if (document.readyState !== 'loading') {
+                setTimeout(attachAllMulti, 0);
+            }
+            AppUI.attachMulti = attachMultiActions;
+            AppUI.attachAllMulti = attachAllMulti;
+
+            // ===== Toast 提示 =====
+            // type: 'success' | 'error' | 'info' (默认 info)
+            AppUI.toast = function (msg, type) {
+                type = type || 'info';
+                const colors = {
+                    success: '#2e7d32',
+                    error: '#c62828',
+                    info: '#1976d2',
+                    warning: '#e65100',
+                };
+                const bg = colors[type] || colors.info;
+                const t = document.createElement('div');
+                t.textContent = msg;
+                t.style.cssText =
+                    'position:fixed; bottom:24px; right:24px; z-index:9999; ' +
+                    'padding:10px 18px; background:' + bg + '; color:#fff; ' +
+                    'border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.2); ' +
+                    'font-size:14px; opacity:0; transition:opacity 0.2s;';
+                document.body.appendChild(t);
+                requestAnimationFrame(function () { t.style.opacity = '1'; });
+                setTimeout(function () {
+                    t.style.opacity = '0';
+                    setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 200);
+                }, 2000);
+            };
+
+            // ===== 一次性提示 (本次会话仅一次) =====
+            // 用法: if (!AppUI.onceSeen('release_dir_prompted')) { alert(...); AppUI.markSeen('release_dir_prompted'); }
+            AppUI.onceSeen = function (key) {
+                try { return sessionStorage.getItem('ui_once_' + key) === '1'; }
+                catch (e) { return false; }
+            };
+            AppUI.markSeen = function (key) {
+                try { sessionStorage.setItem('ui_once_' + key, '1'); } catch (e) {}
+            };
+            AppUI.oncePerSession = function (key, fn) {
+                if (AppUI.onceSeen(key)) return false;
+                AppUI.markSeen(key);
+                try { fn(); } catch (e) { console.error(e); }
+                return true;
+            };
+
+            // ===== 异步按钮锁 (防重复点击) =====
+            AppUI.lockButton = function (btn, pendingLabel) {
+                if (!btn) return null;
+                const orig = btn.dataset.origLabel || btn.textContent;
+                btn.dataset.origLabel = orig;
+                btn.dataset.locked = '1';
+                btn.disabled = true;
+                if (pendingLabel) btn.textContent = pendingLabel;
+                return orig;
+            };
+            AppUI.unlockButton = function (btn) {
+                if (!btn) return;
+                btn.disabled = false;
+                btn.dataset.locked = '';
+                if (btn.dataset.origLabel) btn.textContent = btn.dataset.origLabel;
+            };
+            AppUI.lockAll = function (selector, pendingLabel) {
+                const list = Array.from(document.querySelectorAll(selector));
+                return list.map(function (b) { return AppUI.lockButton(b, pendingLabel); });
+            };
+            AppUI.unlockAll = function (selector) {
+                document.querySelectorAll(selector).forEach(AppUI.unlockButton);
+            };
+
+            // ===== 通用 fetch 包装 (统一错误处理) =====
+            // AppUI.api(url, options) -> 自动注入 CSRF, 统一处理 401/403/500
+            AppUI.api = function (url, options) {
+                options = options || {};
+                options.headers = Object.assign({
+                    'Content-Type': 'application/json',
+                }, options.headers || {});
+                if (['POST', 'PUT', 'DELETE', 'PATCH'].includes((options.method || 'GET').toUpperCase())) {
+                    const meta = document.querySelector('meta[name="csrf-token"]');
+                    if (meta && !options.headers['X-CSRF-Token']) {
+                        options.headers['X-CSRF-Token'] = meta.getAttribute('content');
+                    }
+                }
+                return fetch(url, options).then(function (resp) {
+                    if (resp.status === 401) {
+                        window.location.href = '/login';
+                        throw new Error('未登录');
+                    }
+                    return resp;
+                });
+            };
+
+            // ===== 复制到剪贴板 (回退 fallback) =====
+            AppUI.copyText = function (text) {
+                if (navigator.clipboard && window.isSecureContext) {
+                    return navigator.clipboard.writeText(text).catch(function () {
+                        return AppUI._fallbackCopy(text);
+                    });
+                }
+                return Promise.resolve(AppUI._fallbackCopy(text));
+            };
+            AppUI._fallbackCopy = function (text) {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.cssText = 'position:fixed; top:-1000px; left:-1000px;';
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); } catch (e) {}
+                document.body.removeChild(ta);
+                return true;
+            };
+        })();
+    </script>
+
     {% block extra_scripts %}{% endblock %}
 </body>
 

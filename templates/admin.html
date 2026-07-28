@@ -83,6 +83,16 @@
                     <input type="text" id="uploadFilenameSuffixes" value="_qor,qor,_qor_report"
                         placeholder="如: _qor,qor" style="width: 100%;">
                 </div>
+                <div class="form-group" id="uploadReleaseDirGroup">
+                    <label>release_dir（发布目录，可选，用于 release 账号定位对外发布路径）</label>
+                    <input type="text" id="uploadReleaseDir"
+                        placeholder="如: /proj/release/v1.0/cpu_top (留空则发布时以 full_dir 兜底)"
+                        style="width: 100%;">
+                    <div style="margin-top:4px; font-size:12px; color: var(--color-text-secondary);">
+                        若 CSV 本身有 <code>release_dir</code> 列, 该表单值将覆盖 (整批统一); 留空则保留 CSV 列值;
+                        发布后亦可在「记录管理」单独修改 release_dir.
+                    </div>
+                </div>
                 <div class="form-group">
                     <label>CSV 文件 *（可多选，支持整目录上传）</label>
                     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -318,6 +328,7 @@
                             <th>模块</th>
                             <th>版本</th>
                             <th>full_dir (运行目录)</th>
+                            <th>release_dir (发布目录)</th>
                             <th>总面积</th>
                             <th>WNS</th>
                             <th>TNS</th>
@@ -1185,6 +1196,11 @@
                 const fd = document.getElementById('uploadFullDir').value.trim();
                 if (fd) formData.append('full_dir', fd);
             }
+            // 整批统一 release_dir (覆盖 CSV 自带值)
+            const uploadReleaseDirEl = document.getElementById('uploadReleaseDir');
+            if (uploadReleaseDirEl && uploadReleaseDirEl.value.trim()) {
+                formData.append('release_dir', uploadReleaseDirEl.value.trim());
+            }
             // 上传时是否立即标记为已发布
             const markReleased = document.getElementById('uploadMarkReleased');
             if (markReleased && markReleased.checked) {
@@ -1576,6 +1592,18 @@
             <td title="${escapeHtml(r.full_dir || '')}" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:12px; color:#1976d2;">
                 ${r.full_dir || '<span style="color:#999;">-</span>'}
             </td>
+            <td title="${escapeHtml(r.release_dir_effective || '')}" style="max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:12px; ${r.is_released && r.release_dir ? 'color:#2e7d32;' : 'color:#e65100;'}">
+                ${r.is_released
+                    ? (r.release_dir
+                        ? escapeHtml(r.release_dir)
+                        : '<span title="未提供 release_dir, 当前以 full_dir 兜底" style="cursor:help;">⚠ ' + escapeHtml(r.release_dir_effective || r.full_dir || '-') + ' <span style="color:#999;font-size:10px;">(兜底)</span></span>')
+                    : (r.release_dir
+                        ? escapeHtml(r.release_dir)
+                        : '<span style="color:#999;">-</span>')}
+                <button class="btn btn-sm btn-default" style="margin-left:4px; padding:0 6px; font-size:11px;"
+                    onclick="event.stopPropagation(); editRecordReleaseDir(${r.id})"
+                    title="编辑 release_dir (留空则使用 full_dir 兜底)">✏️</button>
+            </td>
             <td>${r.area_total != null ? r.area_total.toFixed(2) : '-'}</td>
             <td>${r.wns_setup != null ? r.wns_setup.toFixed(3) : '-'}</td>
             <td>${r.tns_setup != null ? r.tns_setup.toFixed(3) : '-'}</td>
@@ -1662,22 +1690,113 @@
     }
 
     // ---- Release 管理 ----
+
+    // release_dir 一次性提示标志 (AppUI.onceSeen / AppUI.markSeen 已在 base.html 定义)
+    const RELEASE_DIR_PROMPT_KEY = 'release_dir_prompted';
+    const hasShownReleaseDirPrompt = () => AppUI.onceSeen(RELEASE_DIR_PROMPT_KEY);
+    const markReleaseDirPromptShown = () => AppUI.markSeen(RELEASE_DIR_PROMPT_KEY);
+
+    // 单条发布: 弹出 release_dir 输入 + 一次性提示
     async function toggleRelease(id) {
+        // 先拉取当前记录的 release_dir (若已有则跳过输入)
+        let currentRecord = null;
+        try {
+            const r = await fetch(`/api/qor/record/${id}`);
+            if (r.ok) {
+                const d = await r.json();
+                currentRecord = d.record || null;
+            }
+        } catch (e) { /* ignore */ }
+
+        const willRelease = !(currentRecord && currentRecord.is_released);
+        let releaseDir = '';
+        if (willRelease) {
+            // 发布时: 若已有 release_dir, 直接用; 否则让用户输入 (可跳过)
+            if (currentRecord && currentRecord.release_dir) {
+                releaseDir = currentRecord.release_dir;
+            } else {
+                // 一次性提示: 仅当用户尚未确认时弹窗 (避免循环点击)
+                if (!hasShownReleaseDirPrompt()) {
+                    alert(
+                        '提示: 发布记录时建议提供 release_dir (对外发布路径).\n' +
+                        '\n' +
+                        '  · 若留空, 将以 full_dir 兜底, 对外可见的目录可能仍是运行时路径.\n' +
+                        '  · 您可在此弹窗的输入框填入, 也可发布后在「记录管理」中单独修改.\n' +
+                        '\n' +
+                        '(本提示在本次会话中仅显示一次)'
+                    );
+                    markReleaseDirPromptShown();
+                }
+                const def = currentRecord && currentRecord.full_dir ? currentRecord.full_dir : '';
+                const input = prompt(
+                    '请输入 release_dir (留空将使用 full_dir 兜底):',
+                    def
+                );
+                if (input === null) {
+                    // 用户取消 -> 不执行发布
+                    return;
+                }
+                releaseDir = input.trim();
+            }
+        }
+
         try {
             const resp = await fetch(`/api/admin/qor/${id}/release`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: '{}'
+                body: JSON.stringify({ release_dir: releaseDir })
             });
             if (resp.ok) {
                 await loadRecords();
             } else {
                 const err = await resp.json().catch(() => ({}));
-                alert('操作失败: ' + (err.error || resp.status));
+                const msg = err.error || `HTTP ${resp.status}`;
+                alert('操作失败: ' + msg + (err.must_change_password
+                    ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
             }
         } catch (err) {
             console.error('toggleRelease error:', err);
-            alert('操作出错: ' + err.message);
+            alert('操作出错: ' + err.message + '\n(请检查网络/服务是否正常)');
+        }
+    }
+
+    // 单条: 单独编辑 release_dir (不切换 is_released)
+    async function editRecordReleaseDir(id) {
+        // 拉取当前记录详情, 弹出 prompt 编辑
+        let currentRecord = null;
+        try {
+            const r = await fetch(`/api/qor/record/${id}`);
+            if (r.ok) {
+                const d = await r.json();
+                currentRecord = d.record || null;
+            }
+        } catch (e) { /* ignore */ }
+        const current = currentRecord && currentRecord.release_dir || '';
+        const input = prompt(
+            '请输入 release_dir (对外发布目录):\n  · 留空字符串将清空 (后续以 full_dir 兜底)\n  · 当前值: ' + (current || '(未设置)'),
+            current
+        );
+        if (input === null) return; // 取消
+        const newVal = input.trim();
+        try {
+            const resp = await fetch(`/api/admin/qor/${id}/release_dir`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ release_dir: newVal })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                const msg = err.error || `HTTP ${resp.status}`;
+                alert('修改失败: ' + msg + (err.must_change_password
+                    ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
+                return;
+            }
+            const r = await resp.json();
+            alert('✓ release_dir 已更新\n  新值: ' + (r.release_dir || '(空, fallback 到 full_dir)'));
+            await loadRecords();
+        } catch (e) {
+            console.error('editRecordReleaseDir error:', e);
+            alert('修改出错: ' + e.message + '\n(请检查网络/服务是否正常)');
         }
     }
 
@@ -1703,6 +1822,34 @@
             alert('请先勾选要' + (released ? '发布' : '撤回') + '的记录');
             return;
         }
+
+        // 批量发布时: 询问是否统一设置 release_dir (一次性提示)
+        let batchReleaseDir = undefined; // undefined = 不修改, 由后端保留原值
+        if (released) {
+            if (!hasShownReleaseDirPrompt()) {
+                alert(
+                    `即将批量发布 ${ids.length} 条记录.\n` +
+                    '\n' +
+                    '提示: 发布时建议提供 release_dir (对外发布路径).\n' +
+                    '  · 留空则每条记录以其 full_dir 兜底, 对外可能仍是运行时路径.\n' +
+                    '  · 统一设置: 下方会询问, 输入的目录会应用到所有选中记录.\n' +
+                    '  · 单独设置: 留空后可在记录列表逐条修改.\n' +
+                    '\n' +
+                    '(本提示在本次会话中仅显示一次)'
+                );
+                markReleaseDirPromptShown();
+            }
+            const wantSet = confirm('是否统一为这批记录设置 release_dir?\n  · "确定" = 输入一个统一值, 覆盖所有记录\n  · "取消" = 留空 (各记录以其 full_dir 兜底, 或保留原 release_dir)');
+            if (wantSet) {
+                const input = prompt('请输入统一的 release_dir (留空字符串可清空所有选中记录的 release_dir):', '');
+                if (input === null) {
+                    // 用户取消输入 -> 中止
+                    return;
+                }
+                batchReleaseDir = input.trim();
+            }
+        }
+
         if (!confirm(`确认${released ? '发布' : '撤回'}选中的 ${ids.length} 条记录？`)) return;
 
         // 锁定按钮 + 显示进度, 防止重复点击导致卡死
@@ -1718,10 +1865,14 @@
         if (selInfo) selInfo.textContent = '处理中, 请稍候...';
 
         try {
+            const body = { record_ids: ids, released: released };
+            if (released && batchReleaseDir !== undefined) {
+                body.release_dir = batchReleaseDir;
+            }
             const resp = await fetch('/api/admin/qor/batch_release', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ record_ids: ids, released: released })
+                body: JSON.stringify(body)
             });
             const r = await resp.json().catch(() => ({}));
 

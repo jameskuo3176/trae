@@ -27,6 +27,8 @@ def _ensure_columns_in_app(app):
         ('qor_records', 'is_released', "BOOLEAN DEFAULT 0"),
         ('qor_records', 'released_at', "DATETIME"),
         ('qor_records', 'released_by', "INTEGER"),
+        # QorRecord: release_dir 发布目录 (v5.x 新增; 缺省时 fallback 到 full_dir)
+        ('qor_records', 'release_dir', "VARCHAR(500)"),
         # RunNote: full_dir 字段
         ('run_notes', 'full_dir', "VARCHAR(1000)"),
         # Module: v5.0 模块所有者 + 协作者

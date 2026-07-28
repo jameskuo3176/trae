@@ -113,6 +113,9 @@ FIELD_ALIASES = {
     'version': ['version', 'commit', 'revision', 'tag', 'label', 'run_id', 'run', 'build'],
     'module_name': ['module', 'module_name', 'design', 'design_name', 'top_module', 'top', 'hierarchical_cell', 'instance'],
     'project_name': ['project', 'project_name', 'project_id', 'block'],
+
+    # 发布目录 (对外发布路径, 与 full_dir 区分: full_dir 是运行时目录, release_dir 是 release 账号可见的目录)
+    'release_dir': ['release_dir', 'releasedir', 'release_path', 'releasepath', 'release_directory'],
 }
 
 # 空值表示集合（不区分大小写）
@@ -418,6 +421,20 @@ def parse_csv_file(file_content_bytes, default_project=None, default_module=None
     stats['extra_columns'] = list(extra_cols.keys())
     stats['clocks'] = list(clock_cols.keys())
 
+    # 原始列名 -> 标准字段名 的反查 (供详情页"映射到"列展示)
+    # 格式: { 原始CSV列名: 标准字段名 | "extra" | "clocks.{CLKNAME}.{field_type}" }
+    col_mapping = {}
+    for std_field, col_idx in field_map.items():
+        if col_idx < len(headers) and headers[col_idx] is not None:
+            col_mapping[headers[col_idx]] = std_field
+    for col_norm, (col_name, _col_idx) in extra_cols.items():
+        if col_name not in col_mapping:
+            col_mapping[col_name] = 'extra'
+    for clock_name, fields in clock_cols.items():
+        for ftype, cidx in fields.items():
+            if cidx < len(headers) and headers[cidx] is not None:
+                col_mapping[headers[cidx]] = f'clocks.{clock_name}.{ftype}'
+
     records = []
 
     for row_idx, row in enumerate(rows[1:], start=2):
@@ -427,6 +444,21 @@ def parse_csv_file(file_content_bytes, default_project=None, default_module=None
         if not row or all(cell is None or str(cell).strip() == '' for cell in row):
             stats['skipped_empty'] += 1
             continue
+
+        # 捕获原始 CSV 行 (列名 -> 原始字符串值), 用于详情页"原始 CSV 数据"展示
+        # 保留所有列 (含映射到标准字段的列) 的原始字符串, 反映上传时的真实数据
+        raw_csv = {}
+        for header, col_idx in zip(headers, range(len(headers))):
+            if header is None:
+                continue
+            if col_idx < len(row):
+                raw_val = row[col_idx]
+                if raw_val is None:
+                    raw_val = ''
+                else:
+                    raw_val = str(raw_val).strip()
+                # 即使空值也保留 (用空字符串), 反映原始 CSV 的完整性
+                raw_csv[header] = raw_val
 
         try:
             record = {}
@@ -521,6 +553,13 @@ def parse_csv_file(file_content_bytes, default_project=None, default_module=None
                 record['version'] = default_version if default_version else 'v1'
 
             # 额外字段转 JSON
+            # 同时保存:
+            #   _raw_csv: 原始 CSV 行 (列名 -> 原始字符串), 供详情页"原始 CSV 数据"展示
+            #   _col_mapping: 原始列名 -> 标准字段名/extra/clocks.xxx 的映射
+            if raw_csv:
+                extra_fields['_raw_csv'] = raw_csv
+            if col_mapping:
+                extra_fields['_col_mapping'] = col_mapping
             record['extra_fields'] = json.dumps(extra_fields, ensure_ascii=False) if extra_fields else None
 
             records.append(record)

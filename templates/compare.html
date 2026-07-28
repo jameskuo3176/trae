@@ -30,7 +30,8 @@
             </div>
             <div class="form-group">
                 <label>对比指标 (Ctrl+多选)</label>
-                <select id="cmpMetrics" multiple style="min-width: 220px; min-height: 120px;">
+                <select id="cmpMetrics" multiple data-multi
+                    style="min-width: 220px; min-height: 120px;">
                     <option value="area_total" selected>总面积</option>
                     <option value="wns_setup" selected>Setup WNS</option>
                     <option value="tns_setup">Setup TNS</option>
@@ -50,7 +51,8 @@
             </div>
             <div class="form-group">
                 <label>Tag / 版本 (多选)</label>
-                <select id="cmpVersion" multiple style="min-width: 200px; min-height: 120px;">
+                <select id="cmpVersion" multiple data-multi="hide-empty"
+                    style="min-width: 200px; min-height: 120px;">
                 </select>
             </div>
         </div>
@@ -200,6 +202,9 @@
         Array.from(modSel.options).forEach(opt => opt.selected = false);
         refreshCmpVersions();
     }
+
+    // 对比指标 / Tag 版本 的全选/清空 按钮由 base.html 的 AppUI 通用组件自动附加
+    // (用法: <select multiple data-multi>)  此处无需再写重复函数
 
     async function runCompare() {
         const modules = Array.from(document.getElementById('cmpModules').selectedOptions).map(o => o.value);

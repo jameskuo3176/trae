@@ -337,6 +337,11 @@ def api_v1_upload():
     data_type = request.form.get('data_type', 'qor')
     mark_released = request.form.get('mark_released') in ('1', 'true', 'on', 'yes')
     upload_full_dir = request.form.get('full_dir', '').strip() if data_type == 'notes' else ''
+    # 整批统一 release_dir (覆盖 CSV 自带值)
+    upload_release_dir = request.form.get('release_dir', '').strip() or None
+    # 限制长度
+    if upload_release_dir and len(upload_release_dir) > 500:
+        return jsonify({'error': 'release_dir 长度不能超过 500'}), 400
 
     if not project_id:
         return jsonify({'error': '缺少 project_id'}), 400
@@ -413,6 +418,7 @@ def api_v1_upload():
                 saved, skipped, updated = save_records_to_db(
                     records, project, module_id, version, f.filename,
                     mark_released=mark_released, owner_id=user.id,
+                    default_release_dir=upload_release_dir,
                 )
                 db.session.commit()
                 affected_mods = set()
