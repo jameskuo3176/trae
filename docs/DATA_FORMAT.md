@@ -1,7 +1,15 @@
-# QoR Recorder 数据提交规范 v4.0
+# QoR Recorder 数据提交规范 v5.0
 
 > 本文档定义每次 "run"（综合运行）需要提交的数据格式、提交方式（脚本 / API / Makefile / Demo 脚本）以及覆盖与关联策略。
-> 适用于：CSV 文件作者、Makefile 集成者、API 调用方、Demo 数据生成者。
+> 适用于：CSV 文件作者、Makefile 集成者、API 调用方、Demo 数据生成者、生产环境部署。
+
+> **v5.0 更新（2026-07-30）**:
+> - 角色模型升级为 `admin / owner / viewer` 三级（v4.x 的 `user / release` 自动迁移为 `owner`）
+> - 默认 `viewer` 账户自动创建（`viewer / viewer@2026`），强制首登改密
+> - 模块级协作（`Module.owner_id` + `Module.collaborators`）：支持 owner 间数据共享
+> - Dashboard 违例分析页：时钟多选（每个 clock 并排渲染一张子图）
+> - `release_dir` 字段作为独立列，与 `full_dir` 类似用于按目录发布管理
+> - 字段兼容：`tag` 仍可作为 `version` 别名；`module_name` 也支持 `module` 别名
 
 > **v4.0 更新（2026-07-28）**:
 > - 引入**按项目分库**架构：每个项目独立 DB 文件 (`qor_p_<id>.db`)，主库只存系统级数据
@@ -36,6 +44,71 @@
 
 ---
 
+## 0.5 角色与默认账户（v5.0）
+
+实际部署后, 上传 / 查看 / 管理操作都受角色约束. 数据提交前请确认调用方角色.
+
+### 0.5.1 角色模型
+
+| 角色     | 能力                                                                 | 典型场景                          |
+|----------|----------------------------------------------------------------------|-----------------------------------|
+| `admin`  | 全部权限：项目管理、用户管理、所有数据 CRUD、发布/撤回、锁定/解锁     | 系统管理员                        |
+| `owner`  | 上传/管理**自己创建**的模块数据 + 授权其他 owner 协管 + 发布/撤回      | 综合工程师 / 数据 owner           |
+| `viewer` | 只读 + 仅能查看**已发布**数据（`is_released=True`），不能上传/管理     | 客户 / 跨团队 / 跨部门只读        |
+
+> v4.x 的 `user` / `release` 角色已在启动时自动迁移为 `owner`. 历史 `release` 账户的可访问性不变（owner 默认可见所有数据）.
+
+### 0.5.2 默认账户（生产环境**必须**修改默认密码）
+
+| 用户名     | 默认密码       | 角色     | 用途                          |
+|------------|----------------|----------|-------------------------------|
+| `admin`    | `admin@2026`   | admin    | 全功能管理                    |
+| `release`  | `release@2026` | owner    | 历史发布账户, 自动迁移为 owner |
+| `viewer`   | `viewer@2026`  | viewer   | v5.0 新增, 只读               |
+
+**强制改密机制**:
+
+- admin / release / viewer 三个账户首次登录后, 系统会**强制跳转到 `/change_password`**
+- 改密之前, 任何上传/管理操作都会被 403 拦截（即使 API Key 也无法绕过）
+- 弱密码黑名单：`12345678` / `password` / `password1` / `admin123` / `qwerty123` / `11111111` / `00000000`
+
+### 0.5.3 数据可见性矩阵
+
+| 数据状态           | admin | owner | viewer |
+|--------------------|-------|-------|--------|
+| 自己 owner 的数据  | ✅    | ✅    | ❌     |
+| 协作者 owner 的数据 | ✅    | ✅    | ❌     |
+| 任何已发布数据     | ✅    | ✅    | ✅     |
+| 未发布的他人数据   | ✅    | ❌    | ❌     |
+| 软删除项目 (hidden) | ✅ (在已隐藏页可见) | ❌ | ❌ |
+
+> Dashboard 的 "scope" 切换 (mine / all) 仅 owner 可见, 默认 `mine` 强制只显示自己 owner 的数据; admin 始终看全部, viewer 已被后端限制.
+
+### 0.5.4 模块级协作（v5.0 新增）
+
+Module 表新增 `owner_id` + `collaborators` 字段:
+
+- `owner_id`: 模块创建者, **唯一**, 可管理模块和模块下所有数据
+- `collaborators`: JSON 数组 `[user_id, ...]`, 被授权的同 `owner` 角色用户, 可管理该模块下数据
+- **只能授权其他 `owner` 角色用户** (团队内部协作, viewer 不能成为协作者)
+- 跨项目场景: Module 在项目 DB, URL 不携带 project_id, 后端用 `_resolve_module_across_projects()` 跨库查找
+
+API:
+
+```bash
+# 列出模块协作者
+GET /api/modules/<id>/collaborators
+
+# 添加协作者
+POST /api/modules/<id>/collaborators
+Body: {"user_id": 7}
+
+# 删除协作者
+DELETE /api/modules/<id>/collaborators/<user_id>
+```
+
+---
+
 ## 1. 概念层级
 
 ```
@@ -49,11 +122,90 @@ Project（项目）
 - 一个 **run** = 一条 `QorRecord` 记录
 - 一个 run 关联到一个 module 和一个 version（版本/commit/日期标签）
 - **full_dir**：run 的工作目录绝对路径，用于区分同一 module+version 下的不同子目录 run（多 corner / 多 sub-run）
+- **release_dir**（v5.0 新增）：发布目录，对外公开数据时使用的相对路径；若为空则使用 `full_dir`
 - 同一 module 可有多个 run（不同时期、不同版本），用于趋势对比
 
 ---
 
+## 1.5 存储架构（v4.0+ 按项目分库）
+
+实际部署中, 性能与隔离都和存储架构强相关. 提交数据前请理解:
+
+### 1.5.1 主库 + 项目库
+
+| 库              | 文件                          | 内容                                                                  |
+|-----------------|-------------------------------|-----------------------------------------------------------------------|
+| **主库**        | `qor_recorder.db` (或 MySQL/Mongo) | 用户、API Key、项目元数据、ProjectMember、DashboardGroup、ReviewSnapshot 等**系统级**数据 |
+| **项目库**      | `qor_p_<id>.db`（每个项目一个） | 该项目的模块、QorRecord、ViolationPath、RunNote、Review 等**业务**数据 |
+
+### 1.5.2 性能隔离
+
+- 每个项目独立文件, 单项目大数据量不会拖慢其他项目
+- 业务查询通过 `switch_to_project(pid)` 切换 bind, 主库不受影响
+- 跨库查询（如 Dashboard 拉多项目）通过 `query_records_by_projects()` 迭代各项目库合并
+
+### 1.5.3 备份与归档
+
+```bash
+# 单项目备份 (推荐, 项目结束后归档)
+cp data/qor_p_3.db backups/qor_p_3_$(date +%Y%m%d).db
+
+# 单项目迁移 (拷走即可, 含全部数据)
+scp data/qor_p_3.db newserver:/opt/qor_recorder/data/
+
+# 主库备份
+python -c "
+from app import app, db
+from sqlalchemy import text
+with app.app_context():
+    with db.engine.connect() as conn:
+        conn.execute(text('VACUUM INTO :path'), {'path': 'backups/main_$(date +%Y%m%d).db'})
+"
+```
+
+### 1.5.4 多后端切换
+
+通过 `DB_TYPE` 环境变量切换:
+
+| DB_TYPE  | 含义           | 必填                | 适用规模          |
+|----------|----------------|---------------------|-------------------|
+| `sqlite` | SQLite (默认)  | 无                  | < 20 人, < 10 万记录 |
+| `sql`    | MySQL/PostgreSQL | `DATABASE_URL`    | 20+ 人, 大数据量    |
+| `mongodb`| MongoDB        | `MONGODB_URI`      | 已有 Mongo 基础设施  |
+
+> SQLite 模式下, `data/` 下会同时存在主库 `qor_recorder.db` 和若干 `qor_p_<id>.db`.
+> 切换到 `sql` / `mongodb` 后, 这些业务表合并到对应后端, `qor_p_<id>.db` 不再生成.
+
+---
+
 ## 2. 提交方式
+
+### 2.0 API Key 准备（必读, 实际部署第一步）
+
+`upload_qor.sh` / curl / Makefile 都依赖 API Key 认证. 部署完成后:
+
+1. 用 admin 登录 Web 界面
+2. 进入「管理 → API Key 管理」或访问 `/admin#apikeys`
+3. 点击「创建 API Key」, 输入名称 (如 `dc-bot`), 选择 scope:
+   - `upload`: 可调用 `/api/v1/upload`, `/api/v1/qor/upload`
+   - `read`: 只能查询, 不能上传
+4. **保存生成的 key**（格式 `qor_xxxxxxxx`）, 仅显示一次
+5. 写入 CI / Makefile 环境:
+
+```bash
+# 方式 A: 环境变量
+export QOR_API_KEY=qor_xxxxxxxxxxxxxxxx
+
+# 方式 B: 文件 (推荐, 避免泄漏到 shell history)
+echo "qor_xxxxxxxxxxxxxxxx" > ~/.qor_api_key
+chmod 600 ~/.qor_api_key
+```
+
+**API Key 与 CSRF**:
+
+- 带 `X-API-Key` 的请求**跳过 CSRF 校验**, 适合 DC 流程后台调用
+- 仅 session 认证 (浏览器) 的请求**仍需 CSRF token** (前端 `AppUI.api()` 自动注入)
+- 若 `user.must_change_password=True`, 即使 API Key 也被 403 拒绝, 必须先改密
 
 ### 2.1 方式 A：脚本（推荐用于 Makefile / CI）
 
@@ -248,6 +400,44 @@ clk_div/U1/Z,foo_reg/D,-0.045,15,12,320,55,5,-8,1,80,80,5
 - 关联到 (module, version) 对应的 QorRecord
 - 同一 (record, timing_group) 重复上传 → 覆盖旧路径，不累积
 
+### 5.4 时钟多列数据 → Dashboard 违例分析 (v5.0)
+
+Dashboard 违例分析页 (`#chartTiming`) 支持两种模式：
+
+| 模式             | 切换                 | metric 选择  | clock 选择   | 渲染方式              |
+|------------------|----------------------|--------------|--------------|-----------------------|
+| **时序分析模式** | 关闭"按指标聚合"开关  | 单选         | 单选         | 一张图                 |
+| **违例分析模式** | 开启"按指标聚合"开关  | 多选         | **多选**     | **每个 clock 并排一张子图**（v5.0 新增） |
+
+> v4.x 仅支持 clock 单选, v5.0 升级为多选, 选中的每个 clock 都会独立渲染一张折线/柱状图, 容器使用 flex 横向排版.
+
+**子图布局规则**:
+
+| 选中的 clock 数 | 子图宽度                  | 子图高度 |
+|-----------------|---------------------------|----------|
+| 1               | 100%                      | 500px    |
+| 2               | 50% - 6px                 | 460px    |
+| 3               | 33.33% - 8px              | 400px    |
+| ≥ 4             | 50% - 6px (自动换行)      | 380px    |
+
+**多 clock 数据来源**:
+
+- 单条 `QorRecord` 的 `extra_fields` 中以 `<CLOCK>_wns / <CLOCK>_tns / <CLOCK>_period` 存储
+- 或上传 `data_type=qor` 时, CSV 含 `<CLOCK>_period / <CLOCK>_wns / <CLOCK>_tns / <CLOCK>_path` 列
+- 多 clock 列名示例如：`SRAMCLK_wns`、`CLK_CPU_tns`、`SYS_CLK_period`
+
+**JSON 解析层** (`qor_parser.py`):
+
+```python
+CLOCK_FIELD_PATTERN = re.compile(
+    r'^(.+?)_(hold_wns|hold_tns|hold_path|period|wns|tns|path)$',
+    re.IGNORECASE,
+)
+```
+
+- 第一个下划线前的部分作为 clock 名（可含下划线, 非贪婪匹配）
+- 字段后缀仅识别 `period / wns / tns / path / hold_wns / hold_tns / hold_path`
+
 ---
 
 ## 6. Run 备注 CSV（data_type=notes）
@@ -345,6 +535,7 @@ Content-Type: multipart/form-data
 | module_id      | -    | 模块 ID（不传则从 CSV 的 module_name 识别）         |
 | mark_released  | -    | `1` 则上传后标记为已发布                            |
 | full_dir       | -    | Run 目录路径（仅 notes 类型有效）                   |
+| release_dir    | -    | 发布目录（v5.0，仅 qor 类型有效，整批覆盖）         |
 
 ### 7.2 程序化提交 QoR JSON
 
@@ -363,6 +554,7 @@ Content-Type: application/json
       "module_name": "cpu_top",
       "version": "v1.0",
       "full_dir": "/proj/runs/cpu/v1.0",
+      "release_dir": "/proj/runs/cpu/v1.0",
       "area_total": 12345.6,
       "wns_setup": -0.123,
       "congestion_h": 0.16,
@@ -379,6 +571,65 @@ GET /api/run_notes?module_id=5&version=v1.0&full_dir=/scratch/runs/v1.0
 ```
 
 返回该 (module, version, full_dir) 的所有备注项。`full_dir` 可选，不传则返回所有目录的备注。
+
+### 7.4 模块协作 API（v5.0 新增）
+
+```
+GET    /api/modules/<id>/collaborators
+POST   /api/modules/<id>/collaborators       # Body: {"user_id": 7}
+DELETE /api/modules/<id>/collaborators/<user_id>
+```
+
+- 仅模块 owner / admin 可管理协作者
+- 只能授权 `owner` 角色用户（viewer 不能成为协作者）
+- 协作者可上传/管理该模块下数据；其他 owner 仍可见该模块的"已发布"数据，但不可写
+
+### 7.5 部署后的健康检查与连通性
+
+```bash
+# 1. 健康检查
+curl -s http://<host>:5000/health   # 应返回 200
+
+# 2. 验证 API Key 有效
+curl -s -H "X-API-Key: qor_xxx" http://<host>:5000/api/v1/projects
+
+# 3. 检查数据库连通 (使用 db_init.py 内置校验)
+python db_init.py --check
+# 期望输出: DB_TYPE + DATABASE_URL + 各项目 DB 文件存在性
+
+# 4. 检查项目库生成情况
+ls -la data/qor_p_*.db   # 应有 1 个主库 + N 个项目库
+```
+
+### 7.6 完整 API 索引
+
+| 端点                                       | 方法 | 认证    | 说明                              |
+|--------------------------------------------|------|---------|-----------------------------------|
+| `/api/v1/upload`                           | POST | upload  | CSV 批量上传                      |
+| `/api/v1/qor/upload`                       | POST | upload  | JSON 形式 QoR 上传                |
+| `/api/v1/qor/record/<id>`                  | GET  | read    | 单条 QoR 记录详情                 |
+| `/api/v1/qor/aggregate`                    | GET  | read    | 目录/模块/版本聚合                |
+| `/api/v1/projects`                         | GET  | read    | 项目列表                          |
+| `/api/v1/projects`                         | POST | upload  | 创建项目                          |
+| `/api/v1/projects/<id>`                    | GET  | read    | 项目详情                          |
+| `/api/v1/projects/<id>/members`            | GET/POST/DELETE | upload | 项目成员管理        |
+| `/api/v1/modules`                          | GET  | read    | 模块列表                          |
+| `/api/v1/modules/<id>`                     | GET  | read    | 模块详情                          |
+| `/api/v1/modules/<id>/collaborators`       | GET/POST/DELETE | upload | 模块协作（v5.0）       |
+| `/api/v1/admin/records/<id>/release`       | POST | admin   | 发布/撤回 QoR 记录                |
+| `/api/v1/admin/qor/<id>/release`           | POST | admin   | 发布/撤回 QoR 记录（短路径）      |
+| `/api/v1/admin/projects/<id>`              | DELETE | admin | 软删除项目                       |
+| `/api/v1/admin/projects/<id>/hard_delete`  | POST | admin   | 硬删除项目（confirm=true）        |
+| `/api/v1/admin/projects/<id>/restore`      | POST | admin   | 恢复软删除项目                    |
+| `/api/v1/locks`                            | GET/POST/DELETE | upload | 数据锁管理                |
+| `/api/v1/apikeys`                          | GET/POST/DELETE | read | API Key 管理                 |
+| `/api/v1/alerts/rules`                     | GET/POST/DELETE | upload | 告警规则管理               |
+| `/api/v1/alerts/events`                    | GET  | read    | 告警事件                          |
+| `/api/run_notes`                           | GET  | read    | 获取 Run 备注                     |
+| `/api/qor_data`                            | GET  | read    | QoR 数据查询                      |
+| `/api/v1/user/theme`                       | GET/POST | session | 用户主题                  |
+
+> 短路径与蓝图路径同时存在（如 `/api/admin/qor/<id>/release` 与 `/api/admin/records/<id>/release`），前者是历史兼容路径，后者是 v3.x 起的标准。
 
 ---
 
@@ -800,15 +1051,15 @@ Draft → Submitted → Approved
                  ↘ Rejected → (修订后) → Re-Submitted → Approved
 ```
 
-### 19.3 权限
+### 19.3 权限（v5.0 更新）
 
 | 角色     | 权限                                  |
 |----------|---------------------------------------|
 | admin    | 所有项目所有操作                      |
-| owner    | 项目内所有操作                        |
-| editor   | 提交 / 修订                            |
-| viewer   | 只读                                  |
-| release  | 查看所有数据 + 访问对比页 + 管理自己 release 的记录 (撤回) |
+| owner    | 自己/协作模块的所有操作 + 授权协作者  |
+| viewer   | 只读 + 仅看已发布数据                 |
+
+> v4.x 的 `editor` 角色已合并入 `owner`. v4.x 的 `release` 角色已自动迁移为 `owner`. 现有 release 用户的发布/撤回权限保留.
 
 ### 19.4 页面
 
@@ -825,6 +1076,185 @@ GET /review
 
 ---
 
-**文档版本**: 4.0
-**最后更新**: 2026-07-28（v4.0: 按项目分库 + 多后端切换 + MongoDB dual-write）
+## 20. 实际环境部署清单（v5.0）
+
+> 本节是 IC 团队在生产环境部署时必须完成的检查清单. 部署顺序: IT 部署服务 → 应用管理员初始化数据 → 业务用户提交数据.
+
+### 20.1 部署前确认
+
+| 项                                          | 说明                                                                | 必填 |
+|---------------------------------------------|---------------------------------------------------------------------|------|
+| 服务器 IP / 域名                            | 反代后用户访问的地址                                                | ✅   |
+| Linux 发行版                                | Ubuntu 20.04+ / Debian 11+ / CentOS 8+ / Rocky 8+                  | ✅   |
+| Python 3.9+ 与 venv                        | 避免污染系统 Python                                                 | ✅   |
+| 数据库后端                                  | SQLite (默认) / MySQL / MongoDB, 选定后写入 `.env` 的 `DB_TYPE`     | ✅   |
+| Nginx + Let's Encrypt / 自签证书           | HTTPS 终止 + 静态资源加速                                          | ⭕   |
+| SECRET_KEY 强随机值                         | `openssl rand -hex 32`, 必须非默认                                  | ✅   |
+| `.env` 权限                                | `chmod 640`, `chown qor:qor`                                        | ✅   |
+
+### 20.2 部署步骤（精简版）
+
+```bash
+# 1. 创建用户与目录
+sudo useradd -r -s /sbin/nologin -M -d /opt/qor_recorder qor
+sudo mkdir -p /opt/qor_recorder && sudo chown qor:qor /opt/qor_recorder
+
+# 2. 部署代码
+cd /opt/qor_recorder
+sudo -u qor git clone <your-repo-url> .
+
+# 3. 安装依赖
+sudo -u qor python3 -m venv venv
+sudo -u qor bash -c 'source venv/bin/activate && pip install -r requirements.txt'
+
+# 4. 写 .env (关键 4 项)
+sudo -u qor cp .env.example .env
+SECRET=$(openssl rand -hex 32)
+sudo -u qor bash -c "cat >> .env <<EOF
+SECRET_KEY=$SECRET
+HOST=127.0.0.1
+DEBUG=0
+SESSION_COOKIE_SECURE=1
+DB_TYPE=sqlite
+EOF"
+
+# 5. 创建数据/上传/备份目录
+sudo -u qor mkdir -p data uploads backups logs
+
+# 6. 初始化数据库 (含 admin/release/viewer 默认账户)
+sudo -u qor bash -c 'source venv/bin/activate && python db_init.py'
+
+# 7. 安装 systemd 单元
+sudo cp deploy/qor_recorder.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now qor_recorder
+
+# 8. 配置 Nginx 反代 (参考 deploy/README.md §7)
+sudo cp deploy/nginx/qor_recorder.conf /etc/nginx/conf.d/
+sudo nginx -t && sudo systemctl reload nginx
+
+# 9. (可选) 配置 HTTPS 证书
+sudo certbot --nginx -d qor.example.com
+
+# 10. 验证
+curl -s http://localhost/health
+curl -s -H "X-API-Key: $(cat /home/qor/.qor_api_key)" http://localhost/api/v1/projects
+```
+
+### 20.3 应用管理员（IC 团队）首次使用
+
+部署完成, IT 移交后, 应用管理员需执行:
+
+```bash
+# 1. 登录 Web, 修改默认密码
+#    admin  / admin@2026   → 强密码
+#    release / release@2026 → 强密码
+#    viewer  / viewer@2026  → 强密码
+#    (首次登录强制跳转 /change_password)
+
+# 2. 创建 API Key (用于 DC 流程自动化上传)
+#    管理 → API Key → 创建 → name=dc-bot, scope=upload
+#    保存到:
+#    echo "qor_xxx" > /home/dc/.qor_api_key && chmod 600 /home/dc/.qor_api_key
+
+# 3. 创建项目 (与 IC 项目代号一致)
+#    管理 → 项目 → 新建
+#    自动生成 qor_p_<id>.db
+
+# 4. 创建模块 (与 RTL 顶层模块名一致)
+#    管理 → 项目 → 进入 → 模块 → 新建
+#    填写 owner_id (数据归属人) + collaborators (协作者)
+
+# 5. 邀请协作者 / 客户
+#    协作者: 创建 owner 角色用户, 在模块中授权
+#    客户:   创建 viewer 角色用户, 推已发布数据后, 仅 viewer 可见
+```
+
+### 20.4 业务用户（综合工程师）集成
+
+将 `scripts/Makefile.example` 复制到 DC run 目录, 修改 `PROJECT_ID` / `API_KEY_FILE`:
+
+```makefile
+# Makefile (简化)
+PROJECT_ID = 1
+API_KEY_FILE = /home/dc/.qor_api_key
+UPLOAD_SCRIPT = /opt/qor_recorder/scripts/upload_qor.sh
+QOR_CSV = $(PWD)/qor_report.csv
+VIOLATION_CSVS = $(wildcard $(PWD)/violations/*_violations.csv)
+RUN_DIR = $(PWD)
+```
+
+```bash
+# DC 综合流程结束后
+make upload-all   # 上传 QoR + 功耗 + 违例 + 备注
+make release      # 上传并标记为已发布 (对外可见)
+```
+
+### 20.5 部署后常见错误速查
+
+| 错误现象                                                    | 原因                                          | 解决                                                            |
+|------------------------------------------------------------|-----------------------------------------------|-----------------------------------------------------------------|
+| 启动报错 `SECRET_KEY is not set`                          | `.env` 未配置或仍为默认值                    | 编辑 `.env`, `SECRET_KEY=$(openssl rand -hex 32)`               |
+| 首次登录后所有写操作返回 403                               | `must_change_password=True`                  | 走 `/change_password` 改密后自动清除                           |
+| 上传 400 `data not allowed`                                | CSRF 校验失败                                 | 用 API Key 认证 (`X-API-Key: ...`)                              |
+| 违例分析页 clock 列表为空                                  | CSV 没有 `<CLOCK>_*` 列                       | 添加多时钟列, 或在 QoR 上传后使用页面再确认                    |
+| 客户 viewer 登录后看到空白                                  | 数据未发布                                    | admin / owner 在管理 → 记录管理 → 批量发布                     |
+| 切换 `DB_TYPE=mongodb` 后启动失败                          | `MONGODB_URI` 未配置                          | 编辑 `.env`, `MONGODB_URI=mongodb://...`                       |
+| 项目库 `qor_p_<id>.db` 损坏                                | Windows 文件锁 / 异常中断                     | 关闭所有连接, 用 `backups/` 恢复                                |
+| Docker 部署后 502 Bad Gateway                              | 应用未启动 / 端口错                           | `docker logs qor_recorder` 排查                                |
+| Nginx 502 + SELinux 阻止                                   | RHEL 系常见                                   | `sudo setsebool -P httpd_can_network_connect 1`                |
+
+### 20.6 升级到 v5.0 的迁移
+
+从 v4.x 升级时, 启动会自动完成:
+
+1. **角色迁移**: `user` / `release` → `owner` (启动时 SQL 一行)
+2. **默认账户创建**: 若不存在 `viewer / viewer@2026`, 自动创建
+3. **字段补全**: `modules.owner_id` / `modules.collaborators` 字段新增 (Alembic 迁移)
+4. **API Key 表**: 已存在, 无需迁移
+5. **历史数据**: 完全保留, 无破坏性变更
+
+回滚方案:
+
+```bash
+# 1. 停止应用
+sudo systemctl stop qor_recorder
+
+# 2. 恢复 v4.x 代码
+cd /opt/qor_recorder
+sudo -u qor git checkout v4.x
+
+# 3. 恢复数据库 (迁移前已备份)
+sudo -u qor cp backups/main_<date>.db data/qor_recorder.db
+sudo -u qor cp backups/qor_p_*.db data/
+
+# 4. 启动
+sudo systemctl start qor_recorder
+```
+
+### 20.7 客户/只读用户（viewer）交付清单
+
+实际部署常需要给客户/跨团队开 viewer 账号:
+
+```bash
+# 1. 管理员创建 viewer 用户
+#    管理 → 用户管理 → 新建 → role=viewer
+
+# 2. (可选) 限制 viewer 可见项目: 用 DashboardGroup + is_public=True
+#    只有 is_public=True 的组对所有登录用户可见
+
+# 3. 推已发布数据: admin / owner 在管理 → 记录管理批量发布
+#    viewer 仅能看到 is_released=True 的记录
+
+# 4. 提供给客户:
+#    URL: https://qor.example.com/login
+#    账号: viewer_xxx
+#    密码: 强密码 (强制首登改密)
+#    可见: 仅已发布数据, 无上传/管理权限
+```
+
+---
+
+**文档版本**: 5.0
+**最后更新**: 2026-07-30（v5.0: 三级角色模型 + 模块协作 + 时钟多选）
 **维护**: QoR Recorder Team

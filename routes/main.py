@@ -83,7 +83,7 @@ def qor_record_detail_page(record_id):
     """QoR 记录详情页 (v5.0)
 
     - admin / owner: 可查看所有记录
-    - viewer: 仅可看已发布记录 (未发布 404)
+    - viewer: 仅可看已发布记录 (未发布 404); 不受 ProjectMember 限制 (本身无项目角色)
     """
     from models import QorRecord, ProjectMember
     # QorRecord 在项目库, 需先跨项目库定位 + 切上下文, 否则 get_or_404 会 404
@@ -96,10 +96,12 @@ def qor_record_detail_page(record_id):
         rec = QorRecord.query.get(record_id)
     if rec is None:
         abort(404)
-    # v5.0 viewer: 未发布记录视同不存在
-    if current_user.is_viewer and not rec.is_released:
-        abort(404)
-    if not current_user.is_admin and not current_user.is_release and not current_user.is_owner:
+    # v5.0 viewer: 未发布记录视同不存在 (不受 ProjectMember 限制)
+    if current_user.is_viewer:
+        if not rec.is_released:
+            abort(404)
+    elif not current_user.is_admin and not current_user.is_release and not current_user.is_owner:
+        # 其它角色: 需是项目成员
         member = ProjectMember.query.filter_by(
             project_id=rec.module.project_id, user_id=current_user.id,
         ).first()

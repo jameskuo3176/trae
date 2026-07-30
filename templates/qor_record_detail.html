@@ -36,12 +36,28 @@
             <code id="pathReleaseDir"
                 style="background:var(--color-surface-hover); padding:4px 8px; border-radius:4px; font-size:12px; flex:1; min-width:200px; word-break:break-all;">-</code>
             <span id="releaseDirStatus" class="tag" style="background:#e0e0e0; color:#666;">未发布</span>
+            {% if not user.is_viewer %}
             <button class="btn btn-sm btn-default" id="btnEditReleaseDir"
                 onclick="editReleaseDir()"
                 title="修改 release_dir (留空则使用 full_dir)">✏️ 编辑</button>
+            {% endif %}
         </div>
         <div style="margin-top:6px; font-size:11px; color:var(--color-text-secondary);" id="releaseDirHint">
             发布时若未提供 release_dir, 将以 full_dir 兜底. 留空字符串可清空.
+        </div>
+    </div>
+
+    <!-- 版本描述: owner 可填, viewer 只读 -->
+    <div class="card" style="margin-top:8px; padding:10px 14px;">
+        <div style="display:flex; align-items:flex-start; gap:10px;">
+            <span style="font-size:12px; color:var(--color-text-secondary); font-weight:500; flex-shrink:0; padding-top:2px;">📝 版本描述</span>
+            <div id="versionDescriptionContent"
+                style="flex:1; min-height:24px; font-size:13px; line-height:1.5; color:var(--color-text); white-space:pre-wrap; word-break:break-word;">-</div>
+            {% if not user.is_viewer %}
+            <button class="btn btn-sm btn-default" onclick="editVersionDescription()"
+                style="flex-shrink:0;"
+                title="编辑版本描述 (owner 可填, viewer 只读)">✏️ 编辑</button>
+            {% endif %}
         </div>
     </div>
 
@@ -238,7 +254,9 @@
         'area_total': '总面积', 'area_combinational': '组合面积', 'area_sequential': '时序面积',
         'area_black_box': '黑盒面积', 'area_macro': '宏面积',
         'cell_count': 'Cell 数', 'instance_count': 'Instance 数', 'net_count': 'Net 数', 'sequential_cell_count': '时序 Cell',
-        'wns_setup': 'WNS Setup', 'tns_setup': 'TNS Setup', 'nvp_setup': 'NVP Setup',
+        // wns_setup / tns_setup / nvp_setup 是从 clocks 派生的 (原始 CSV 应为 <CLK>_wns/_tns/_path)
+        'wns_setup': 'WNS Setup (派生)', 'tns_setup': 'TNS Setup (派生)', 'nvp_setup': 'NVP Setup (派生)',
+        // wns_hold / tns_hold / nvp_hold 原始 CSV 不带, 留空; 仅当 CSV 显式传列时才有值
         'wns_hold': 'WNS Hold', 'tns_hold': 'TNS Hold', 'nvp_hold': 'NVP Hold',
         'power_total': '总功耗', 'power_internal': '内部功耗', 'power_switching': '开关功耗', 'power_leakage': '漏电功耗',
         'mbb_ratio': 'MBB 合并率', 'clock_gating_ratio': 'CG 覆盖率', 'utilization': '利用率',
@@ -323,6 +341,9 @@
 
         // Release 目录展示
         renderReleaseDir(rec);
+
+        // 版本描述展示
+        renderVersionDescription(rec);
 
         // 关键指标卡片
         const setM = (id, v, good) => {
@@ -657,41 +678,113 @@
         }
     }
 
+    // 渲染版本描述
+    function renderVersionDescription(rec) {
+        const el = document.getElementById('versionDescriptionContent');
+        if (!el) return;
+        if (rec.version_description && rec.version_description.trim()) {
+            el.textContent = rec.version_description;
+            el.style.color = 'var(--color-text)';
+            el.style.fontStyle = 'normal';
+        } else {
+            el.textContent = '(未设置) 点击右侧编辑添加版本描述...';
+            el.style.color = 'var(--color-text-secondary)';
+            el.style.fontStyle = 'italic';
+        }
+    }
+
+    // 编辑版本描述 (owner 可填, viewer 只读, 数据结构无法统一, 专门为此场景而设)
+    // 多行: 支持 textarea 换行 (Ctrl+Enter 提交, Esc 取消)
+    async function editVersionDescription() {
+        const rec = window._record;
+        if (!rec) return;
+        const current = rec.version_description || '';
+        AppUI.inputDialog({
+            title: '编辑版本描述',
+            label: '请输入版本描述 (特点/改动/注意事项), 支持多行:',
+            defaultValue: current,
+            placeholder: '例如:\n  · 修复 hold 违例\n  · 优化 IR drop\n  · 新增模块 X',
+            multiline: true,
+            rows: 8,
+            submitLabel: '保存',
+            onSubmit: async function (input) {
+                if (input === undefined) return; // 取消
+                const newVal = input.replace(/\r\n/g, '\n').trim();
+                try {
+                    const resp = await fetch(`/api/admin/qor/${rec.id}/description`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ description: newVal })
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        const msg = err.error || `HTTP ${resp.status}`;
+                        alert('修改失败: ' + msg + (err.must_change_password
+                            ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
+                        return;
+                    }
+                    const r = await resp.json();
+                    rec.version_description = r.version_description || '';
+                    window._record = rec;
+                    renderVersionDescription(rec);
+                    AppUI.toast('✓ 版本描述已更新', 'success');
+                } catch (e) {
+                    console.error('editVersionDescription error:', e);
+                    alert('修改出错: ' + e.message + '\n(请检查网络/服务是否正常)');
+                }
+            }
+        });
+    }
+
     // 编辑 release_dir (调用独立 API, 不影响 is_released)
+    // 多行: 支持 textarea 换行 (Ctrl+Enter 提交, Esc 取消)
+    // 提交时取首行 (trim 后第一个非空行) 作为 release_dir, 其它行作为备注保留在 placeholder
     async function editReleaseDir() {
         const rec = window._record;
         if (!rec) return;
         const current = rec.release_dir || '';
-        const input = prompt(
-            '请输入 release_dir (对外发布目录):\n  · 留空字符串将清空 (后续以 full_dir 兜底)\n  · 当前值: ' + (current || '(未设置)'),
-            current
-        );
-        if (input === null) return; // 取消
-        const newVal = input.trim();
-        try {
-            const resp = await fetch(`/api/admin/qor/${rec.id}/release_dir`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ release_dir: newVal })
-            });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                const msg = err.error || `HTTP ${resp.status}`;
-                alert('修改失败: ' + msg + (err.must_change_password
-                    ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
-                return;
+        // 编辑时, 把当前 release_dir 放进 textarea 第一行
+        // 用户可以在后面追加备注 (保存时只取首行)
+        AppUI.inputDialog({
+            title: '编辑 Release 目录',
+            label: '请输入 release_dir (对外发布目录). 留空字符串将清空, 后续以 full_dir 兜底.',
+            defaultValue: current,
+            placeholder: '/test/dir/from/api/dfdfdf\n\n支持多行说明 (如备注/注意事项), 提交时只取首行作为 release_dir',
+            multiline: true,
+            rows: 5,
+            submitLabel: '保存',
+            onSubmit: async function (input) {
+                if (input === undefined) return; // 取消
+                // 取首行非空内容
+                const lines = (input || '').split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 0);
+                const newVal = lines.length > 0 ? lines[0] : '';
+                try {
+                    const resp = await fetch(`/api/admin/qor/${rec.id}/release_dir`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ release_dir: newVal })
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        const msg = err.error || `HTTP ${resp.status}`;
+                        alert('修改失败: ' + msg + (err.must_change_password
+                            ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
+                        return;
+                    }
+                    const r = await resp.json();
+                    // 更新本地记录
+                    rec.release_dir = r.release_dir || '';
+                    rec.release_dir_effective = r.release_dir_effective || rec.full_dir || '';
+                    window._record = rec;
+                    renderReleaseDir(rec);
+                    renderVersionDescription(rec);
+                    AppUI.toast('✓ release_dir 已更新: ' + (r.release_dir || '(空, fallback 到 full_dir)'), 'success');
+                } catch (e) {
+                    console.error('editReleaseDir error:', e);
+                    alert('修改出错: ' + e.message + '\n(请检查网络/服务是否正常)');
+                }
             }
-            const r = await resp.json();
-            // 更新本地记录
-            rec.release_dir = r.release_dir || '';
-            rec.release_dir_effective = r.release_dir_effective || rec.full_dir || '';
-            window._record = rec;
-            renderReleaseDir(rec);
-            AppUI.toast('✓ release_dir 已更新: ' + (r.release_dir || '(空, fallback 到 full_dir)'), 'success');
-        } catch (e) {
-            console.error('editReleaseDir error:', e);
-            alert('修改出错: ' + e.message + '\n(请检查网络/服务是否正常)');
-        }
+        });
     }
 
     function copyRawCsvRow() {

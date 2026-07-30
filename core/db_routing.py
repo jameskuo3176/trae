@@ -173,8 +173,12 @@ def setup_binds(app):
         if not os.path.exists(project_db_path(pid)):
             try:
                 create_project_db(pid)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging as _lg
+                _lg.getLogger('db_routing').error(
+                    'create_project_db(%s) failed: %s', pid, e, exc_info=True,
+                )
+                raise
         return get_project_engine(pid)
 
     _fs_session.Session.get_bind = _patched_get_bind
@@ -242,6 +246,18 @@ def setup_binds(app):
                         '(current_project_id=None) 且无任何项目库'
                     )
                 pid = dbs[0]['project_id']
+            # 确保项目库存在, 否则自动创建 (与 _patched_get_bind 行为一致)
+            from core.project_db import project_db_path, create_project_db
+            if not os.path.exists(project_db_path(pid)):
+                try:
+                    create_project_db(pid)
+                except Exception as e:
+                    import logging as _lg
+                    _lg.getLogger('db_routing').error(
+                        'do_orm_execute: create_project_db(%s) failed: %s', pid, e,
+                        exc_info=True,
+                    )
+                    raise
             bind_arguments['bind'] = get_project_engine(pid)
 
 

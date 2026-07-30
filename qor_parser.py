@@ -166,8 +166,27 @@ def build_alias_lookup():
 
 ALIAS_LOOKUP = build_alias_lookup()
 
-# 多时钟列匹配模式: {CLOCKNAME}_{period|wns|tns|path}
-CLOCK_FIELD_PATTERN = re.compile(r'^(.+?)_(period|wns|tns|path)$', re.IGNORECASE)
+# 多时钟列匹配模式: {CLOCKNAME}_{period|wns|tns|path|hold_wns|hold_tns|hold_path}
+# 注意: hold_* 必须放最前, 否则非贪婪匹配会截成 {CLOCKNAME='SYS_CLK_hold' field='wns'}
+CLOCK_FIELD_PATTERN = re.compile(
+    r'^(.+?)_(hold_wns|hold_tns|hold_path|period|wns|tns|path)$',
+    re.IGNORECASE
+)
+
+
+# 接口类时钟 (累加 TNS / 路径数时排除, 违例/余量都不计入主指标)
+# - 业务规则: 接口时钟的违例由外部协议决定, 不应反映到 chip 内部时序聚合
+# - 支持子串匹配 (大写): "I2C_CLK" / "I2C_BUS" 都会命中
+# - 留空可关闭此规则: 设为 []
+EXCLUDED_CLOCK_PATTERNS = ['I2C', 'C2O', 'I2O']
+
+
+def _is_excluded_clock(clock_name):
+    """判断某时钟是否属于"接口类", 累加时排除"""
+    if not EXCLUDED_CLOCK_PATTERNS:
+        return False
+    n = (clock_name or '').upper()
+    return any(pat.upper() in n for pat in EXCLUDED_CLOCK_PATTERNS)
 
 
 def is_null_value(value):
@@ -503,41 +522,64 @@ def parse_csv_file(file_content_bytes, default_project=None, default_module=None
             # 提取多时钟数据
             if clock_cols:
                 clock_data = {}
-                all_wns = []
-                all_tns = []
+                all_wns = []                # 所有时钟 wns (含正数, 仅用于 min 聚合)
+                all_tns_for_sum = []        # 用于 sum 聚合的 tns (排除接口 + 正数按 0)
+                all_path_for_sum = []       # 用于 sum 聚合的 path (排除接口)
+                excluded_clocks = []        # 调试/统计: 本行被排除的时钟
                 for clock_name, fields in clock_cols.items():
                     cd = {}
+                    excluded = _is_excluded_clock(clock_name)
                     for ftype, cidx in fields.items():
                         if cidx < len(row):
                             raw_val = row[cidx]
                             if raw_val is not None:
                                 raw_val = raw_val.strip()
-                            if ftype in ('wns', 'tns', 'period'):
+                            if ftype in ('wns', 'tns', 'period', 'hold_wns', 'hold_tns'):
                                 parsed = parse_float(raw_val)
                                 if parsed is not None:
                                     cd[ftype] = parsed
                                     if ftype == 'wns':
                                         all_wns.append(parsed)
                                     elif ftype == 'tns':
-                                        all_tns.append(parsed)
-                            elif ftype == 'path':
-                                # path 实际是违例路径数量 (>=0 的整数)
+                                        if not excluded:
+                                            all_tns_for_sum.append(min(0.0, parsed))
+                                    # hold_wns/hold_tns 不参与 setup 聚合
+                            elif ftype in ('path', 'hold_path'):
                                 parsed = parse_int(raw_val)
                                 if parsed is not None:
                                     cd[ftype] = parsed
+                                    if ftype == 'path' and not excluded:
+                                        all_path_for_sum.append(parsed)
+                                    # hold_path 不参与 setup 聚合
                     if cd:
                         clock_data[clock_name] = cd
+                        if excluded:
+                            excluded_clocks.append(clock_name)
 
                 if clock_data:
                     extra_fields['clocks'] = clock_data
-                    # 提升最差 WNS (最负值) 到标准字段
+                    if excluded_clocks:
+                        extra_fields['excluded_clocks'] = excluded_clocks
+                    # 从 clocks 派生"汇总"指标 (原始 CSV 通常不含 wns_setup/tns_setup/nvp_setup)
+                    # 派生规则:
+                    #   wns_setup = min(wns)                 最差 (最负) 时钟的 WNS
+                    #   tns_setup = sum(min(0, tns_i))       所有非接口时钟 TNS 之和 (正数按 0, 余量不补偿违例)
+                    #   nvp_setup = sum(path)                所有非接口时钟违例路径数之和
                     if all_wns and record.get('wns_setup') is None:
                         record['wns_setup'] = min(all_wns)
                         has_valid_data = True
-                    # 提升总 TNS (所有时钟之和) 到标准字段
-                    if all_tns and record.get('tns_setup') is None:
-                        record['tns_setup'] = sum(all_tns)
+                    if all_tns_for_sum and record.get('tns_setup') is None:
+                        record['tns_setup'] = sum(all_tns_for_sum)
                         has_valid_data = True
+                    elif not all_tns_for_sum and record.get('tns_setup') is None:
+                        # 所有时钟均为接口, tns_setup 留 None
+                        pass
+                    if all_path_for_sum and record.get('nvp_setup') is None:
+                        record['nvp_setup'] = sum(all_path_for_sum)
+                        has_valid_data = True
+                    # hold 字段 (wns_hold/tns_hold/nvp_hold) 原始 CSV 不带 hold 数据, 留空:
+                    # 若用户 CSV 显式传了 wns_hold/tns_hold/nvp_hold 列, 上面的标准字段提取已写入
+                    # 若用户有 *_hold_wns 之类扩展, 可在此添加; 当前先按"无 hold 数据"处理
 
             # 跳过所有映射字段均为空的行
             if not has_valid_data:
@@ -611,9 +653,19 @@ def _normalize_col_name(name):
 
 
 def _build_violation_field_map(headers):
-    """构建违例 CSV 列名到标准字段的映射"""
+    """构建违例 CSV 列名到标准字段的映射
+
+    元数据列 (module_name / version / full_dir) 也尝试识别,
+    便于按 (module, version) 关联到已有的 QorRecord
+    """
     field_map = {}
-    for std_field, aliases in VIOLATION_FIELD_ALIASES.items():
+    # 元数据列额外识别
+    extra_field_aliases = {
+        'module_name': ['module', 'module_name', 'module name', 'design'],
+        'version': ['version', 'ver', 'commit', 'revision', 'tag'],
+        'full_dir': ['full_dir', 'fulldir', 'full dir', 'directory', 'path', 'run_dir'],
+    }
+    for std_field, aliases in {**VIOLATION_FIELD_ALIASES, **extra_field_aliases}.items():
         norm_aliases = [_normalize_col_name(a) for a in aliases]
         for i, h in enumerate(headers):
             nh = _normalize_col_name(h)
@@ -815,25 +867,45 @@ def parse_notes_csv(content, filename=None, default_full_dir=None):
     if len(rows) < 1:
         return {'records': [], 'stats': stats}
 
-    # 解析表头, 识别 item / description / full_dir 列
+    # 解析表头, 识别 item / description / full_dir / module_name / version 列
     headers = [h.strip() if h else '' for h in rows[0]]
     item_col = None
     desc_col = None
     fulldir_col = None
+    module_col = None
+    version_col = None
+
+    # 标准化别名集, 与 _normalize_col_name 保持一致
+    ITEM_NH = frozenset(_normalize_col_name(x) for x in
+                        ('item', 'name', 'key', 'parameter', 'param', '参数', '项目', '名称'))
+    DESC_NH = frozenset(_normalize_col_name(x) for x in
+                         ('description', 'desc', 'value', 'val', 'note', 'notes', 'comment',
+                          'detail', 'content', '说明', '描述', '内容', '备注', '值'))
+    FULLDIR_NH = frozenset(_normalize_col_name(x) for x in
+                           ('full_dir', 'fulldir', 'full_dir_path', 'dir', 'directory', 'path',
+                            '目录', '路径', 'run_dir', 'rundir'))
+    MODULE_NH = frozenset(_normalize_col_name(x) for x in
+                          ('module_name', 'module', 'design', 'design_name', 'top_module'))
+    VERSION_NH = frozenset(_normalize_col_name(x) for x in
+                           ('version', 'ver', 'commit', 'revision', 'tag'))
 
     for i, h in enumerate(headers):
         nh = _normalize_col_name(h)
-        if nh in ('item', 'name', 'key', 'parameter', 'param', '参数', '项目', '名称'):
+        if nh in ITEM_NH:
             if item_col is None:
                 item_col = i
-        elif nh in ('description', 'desc', 'value', 'val', 'note', 'notes', 'comment',
-                    'detail', 'content', '说明', '描述', '内容', '备注', '值'):
+        elif nh in DESC_NH:
             if desc_col is None:
                 desc_col = i
-        elif nh in ('full_dir', 'fulldir', 'full_dir_path', 'dir', 'directory', 'path',
-                    '目录', '路径', 'run_dir', 'rundir'):
+        elif nh in FULLDIR_NH:
             if fulldir_col is None:
                 fulldir_col = i
+        elif nh in MODULE_NH:
+            if module_col is None:
+                module_col = i
+        elif nh in VERSION_NH:
+            if version_col is None:
+                version_col = i
 
     # 若未识别到列名, 按位置映射: 第 1 列 item, 第 2 列 description, 第 3 列 full_dir
     if item_col is None:
@@ -867,11 +939,28 @@ def parse_notes_csv(content, filename=None, default_full_dir=None):
             if not full_dir and default_full_dir:
                 full_dir = str(default_full_dir).strip() or None
 
+            # module_name / version (可选, 用于按 (module, version) 关联 QorRecord)
+            module_name = None
+            if module_col is not None and module_col < len(row):
+                mn_val = str(row[module_col]).strip()
+                if mn_val:
+                    module_name = mn_val
+            version_val = None
+            if version_col is not None and version_col < len(row):
+                ver_val = str(row[version_col]).strip()
+                if ver_val:
+                    version_val = ver_val
+
             if not item and not desc:
                 stats['skipped_empty'] += 1
                 continue
 
-            records.append({'item': item, 'description': desc, 'full_dir': full_dir})
+            rec = {'item': item, 'description': desc, 'full_dir': full_dir}
+            if module_name:
+                rec['module_name'] = module_name
+            if version_val:
+                rec['version'] = version_val
+            records.append(rec)
         except Exception as e:
             logger.warning('备注 CSV 第 %d 行解析失败: %s', row_idx, e)
             stats['errors'] += 1

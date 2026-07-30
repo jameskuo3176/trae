@@ -405,6 +405,11 @@ class QorRecord(db.Model):
     # 上传 CSV 时可携带 release_dir 列, 发布页面亦可单独提交.
     release_dir = db.Column(db.String(500), index=True)
 
+    # ---- 版本描述 (owner 可填写的版本说明) ----
+    # 描述此版本的特点/改动/注意事项等, owner 角色可在页面上编辑,
+    # viewer 角色只读. 数据结构无法统一, 字段专门为此场景而设.
+    version_description = db.Column(db.Text)
+
     def to_dict(self):
         """转换为字典"""
         import json
@@ -433,6 +438,8 @@ class QorRecord(db.Model):
             # release_dir: 用户提交的对外发布目录 (可空); release_dir_effective: 实际生效的目录 (fallback 到 full_dir)
             'release_dir': self.release_dir or '',
             'release_dir_effective': release_dir_effective,
+            # 版本描述 (owner 可在页面上编辑, viewer 只读)
+            'version_description': self.version_description or '',
             # ---- Owner 信息 ----
             'owner_id': self.owner_id,
             'owner_username': self.owner.username if self.owner else None,

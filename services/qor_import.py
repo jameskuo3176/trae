@@ -154,7 +154,11 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                             new_extra = {}
                     if isinstance(new_extra, dict):
                         cur.update(new_extra)
-                    existing.extra_fields = cur
+                    # 序列化为 JSON 字符串 (extra_fields 列是 Text, 不接受 dict)
+                    try:
+                        existing.extra_fields = json.dumps(cur, ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        existing.extra_fields = json.dumps(str(cur), ensure_ascii=False)
                 existing.source_file = sanitize_str(source_filename) or existing.source_file
                 _ef = existing.extra_fields
                 if isinstance(_ef, str):
@@ -285,8 +289,19 @@ def merge_power_to_db(records, project, module_id, version, source_filename,
                         cur_extra = json.loads(cur_extra)
                     except Exception:
                         cur_extra = {}
-                cur_extra.update(record['extra_fields'])
-                existing.extra_fields = cur_extra
+                new_extra = record['extra_fields']
+                if isinstance(new_extra, str):
+                    try:
+                        new_extra = json.loads(new_extra)
+                    except Exception:
+                        new_extra = {}
+                if isinstance(new_extra, dict):
+                    cur_extra.update(new_extra)
+                # 序列化为 JSON 字符串 (extra_fields 列是 Text, 不接受 dict)
+                try:
+                    existing.extra_fields = json.dumps(cur_extra, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    existing.extra_fields = json.dumps(str(cur_extra), ensure_ascii=False)
                 updated_any = True
 
             if updated_any:

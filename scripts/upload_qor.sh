@@ -71,6 +71,7 @@ usage() {
 选项 (可放在任意位置):
   --release             上传后立即标记为已发布 (对 release 账号可见)
   --full-dir <DIR>      Run 目录路径 (用于 notes, 区分同 module+version 下的不同 run)
+  --release-dir <DIR>   发布目录 (v5.0, 仅 qor 类型有效, 整批覆盖)
   --module-id <ID>      模块 ID (覆盖 QOR_MODULE_ID 环境变量)
   --server <URL>        服务器地址 (覆盖 QOR_SERVER 环境变量)
   -h, --help            显示本帮助
@@ -81,11 +82,13 @@ usage() {
   QOR_MODULE_ID         模块 ID
   QOR_RELEASE=1         等同 --release
   QOR_FULL_DIR          等同 --full-dir
+  QOR_RELEASE_DIR       等同 --release-dir (v5.0)
 
 示例:
   export QOR_API_KEY=qor_xxxxxxxx
   ./upload_qor.sh 1 v1.0 qor_report.csv
   ./upload_qor.sh 1 v1.0 run_notes.csv notes --full-dir "$PWD" --release
+  ./upload_qor.sh 1 v1.0 qor.csv qor --release-dir v1.0/main/cpu_core
 EOF
     exit 1
 }
@@ -125,6 +128,10 @@ while [ "$#" -gt 0 ]; do
             OPT_FULL_DIR="${2:-}"
             shift 2 || { echo "[ERROR] --full-dir 需要参数"; exit 1; }
             ;;
+        --release-dir)
+            OPT_RELEASE_DIR="${2:-}"
+            shift 2 || { echo "[ERROR] --release-dir 需要参数"; exit 1; }
+            ;;
         --module-id)
             OPT_MODULE_ID="${2:-}"
             shift 2 || { echo "[ERROR] --module-id 需要参数"; exit 1; }
@@ -157,6 +164,7 @@ API_KEY="${QOR_API_KEY:-}"
 SERVER="${OPT_SERVER:-${QOR_SERVER:-http://localhost:5000}}"
 MODULE_ID="${OPT_MODULE_ID:-${QOR_MODULE_ID:-}}"
 FULL_DIR="${OPT_FULL_DIR:-${QOR_FULL_DIR:-}}"
+RELEASE_DIR="${OPT_RELEASE_DIR:-${QOR_RELEASE_DIR:-}}"
 
 # QOR_RELEASE=1 等同 --release
 if [ "${QOR_RELEASE:-0}" = "1" ]; then
@@ -194,6 +202,11 @@ if [ -n "$FULL_DIR" ]; then
     FORM_ARGS+=(-F "full_dir=$FULL_DIR")
 fi
 
+# qor 类型才传 release_dir (整批覆盖, v5.0)
+if [ -n "$RELEASE_DIR" ] && [ "$DATA_TYPE" = "qor" ]; then
+    FORM_ARGS+=(-F "release_dir=$RELEASE_DIR")
+fi
+
 # --- 上传 ---
 echo "[INFO] 上传 $CSV_FILE -> $SERVER/api/v1/upload"
 echo "       project=$PROJECT_ID version=$VERSION type=$DATA_TYPE release=$MARK_RELEASED"
@@ -202,6 +215,9 @@ if [ -n "$MODULE_ID" ]; then
 fi
 if [ -n "$FULL_DIR" ]; then
     echo "       full_dir=$FULL_DIR"
+fi
+if [ -n "$RELEASE_DIR" ]; then
+    echo "       release_dir=$RELEASE_DIR"
 fi
 
 RESPONSE=$(curl -sS -X POST "$SERVER/api/v1/upload" \

@@ -100,6 +100,10 @@
                         <label style="font-size:12px; display:flex; align-items:center; gap:4px;">
                             <input type="checkbox" id="uploadDirMode"> 整目录上传
                         </label>
+                        <button type="button" class="btn btn-sm btn-default" onclick="downloadCsvTemplate()"
+                            style="font-size:11px;" title="下载含 <CLOCK>_wns/_tns/_path 列的 CSV 模板, 方便对照正确格式">
+                            下载模板 (含时钟列)
+                        </button>
                     </div>
                     <div id="fileList" style="margin-top: 4px; font-size: 12px; color: var(--color-text-secondary);">
                     </div>
@@ -329,6 +333,7 @@
                             <th>版本</th>
                             <th>full_dir (运行目录)</th>
                             <th>release_dir (发布目录)</th>
+                            <th>版本描述 (owner 可填)</th>
                             <th>总面积</th>
                             <th>WNS</th>
                             <th>TNS</th>
@@ -438,7 +443,7 @@
             </div>
             <div class="form-group">
                 <label>密码 *</label>
-                <input type="password" id="newPassword" style="width: 100%;">
+                <input type="password" id="newPassword" data-pw-toggle style="width: 100%; padding-right: 36px;">
             </div>
             <div class="form-group">
                 <label>角色</label>
@@ -1164,7 +1169,45 @@
 
         document.getElementById('previewBtn').onclick = async () => {
             await submitUpload(true);
+        }
+
+        // 下载含 <CLOCK>_wns/_tns/_path 列的 CSV 模板
+        window.downloadCsvTemplate = function() {
+            const header = [
+                'tag', 'full_dir', 'comment',
+                'reg_count', 'comb_count', 'macro_count', 'total_count',
+                'reg_area', 'comb_area', 'macro_area', 'stdcell_area', 'total_area',
+                'no_clock',
+                'SYS_CLK_period', 'SYS_CLK_wns', 'SYS_CLK_tns', 'SYS_CLK_path',
+                'SRAMCLK_period', 'SRAMCLK_wns', 'SRAMCLK_tns', 'SRAMCLK_path',
+                'CLK_CPU_period', 'CLK_CPU_wns', 'CLK_CPU_tns', 'CLK_CPU_path',
+                'I2C_CLK_period', 'I2C_CLK_wns', 'I2C_CLK_tns', 'I2C_CLK_path',
+                'mbb_ratio', 'clock_gating_ratio', 'utilization',
+                'congestion_h', 'congestion_v', 'congestion_b',
+            ];
+            const sampleRow = [
+                'v1.0_baseline', '/proj/demo/work/cpu_core/v1.0', 'cpu_core v1.0 baseline',
+                1234, 5678, 2, 6914, 553.1, 1380.0, 2400.0, 1933.1, 4333.1, 2,
+                '2.000', '-0.150', '-1.230', 30,
+                '2.500', '0.050',  '0.000', 0,
+                '1.250', '-0.080', '-0.460', 12,
+                '10.000','-0.200', '-2.000', 10,
+                '0.150', '0.350', '0.650',
+                '0.120', '0.080', '0.120',
+            ];
+            const csv = header.join(',') + '\n' + sampleRow.join(',') + '\n';
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'qor_template_with_clocks.csv';
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            if (window.AppUI && AppUI.toast) {
+                AppUI.toast('✓ CSV 模板已下载 (含 4 个时钟列示例: SYS_CLK, SRAMCLK, CLK_CPU, I2C_CLK)', 'success');
+            }
         };
+    };
 
         async function submitUpload(isPreview) {
             const fileInput = document.getElementById('uploadFile');
@@ -1289,7 +1332,6 @@
                 result.innerHTML = `<div class="flash-message flash-error">${data.error || '上传失败'}</div>`;
             }
         }
-    }
 
     // ---- 批量创建模块 ----
     async function batchCreateModules() {
@@ -1604,6 +1646,17 @@
                     onclick="event.stopPropagation(); editRecordReleaseDir(${r.id})"
                     title="编辑 release_dir (留空则使用 full_dir 兜底)">✏️</button>
             </td>
+            <td style="max-width:260px; font-size:12px; color:var(--color-text-secondary);">
+                <span id="desc_${r.id}" style="display:inline-block; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:help;"
+                    title="${escapeHtml(r.version_description || '点击右侧编辑按钮添加版本描述')}">
+                    ${r.version_description
+                        ? escapeHtml(r.version_description)
+                        : '<span style="color:#999;">-</span>'}
+                </span>
+                <button class="btn btn-sm btn-default" style="margin-left:4px; padding:0 6px; font-size:11px;"
+                    onclick="event.stopPropagation(); editRecordDescription(${r.id})"
+                    title="编辑版本描述 (owner 可填, viewer 只读)">✏️</button>
+            </td>
             <td>${r.area_total != null ? r.area_total.toFixed(2) : '-'}</td>
             <td>${r.wns_setup != null ? r.wns_setup.toFixed(3) : '-'}</td>
             <td>${r.tns_setup != null ? r.tns_setup.toFixed(3) : '-'}</td>
@@ -1803,6 +1856,59 @@
     function toggleReleaseSelectAll(checkbox) {
         document.querySelectorAll('.release-checkbox').forEach(cb => cb.checked = checkbox.checked);
         updateReleaseSelectionInfo();
+    }
+
+    // 单条: 编辑版本描述 (owner 可填, viewer 只读, 数据结构无法统一, 专门为此场景而设)
+    async function editRecordDescription(id) {
+        let currentRecord = null;
+        try {
+            const r = await fetch(`/api/qor/record/${id}`);
+            if (r.ok) {
+                const d = await r.json();
+                currentRecord = d.record || null;
+            }
+        } catch (e) { /* ignore */ }
+        const current = (currentRecord && currentRecord.version_description) || '';
+        // 多行: 支持 textarea 换行 (Ctrl+Enter 提交, Esc 取消)
+        AppUI.inputDialog({
+            title: '编辑版本描述',
+            label: '请输入版本描述 (特点/改动/注意事项), 支持多行:',
+            defaultValue: current,
+            placeholder: '例如:\n  · 修复 hold 违例\n  · 优化 IR drop\n  · 新增模块 X',
+            multiline: true,
+            rows: 8,
+            submitLabel: '保存',
+            onSubmit: async function (input) {
+                if (input === undefined) return; // 取消
+                const newVal = input.replace(/\r\n/g, '\n').trim();
+                try {
+                    const resp = await fetch(`/api/admin/qor/${id}/description`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ description: newVal })
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        const msg = err.error || `HTTP ${resp.status}`;
+                        alert('修改失败: ' + msg + (err.must_change_password
+                            ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
+                        return;
+                    }
+                    const r = await resp.json();
+                    // 即时刷新行内显示, 不重新拉取
+                    const span = document.getElementById(`desc_${id}`);
+                    if (span) {
+                        span.textContent = r.version_description || '-';
+                        span.title = r.version_description || '点击右侧编辑按钮添加版本描述';
+                        if (!r.version_description) span.innerHTML = '<span style="color:#999;">-</span>';
+                    }
+                    AppUI.toast('✓ 版本描述已更新', 'success');
+                } catch (e) {
+                    console.error('editRecordDescription error:', e);
+                    alert('修改出错: ' + e.message + '\n(请检查网络/服务是否正常)');
+                }
+            }
+        });
     }
 
     function getSelectedRecordIds() {
@@ -2086,6 +2192,10 @@
         document.getElementById('newPassword').value = '';
         document.getElementById('newDisplayName').value = '';
         document.getElementById('addUserModal').style.display = 'flex';
+        // 弹窗内密码输入框首次可见, 绑定明文切换按钮
+        if (window.AppUI && AppUI.attachPasswordToggle) {
+            AppUI.attachPasswordToggle('#addUserModal input[data-pw-toggle]');
+        }
     }
 
     async function createUser() {

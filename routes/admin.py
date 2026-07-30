@@ -1443,7 +1443,11 @@ def admin_toggle_release(record_id):
 
     # 2) 切到该项目库执行操作
     with switch_to_project(project_id):
-        r = QorRecord.query.get(record_id)
+        # 用 project session 直接读写, 避免 db.session 与 project session 事务分离
+        # 之前用 QorRecord.query.get + project_commit 有数据不持久化 bug
+        from core.db_routing import _build_project_session
+        sess = _build_project_session(project_id)
+        r = sess.get(QorRecord, record_id)
         if r is None:
             return jsonify({'error': '记录不存在'}), 404
 
@@ -1531,7 +1535,10 @@ def admin_update_release_dir(record_id):
         return jsonify({'error': 'release_dir 长度不能超过 500'}), 400
 
     with switch_to_project(project_id):
-        r = QorRecord.query.get(record_id)
+        # 用 project session 直接读写, 避免 db.session 与 project session 事务分离
+        from core.db_routing import _build_project_session
+        sess = _build_project_session(project_id)
+        r = sess.get(QorRecord, record_id)
         if r is None:
             return jsonify({'error': '记录不存在'}), 404
 
@@ -1570,6 +1577,56 @@ def admin_update_release_dir(record_id):
             'release_dir': r_release_dir or '',
             'release_dir_effective': r_release_dir or r_full_dir or '',
         })
+
+
+@bp.route('/qor/<int:record_id>/description', methods=['POST'])
+@login_required
+def admin_update_version_description(record_id):
+    """更新记录的版本描述 (owner 可编辑, viewer 只读)
+
+    数据结构无法统一, 字段专门为 owner 在版本上添加描述的场景而设。
+    admin 可改任何; owner 只能改自己模块/被授权模块的记录; viewer 只读。
+    """
+    pid = _find_qor_record_project(record_id)
+    if pid is None:
+        return jsonify({'error': '记录不存在'}), 404
+    data = request.get_json() or {}
+    desc = (data.get('description') or '').strip()
+
+    with switch_to_project(pid):
+        # 用 project session 直接读写, 避免 db.session 与 project session 事务分离
+        from core.db_routing import _build_project_session
+        sess = _build_project_session(pid)
+        r = sess.get(QorRecord, record_id)
+        if r is None:
+            return jsonify({'error': '记录不存在'}), 404
+        # 权限: admin 可改任何; owner 只能改自己上传/被授权的模块中的记录; viewer 只读
+        if not current_user.is_admin:
+            role = (current_user.role or '').lower()
+            if role == 'viewer':
+                return jsonify({'error': 'viewer 角色无编辑权限'}), 403
+            # owner: 检查模块归属或协作
+            mid = r.module_id
+            m = sess.get(Module, mid) if mid else None
+            if not m:
+                return jsonify({'error': '记录无模块, 无权编辑'}), 403
+            owner_id = getattr(m, 'owner_id', None)
+            try:
+                collab = json.loads(m.collaborators) if m.collaborators else []
+            except (json.JSONDecodeError, TypeError):
+                collab = []
+            if owner_id != current_user.id and current_user.id not in collab:
+                return jsonify({'error': '无权编辑他人模块的记录'}), 403
+        r.version_description = desc or None
+        # 缓存字段值 (commit 后 expire)
+        r_id = r.id
+        r_desc = r.version_description
+        project_commit()
+    return jsonify({
+        'ok': True,
+        'id': r_id,
+        'version_description': r_desc or '',
+    })
 
 
 def _find_qor_record_project(record_id):

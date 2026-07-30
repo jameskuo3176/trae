@@ -29,6 +29,8 @@ def _ensure_columns_in_app(app):
         ('qor_records', 'released_by', "INTEGER"),
         # QorRecord: release_dir 发布目录 (v5.x 新增; 缺省时 fallback 到 full_dir)
         ('qor_records', 'release_dir', "VARCHAR(500)"),
+        # QorRecord: 版本描述 (owner 可编辑, viewer 只读)
+        ('qor_records', 'version_description', "TEXT"),
         # RunNote: full_dir 字段
         ('run_notes', 'full_dir', "VARCHAR(1000)"),
         # Module: v5.0 模块所有者 + 协作者
@@ -107,7 +109,7 @@ def _migrate_v5_roles(app):
         db.session.commit()
         print('[DB] 已创建默认 viewer 账户 (viewer / viewer@2026)')
 
-    # 3) 各项目库补 modules 表的新列
+    # 3) 各项目库补 modules/qor_records 表的新列
     from models import Project
     from core.project_db import project_db_path
     from sqlalchemy import create_engine
@@ -118,12 +120,18 @@ def _migrate_v5_roles(app):
         eng = create_engine(f'sqlite:///{path}')
         try:
             with eng.begin() as conn:
+                # modules: 协作字段
                 cols = conn.execute(text("PRAGMA table_info(modules)")).fetchall()
                 col_names = {c[1] for c in cols}
                 if 'owner_id' not in col_names:
                     conn.execute(text("ALTER TABLE modules ADD COLUMN owner_id INTEGER"))
                 if 'collaborators' not in col_names:
                     conn.execute(text("ALTER TABLE modules ADD COLUMN collaborators TEXT DEFAULT '[]'"))
+                # qor_records: version_description (owner 可编辑的版本说明)
+                qr_cols = conn.execute(text("PRAGMA table_info(qor_records)")).fetchall()
+                qr_col_names = {c[1] for c in qr_cols}
+                if 'version_description' not in qr_col_names:
+                    conn.execute(text("ALTER TABLE qor_records ADD COLUMN version_description TEXT"))
         except Exception as e:
             print(f'[DB] v5 项目库迁移失败 project={p.id}: {e}')
         finally:

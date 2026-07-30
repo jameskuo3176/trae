@@ -34,7 +34,8 @@
                     style="min-width: 220px; min-height: 120px;">
                     <option value="area_total" selected>总面积</option>
                     <option value="wns_setup" selected>Setup WNS</option>
-                    <option value="tns_setup">Setup TNS</option>
+                    <option value="tns_setup" selected>Setup TNS</option>
+                    <option value="nvp_setup" selected>Setup 违例数</option>
                     <option value="power_total" selected>总功耗</option>
                     <option value="power_internal">内部功耗</option>
                     <option value="power_switching">翻转功耗</option>
@@ -47,6 +48,7 @@
                     <option value="achieved_frequency">达成频率</option>
                     <option value="wns_hold">Hold WNS</option>
                     <option value="tns_hold">Hold TNS</option>
+                    <option value="nvp_hold">Hold 违例数</option>
                 </select>
             </div>
             <div class="form-group">
@@ -78,10 +80,10 @@
         <div class="form-group" style="margin: 0;">
             <label style="font-size: 12px; display: block;">图表高度</label>
             <select id="cmpChartHeight" onchange="updateCompareChartHeight()" style="font-size: 13px;">
-                <option value="300">小 (300px)</option>
-                <option value="400" selected>中 (400px)</option>
-                <option value="550">大 (550px)</option>
-                <option value="700">超大 (700px)</option>
+                <option value="380">小 (380px)</option>
+                <option value="520" selected>中 (520px)</option>
+                <option value="660">大 (660px)</option>
+                <option value="820">超大 (820px)</option>
             </select>
         </div>
         <div class="form-group" style="margin: 0;">
@@ -114,7 +116,7 @@
     const METRIC_LABELS = {
         area_total: '总面积 (um2)', area_combinational: '组合逻辑面积', area_sequential: '时序逻辑面积',
         wns_setup: 'Setup WNS (ns)', tns_setup: 'Setup TNS (ns)', nvp_setup: 'Setup 违例数',
-        wns_hold: 'Hold WNS (ns)', tns_hold: 'Hold TNS (ns)',
+        wns_hold: 'Hold WNS (ns)', tns_hold: 'Hold TNS (ns)', nvp_hold: 'Hold 违例数',
         power_total: '总功耗 (mW)', power_internal: '内部功耗', power_switching: '翻转功耗', power_leakage: '漏电功耗',
         cell_count: '单元数量', instance_count: '实例数量', net_count: '网络数量',
         achieved_frequency: '达成频率 (MHz)'
@@ -326,7 +328,7 @@
             option.xAxis = categoryAxis;
             option.yAxis = valueAxis;
         }
-        chart.setOption(option);
+        chart.setOption(applyBarDefaults(option));
         charts[idx] = chart;
     }
 

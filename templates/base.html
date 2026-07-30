@@ -255,7 +255,7 @@
 
         .chart-container-small {
             width: 100%;
-            height: 300px;
+            height: 500px;
         }
 
         .grid-2 {
@@ -1310,15 +1310,15 @@
             <div class="theme-modal-body">
                 <div class="form-group">
                     <label>旧密码</label>
-                    <input type="password" id="oldPasswordInput" style="width: 100%;" autocomplete="current-password">
+                    <input type="password" id="oldPasswordInput" data-pw-toggle style="width: 100%; padding-right: 36px;" autocomplete="current-password">
                 </div>
                 <div class="form-group">
                     <label>新密码（至少 4 位）</label>
-                    <input type="password" id="newPasswordInput" style="width: 100%;" autocomplete="new-password">
+                    <input type="password" id="newPasswordInput" data-pw-toggle style="width: 100%; padding-right: 36px;" autocomplete="new-password">
                 </div>
                 <div class="form-group">
                     <label>确认新密码</label>
-                    <input type="password" id="confirmPasswordInput" style="width: 100%;" autocomplete="new-password">
+                    <input type="password" id="confirmPasswordInput" data-pw-toggle style="width: 100%; padding-right: 36px;" autocomplete="new-password">
                 </div>
                 <div id="changePasswordMsg" style="font-size: 13px; margin-top: 4px;"></div>
             </div>
@@ -1552,6 +1552,10 @@
             document.getElementById('confirmPasswordInput').value = '';
             document.getElementById('changePasswordMsg').innerHTML = '';
             document.getElementById('changePasswordModalMask').classList.add('show');
+            // 弹窗内密码输入框首次可见, 绑定明文切换按钮
+            if (window.AppUI && AppUI.attachPasswordToggle) {
+                AppUI.attachPasswordToggle('#changePasswordModalMask input[data-pw-toggle]');
+            }
         }
 
         function closeChangePasswordModal() {
@@ -1658,6 +1662,18 @@
     <script>
         (function () {
             const AppUI = window.AppUI = {};
+
+            // 通用 HTML 转义
+            const escapeHtml = function (s) {
+                if (s == null) return '';
+                return String(s)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            };
+            AppUI.escapeHtml = escapeHtml;
 
             // ===== 多选框全选/清空 =====
             // 用法: <select multiple data-multi>
@@ -1819,6 +1835,149 @@
                 try { document.execCommand('copy'); } catch (e) {}
                 document.body.removeChild(ta);
                 return true;
+            };
+
+            // ===== 密码明文/密文切换 =====
+            // 用法 1: 给 input 加 data-pw-toggle 自动绑定 (推荐)
+            // 用法 2: 手动调用 AppUI.attachPasswordToggle('#xxx')
+            AppUI.attachPasswordToggle = function (selector) {
+                const inputs = (typeof selector === 'string')
+                    ? document.querySelectorAll(selector)
+                    : (selector instanceof Element ? [selector] : (selector || []));
+                inputs.forEach(inp => {
+                    if (!inp || inp.dataset.pwToggleBound === '1') return;
+                    inp.dataset.pwToggleBound = '1';
+                    // 包裹 input 以便绝对定位按钮
+                    let wrap = inp.parentElement;
+                    const needsWrap = !(wrap && getComputedStyle(wrap).position === 'relative'
+                        && (wrap.classList.contains('pw-wrap') || wrap.style.position === 'relative'));
+                    if (needsWrap) {
+                        wrap = document.createElement('div');
+                        wrap.className = 'pw-wrap';
+                        wrap.style.cssText = 'position:relative; display:block; width:100%;';
+                        inp.parentElement.insertBefore(wrap, inp);
+                        wrap.appendChild(inp);
+                        if (inp.style.width === '') inp.style.width = '100%';
+                    }
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'pw-toggle-btn';
+                    btn.setAttribute('aria-label', '显示/隐藏密码');
+                    btn.title = '点击显示/隐藏密码';
+                    btn.innerHTML = '<span aria-hidden="true">👁</span>';
+                    btn.style.cssText = 'position:absolute; right:6px; top:50%; transform:translateY(-50%);' +
+                        'background:transparent; border:0; padding:2px 6px; cursor:pointer;' +
+                        'font-size:16px; line-height:1; color:var(--color-text-secondary);' +
+                        'border-radius:3px;';
+                    btn.addEventListener('mousedown', e => e.preventDefault());  // 防止按钮抢焦点导致 input blur
+                    btn.addEventListener('click', () => {
+                        const isPw = inp.type === 'password';
+                        inp.type = isPw ? 'text' : 'password';
+                        btn.innerHTML = isPw
+                            ? '<span aria-hidden="true">🙈</span>'
+                            : '<span aria-hidden="true">👁</span>';
+                        btn.title = isPw ? '点击隐藏密码' : '点击显示密码';
+                    });
+                    wrap.appendChild(btn);
+                });
+            };
+            // 页面加载后自动为所有标记 data-pw-toggle 的 input 绑定
+            document.addEventListener('DOMContentLoaded', () => {
+                try { AppUI.attachPasswordToggle('input[data-pw-toggle]'); } catch (e) {}
+            });
+
+            // ===== 多行输入弹窗 (替代 prompt, 支持 textarea 换行) =====
+            // 用法: AppUI.inputDialog({title, label, defaultValue, placeholder,
+            //                       multiline=true, rows=6, onSubmit})
+            // onSubmit(value) 取消时 value=undefined
+            AppUI.inputDialog = function (opts) {
+                opts = opts || {};
+                const title = opts.title || '输入';
+                const label = opts.label || '';
+                const placeholder = opts.placeholder || '';
+                const defaultValue = opts.defaultValue || '';
+                const multiline = opts.multiline !== false;  // 默认多行
+                const rows = opts.rows || 6;
+                const submitLabel = opts.submitLabel || '确定';
+                const cancelLabel = opts.cancelLabel || '取消';
+                const onSubmit = opts.onSubmit || function () {};
+
+                // 移除已存在的弹窗
+                const old = document.getElementById('appuiInputDialog');
+                if (old) old.remove();
+
+                const mask = document.createElement('div');
+                mask.id = 'appuiInputDialog';
+                mask.className = 'theme-modal-mask show';
+                mask.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:10000; display:flex; align-items:center; justify-content:center;';
+                const inputHtml = multiline
+                    ? `<textarea id="appuiInputTextarea" rows="${rows}" placeholder="${escapeHtml(placeholder)}" ` +
+                      `style="width:100%; padding:8px 10px; font-size:13px; line-height:1.5; border:1px solid var(--color-border); border-radius:4px; resize:vertical; min-height:80px; font-family:inherit;">${escapeHtml(defaultValue)}</textarea>`
+                    : `<input id="appuiInputText" type="text" value="${escapeHtml(defaultValue)}" placeholder="${escapeHtml(placeholder)}" ` +
+                      `style="width:100%; padding:8px 10px; font-size:13px; border:1px solid var(--color-border); border-radius:4px;">`;
+                mask.innerHTML = `
+                    <div class="theme-modal" style="max-width:520px; width:92vw; background:var(--color-surface); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.25);">
+                        <div class="theme-modal-header" style="padding:12px 16px; border-bottom:1px solid var(--color-border); display:flex; justify-content:space-between; align-items:center; font-weight:600; font-size:15px;">
+                            <span>${escapeHtml(title)}</span>
+                            <button type="button" class="theme-modal-close" aria-label="关闭" style="background:transparent; border:0; font-size:22px; cursor:pointer; color:var(--color-text-secondary); line-height:1;">×</button>
+                        </div>
+                        <div class="theme-modal-body" style="padding:14px 16px;">
+                            ${label ? `<div style="font-size:12px; color:var(--color-text-secondary); margin-bottom:6px;">${escapeHtml(label)}</div>` : ''}
+                            ${inputHtml}
+                            <div style="margin-top:6px; font-size:11px; color:var(--color-text-secondary);">
+                                ${multiline ? '支持多行 (换行将原样保存). 留空表示清空.' : '留空表示清空.'}
+                            </div>
+                        </div>
+                        <div class="theme-modal-footer" style="padding:10px 16px; border-top:1px solid var(--color-border); display:flex; justify-content:flex-end; gap:8px;">
+                            <button type="button" class="btn btn-default btn-sm appuiCancel">${escapeHtml(cancelLabel)}</button>
+                            <button type="button" class="btn btn-sm appuiSubmit">${escapeHtml(submitLabel)}</button>
+                        </div>
+                    </div>`;
+                document.body.appendChild(mask);
+
+                const submit = mask.querySelector('.appuiSubmit');
+                const cancel = mask.querySelector('.appuiCancel');
+                const closeBtn = mask.querySelector('.theme-modal-close');
+                const input = mask.querySelector('#appuiInputTextarea') || mask.querySelector('#appuiInputText');
+                const cleanup = function () { mask.remove(); };
+                const close = function () { cleanup(); };
+
+                const doSubmit = function () {
+                    const v = input.value;
+                    cleanup();
+                    onSubmit(v);
+                };
+                submit.addEventListener('click', doSubmit);
+                cancel.addEventListener('click', close);
+                closeBtn.addEventListener('click', close);
+                mask.addEventListener('click', function (e) { if (e.target === mask) close(); });
+
+                // Enter 提交 (单行模式) / Ctrl+Enter 提交 (多行模式)
+                if (multiline) {
+                    input.addEventListener('keydown', function (e) {
+                        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                            e.preventDefault();
+                            doSubmit();
+                        } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            close();
+                        }
+                    });
+                } else {
+                    input.addEventListener('keydown', function (e) {
+                        if (e.key === 'Enter') { e.preventDefault(); doSubmit(); }
+                        else if (e.key === 'Escape') { e.preventDefault(); close(); }
+                    });
+                }
+                setTimeout(function () {
+                    try {
+                        input.focus();
+                        if (input.setSelectionRange) {
+                            const n = input.value.length;
+                            input.setSelectionRange(n, n);
+                        }
+                    } catch (e) {}
+                }, 30);
             };
         })();
     </script>

@@ -1,7 +1,7 @@
 # QoR Recorder - Linux 部署指南 (IT 部门交接)
 
 > 本文档面向 IT/运维人员,描述在 Linux 服务器上从零部署 QoR Recorder 的完整流程。
-> 文档版本: 2.0 | 最后更新: 2026-07-23
+> 文档版本: 3.0 | 最后更新: 2026-07-30（v5.0: 三级角色模型 + 多后端切换）
 
 ---
 
@@ -26,26 +26,31 @@
 
 ## 1. 系统概览
 
-**QoR Recorder** 是一款面向 IC 设计团队的综合质量数据管理系统,基于 Flask + SQLite/MySQL + ECharts 实现。
+**QoR Recorder** 是一款面向 IC 设计团队的综合质量数据管理系统,基于 Flask + SQLite/MySQL/MongoDB + ECharts 实现。
 
-**核心特性**:
+**核心特性 (v5.0)**:
 
 - Web 化 QoR 数据采集与可视化 (项目/模块/版本维度)
 - 支持 DC 流程 Makefile 自动化上传 (API Key 认证)
 - 跨版本违例路径对比与 Bus 合并
-- 角色权限: admin / user / release (仅查看已发布数据)
+- **三级角色模型**: admin / owner / viewer（v4.x 的 user / release 自动迁移为 owner）
+- **模块级协作**: Module.owner_id + Module.collaborators (JSON)
+- **Dashboard 违例分析**: 时钟多选, 每个 clock 并排渲染一张子图
 - 数据发布管理 (单条/批量标记 is_released)
 - 数据锁定 (项目结束后冻结)
-- 主题定制 (5 套预设 + 自定义)
-- 支持 SQLite (默认) 与 MySQL 两种数据库后端
+- 主题定制 (6 套预设 + 自定义)
+- **多数据库后端**: SQLite (默认) / MySQL/PostgreSQL / MongoDB
+- **按项目分库**: 主库存系统数据, 每个项目一个独立 DB 文件
 
-**默认账户** (首次登录后**必须**修改密码):
+**默认账户 (v5.0, 首次登录后**必须**修改密码)**:
 
-| 用户名     | 初始密码        | 角色     | 用途              |
-| --------- | --------------- | -------- | ----------------- |
-| admin     | admin@2026      | 管理员   | 全功能管理        |
-| user      | user@2026       | 普通用户 | 查看与导出        |
-| release   | release@2026    | 发布用户 | 仅查看已发布数据  |
+| 用户名     | 初始密码        | 角色     | 用途                                          |
+| ---------- | --------------- | -------- | --------------------------------------------- |
+| admin      | admin@2026      | admin    | 全功能管理                                    |
+| release    | release@2026    | owner    | 历史发布账户, 自动迁移为 owner                |
+| **viewer** | **viewer@2026** | **viewer** | **v5.0 新增, 只读, 仅看已发布数据**            |
+
+> **强制改密机制**: 三个默认账户首次登录后, 系统强制跳转到 `/change_password` 改密, 改密之前所有上传/管理操作均被 403 拦截. 弱密码黑名单: `12345678` / `password` / `password1` / `admin123` / `qwerty123` / `11111111` / `00000000`.
 
 ---
 
@@ -227,8 +232,13 @@ ENFORCE_SECRET_KEY=1
 SESSION_COOKIE_SECURE=1
 SESSION_LIFETIME_HOURS=12
 
-# 数据库 (默认 SQLite, 详见第 8 节)
+# 数据库后端 (v4.0+ 单一变量切换, 默认 sqlite)
+DB_TYPE=sqlite
+# DB_TYPE=sql
 # DATABASE_URL=mysql+pymysql://qor:password@localhost:3306/qor_recorder?charset=utf8mb4
+# DB_TYPE=mongodb
+# MONGODB_URI=mongodb://localhost:27017
+# MONGODB_DB=qor_recorder
 
 # 功能开关
 ENABLE_DB_ADMIN=0
@@ -253,11 +263,20 @@ sudo -u qor mkdir -p /opt/qor_recorder/{data,uploads,backups,logs}
 sudo -u qor bash -c '
   cd /opt/qor_recorder
   source venv/bin/activate
-  python init_db.py
+  python db_init.py
 '
 # 加演示数据 (可选, 生产环境不建议):
-# python init_db.py --demo
+# python db_init.py --demo
+# 验证配置 (不会写库, 仅检查):
+# python db_init.py --check
 ```
+
+**初始化过程会自动**:
+
+1. 创建主库表结构 (Alembic 迁移到最新)
+2. 创建默认账户: `admin` / `release` / `viewer` (均 `must_change_password=True`)
+3. 创建默认 DashboardGroup
+4. (可选 `--demo`) 创建 5 个 demo 项目 + 200+ 条记录
 
 ### 5.8 安装 systemd 服务
 
@@ -879,19 +898,36 @@ curl -Ik https://bpfeint.qor.local/    # 若启用 HTTPS
 
 ## 8. 数据库后端选择
 
-### 8.1 对比
+### 8.1 三种后端对比（v4.0+）
 
-| 维度     | SQLite                          | MySQL                                |
-| -------- | ------------------------------- | ------------------------------------ |
-| 部署难度 | 零配置, 单文件                 | 需独立服务, 配置较复杂               |
-| 并发能力 | 读多写少 OK, 写锁全局          | 完整 MVCC, 高并发强                  |
-| 备份     | 复制文件                        | `mysqldump`                          |
-| 适用规模 | < 20 人, < 10 万记录            | 20+ 人, 大数据量                     |
-| 运维成本 | 极低                            | 中等                                 |
+通过单一环境变量 `DB_TYPE` 切换后端：
 
-### 8.2 SQLite (默认, 推荐 20 人以下团队)
+| 维度       | SQLite (默认)                      | MySQL / PostgreSQL               | MongoDB                            |
+| ---------- | ---------------------------------- | -------------------------------- | ---------------------------------- |
+| 部署难度   | 零配置, 单文件                     | 需独立服务, 配置较复杂           | 需独立服务, 副本集等运维           |
+| 并发能力   | 读多写少 OK, 写锁全局              | 完整 MVCC, 高并发强              | 文档级锁, 横向扩展                 |
+| 备份       | 复制文件                           | `mysqldump` / `pg_dump`          | `mongodump`                        |
+| 适用规模   | < 20 人, < 10 万记录               | 20+ 人, 大数据量                 | 已有 Mongo 基础设施, 文档型        |
+| 运维成本   | 极低                               | 中等                             | 中等偏高                           |
+| 多项目分库 | 自动按项目分库 (`qor_p_<id>.db`) | 按项目分库 (DB 或 Schema)        | 按项目分库 (collection)            |
 
-**零配置**: 不设置 `DATABASE_URL` 即使用 `/opt/qor_recorder/data/qor_recorder.db`。
+### 8.2 SQLite 模式 (默认, 推荐 20 人以下团队)
+
+**零配置**: 不设置 `DB_TYPE` 即使用 `/opt/qor_recorder/data/qor_recorder.db`。
+
+**按项目分库结构**:
+
+```
+data/
+├── qor_recorder.db           # 主库 (用户/项目/API Key)
+├── qor_p_1.db                # 项目 1 业务数据
+├── qor_p_2.db                # 项目 2 业务数据
+└── qor_p_3.db                # 项目 3 业务数据
+```
+
+- 创建新项目时自动生成 `qor_p_<id>.db`
+- 项目 `status=locked` 时该文件被设为 `0444` (只读)
+- 软删除项目保留 `qor_p_<id>.db`, 硬删除时才移除
 
 **性能优化** (已在 config.py 中启用):
 - WAL 模式 (读写不互斥)
@@ -905,7 +941,7 @@ PRAGMA synchronous = NORMAL;
 PRAGMA wal_autocheckpoint = 1000;
 ```
 
-### 8.3 MySQL (高并发场景)
+### 8.3 MySQL / PostgreSQL 模式 (高并发场景)
 
 #### 8.3.1 安装 MySQL
 
@@ -930,46 +966,105 @@ FLUSH PRIVILEGES;
 EOF
 ```
 
-#### 8.3.3 配置应用连接
+#### 8.3.3 配置应用连接 (v4.0+ 单一变量切换)
 
 ```bash
 # 写入 .env
-echo 'DATABASE_URL=mysql+pymysql://qor:替换为强密码@localhost:3306/qor_recorder?charset=utf8mb4' \
-    | sudo -u qor tee -a /opt/qor_recorder/.env
+cat >> /opt/qor_recorder/.env <<'EOF'
+DB_TYPE=sql
+DATABASE_URL=mysql+pymysql://qor:替换为强密码@localhost:3306/qor_recorder?charset=utf8mb4
+EOF
 ```
+
+> 简写也支持: `mysql://user:pass@host:3306/db` → 自动转换为 `mysql+pymysql://`.
+> PostgreSQL 同样: `postgres://user:pass@host:5432/db` → `postgresql+psycopg2://`.
 
 #### 8.3.4 重启应用并初始化
 
 ```bash
 sudo systemctl restart qor_recorder
 sudo journalctl -u qor_recorder -f   # 观察启动日志
+python db_init.py --check             # 验证配置
 ```
 
-### 8.4 从 SQLite 迁移到 MySQL
+### 8.4 MongoDB 模式 (v4.0+)
+
+MongoDB 模式采用**主库 SQLite + 业务库 Mongo dual-write** 架构:
+
+- **主库** (用户/项目/API Key): SQLite, 只读回退
+- **业务库** (QorRecord / ViolationPath / RunNote / Review): MongoDB, 双写
+- 业务读优先 Mongo, 失败时降级到 SQLite 副本
+
+#### 8.4.1 安装 MongoDB
 
 ```bash
-# 1. 导出 SQLite 数据
-cd /opt/qor_recorder
-source venv/bin/activate
-python -c "
-from app import app, db
-from models import *
-import json
-with app.app_context():
-    data = {}
-    for tbl in db.metadata.tables:
-        data[tbl] = [dict(r.__dict__) for r in db.session.execute(db.select(db.metadata.tables[tbl]))]
-    with open('backups/migrate.json','w') as f:
-        json.dump(data, f, default=str, ensure_ascii=False, indent=2)
-"
+# Ubuntu 22.04+ (官方源)
+curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc \
+    | sudo gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor
+echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] http://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" \
+    | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+sudo apt update
+sudo apt install -y mongodb-org
 
-# 2. 切换 DATABASE_URL (编辑 .env)
-
-# 3. 初始化 MySQL schema
-python init_db.py
-
-# 4. 导入数据 (使用相同脚本反向写入)
+# 启动
+sudo systemctl enable --now mongod
 ```
+
+#### 8.4.2 配置应用连接
+
+```bash
+# 写入 .env
+cat >> /opt/qor_recorder/.env <<'EOF'
+DB_TYPE=mongodb
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DB=qor_recorder
+EOF
+```
+
+#### 8.4.3 验证 Mongo 连接
+
+```bash
+sudo systemctl restart qor_recorder
+python db_init.py --check
+# 期望: DB_TYPE=mongodb, MONGODB_URI=mongodb://localhost:27017
+
+# MongoDB shell 验证
+mongosh --eval "db.qor_records.countDocuments({})"
+```
+
+### 8.5 从 SQLite 迁移到 MySQL / MongoDB
+
+```bash
+# 1. 备份当前 SQLite
+sudo systemctl stop qor_recorder
+sudo -u qor cp -r /opt/qor_recorder/data /opt/qor_recorder/data.bak.$(date +%Y%m%d)
+
+# 2. 切到 MySQL (或 MongoDB) 模式
+#    编辑 .env, 修改 DB_TYPE + DATABASE_URL / MONGODB_URI
+
+# 3. 启动 (会自动建表)
+sudo systemctl start qor_recorder
+python db_init.py
+
+# 4. 迁移数据 (历史 v3.x 单库 → v4.0+ 分库)
+python migrate_to_per_project_db.py --dry-run   # 先看计划
+python migrate_to_per_project_db.py
+python migrate_sqlite_to_mongo.py --dry-run     # SQLite → Mongo 时
+python migrate_sqlite_to_mongo.py
+
+# 5. 验证
+curl -s http://localhost/api/v1/projects
+```
+
+### 8.6 按项目分库与多后端的兼容
+
+| 后端     | 项目库存储                                              |
+|----------|---------------------------------------------------------|
+| SQLite   | 每个项目一个 `qor_p_<id>.db` 文件                       |
+| MySQL    | 单库多表 (`projects` + 业务表, 无分库)                  |
+| MongoDB  | 单库多 collection (`projects` + `qor_records_<pid>` 等)  |
+
+> MySQL/Mongo 模式下没有 `qor_p_<id>.db` 文件, 数据全部集中到对应后端, 跨项目查询效率更高. SQLite 模式适合单机+小团队, 业务隔离更强.
 
 ---
 
@@ -979,6 +1074,7 @@ python init_db.py
 
 - [ ] **修改默认密码**: 登录 admin / admin@2026, 立即修改为强密码
 - [ ] **修改 release 账户密码**: 登录 release / release@2026, 修改密码
+- [ ] **修改 viewer 账户密码 (v5.0 新增)**: 登录 viewer / viewer@2026, 修改密码
 - [ ] **生成强 SECRET_KEY**: `openssl rand -hex 32`, 写入 `.env`
 - [ ] **关闭 DEBUG**: `.env` 中 `DEBUG=0`
 - [ ] **启用 HTTPS**: 通过 Nginx 配置 TLS (推荐 Let's Encrypt)
@@ -1064,14 +1160,15 @@ sudo chmod 700 /opt/qor_recorder/backups
 
 ### 10.1 备份策略
 
-| 数据类型     | 备份频率   | 保留      | 位置           |
-| ------------ | ---------- | --------- | -------------- |
-| 数据库       | 每日 02:00 | 30 天     | `backups/`     |
-| 上传 CSV 文件| 每周日     | 8 周      | `backups/csv/` |
-| `.env` 配置  | 变更时     | 永久      | `backups/conf/`|
-| 完整快照     | 每月 1 号  | 6 个月    | 异地存储        |
+| 数据类型              | 备份频率   | 保留      | 位置                |
+| --------------------- | ---------- | --------- | ------------------- |
+| 主库 (qor_recorder.db) | 每日 02:00 | 30 天     | `backups/main/`     |
+| 项目库 (qor_p_*.db)   | 项目结束时 | 永久      | `backups/projects/` |
+| 上传 CSV 文件         | 每周日     | 8 周      | `backups/csv/`      |
+| `.env` 配置           | 变更时     | 永久      | `backups/conf/`     |
+| 完整快照              | 每月 1 号  | 6 个月    | 异地存储             |
 
-### 10.2 SQLite 自动备份
+### 10.2 SQLite 自动备份 (主库 + 项目库)
 
 ```bash
 sudo tee /opt/qor_recorder/scripts/backup.sh > /dev/null <<'EOF'
@@ -1080,21 +1177,39 @@ sudo tee /opt/qor_recorder/scripts/backup.sh > /dev/null <<'EOF'
 set -e
 BACKUP_DIR=/opt/qor_recorder/backups
 TS=$(date +%Y%m%d_%H%M%S)
-mkdir -p $BACKUP_DIR
+mkdir -p $BACKUP_DIR/main $BACKUP_DIR/projects
 
 cd /opt/qor_recorder
 source venv/bin/activate
+
+# 1) 主库
 python -c "
 from app import app, db
 from sqlalchemy import text
 with app.app_context():
     with db.engine.connect() as conn:
-        conn.execute(text('VACUUM INTO :path'), {'path': f'$BACKUP_DIR/qor_$TS.db'})
-        print(f'[OK] 已备份到 $BACKUP_DIR/qor_$TS.db')
+        conn.execute(text('VACUUM INTO :path'), {'path': f'$BACKUP_DIR/main/qor_$TS.db'})
+        print(f'[OK] 主库已备份')
 "
 
-# 清理 30 天前的备份
-find $BACKUP_DIR -name 'qor_*.db' -mtime +30 -delete
+# 2) 项目库 (按项目分库 v4.0+)
+for db_file in data/qor_p_*.db; do
+    [ -e "$db_file" ] || continue
+    name=$(basename "$db_file" .db)
+    python -c "
+import sqlite3
+src = '$db_file'
+dst = '$BACKUP_DIR/projects/${name}_$TS.db'
+src_conn = sqlite3.connect(src)
+dst_conn = sqlite3.connect(dst)
+with dst_conn:
+    src_conn.backup(dst_conn)
+print(f'[OK] {src} -> {dst}')
+"
+done
+
+# 3) 清理 30 天前的主库备份
+find $BACKUP_DIR/main -name 'qor_*.db' -mtime +30 -delete
 EOF
 
 sudo chmod +x /opt/qor_recorder/scripts/backup.sh
@@ -1104,7 +1219,19 @@ sudo chown qor:qor /opt/qor_recorder/scripts/backup.sh
 sudo -u qor crontab -l 2>/dev/null | { cat; echo "0 2 * * * /opt/qor_recorder/scripts/backup.sh >> /opt/qor_recorder/logs/backup.log 2>&1"; } | sudo -u qor crontab -
 ```
 
-### 10.3 MySQL 备份
+### 10.3 单项目归档（项目结束时推荐）
+
+```bash
+# 单项目打包 (含项目库 + 关联上传 CSV)
+PROJECT_ID=3
+cd /opt/qor_recorder
+tar -czf backups/project_${PROJECT_ID}_$(date +%Y%m%d).tar.gz \
+    data/qor_p_${PROJECT_ID}.db* \
+    uploads/ \
+    --transform 's|^uploads/||'
+```
+
+### 10.4 MySQL 备份
 
 ```bash
 # 手动备份
@@ -1114,9 +1241,21 @@ mysqldump -u qor -p qor_recorder | gzip > backups/qor_$(date +%Y%m%d).sql.gz
 echo "0 2 * * * mysqldump -u qor -p替换密码 qor_recorder | gzip > /opt/qor_recorder/backups/qor_\$(date +\%Y\%m\%d).sql.gz" | sudo -u qor crontab -
 ```
 
-### 10.4 恢复流程
+### 10.5 MongoDB 备份
 
-#### 10.4.1 SQLite 恢复
+```bash
+# 手动备份
+mongodump --uri="$MONGODB_URI" --db=qor_recorder --gzip \
+    --archive=backups/mongo_$(date +%Y%m%d).archive
+
+# 自动备份 (crontab)
+echo "0 2 * * * mongodump --uri=\"\$MONGODB_URI\" --db=qor_recorder --gzip --archive=/opt/qor_recorder/backups/mongo_\$(date +\%Y\%m\%d).archive" \
+    | sudo -u qor crontab -
+```
+
+### 10.6 恢复流程
+
+#### 10.6.1 SQLite 恢复
 
 ```bash
 # 1. 停止应用
@@ -1124,21 +1263,32 @@ sudo systemctl stop qor_recorder
 
 # 2. 备份当前损坏的 DB
 sudo -u qor cp /opt/qor_recorder/data/qor_recorder.db \
-                /opt/qor_recorder/backups/broken_$(date +%s).db
+                /opt/qor_recorder/backups/main/broken_$(date +%s).db
 
 # 3. 用备份覆盖
-sudo -u qor cp /opt/qor_recorder/backups/qor_20260723_020000.db \
+sudo -u qor cp /opt/qor_recorder/backups/main/qor_20260723_020000.db \
                 /opt/qor_recorder/data/qor_recorder.db
+# 项目库同理
+sudo -u qor cp /opt/qor_recorder/backups/projects/qor_p_3_20260723_020000.db \
+                /opt/qor_recorder/data/qor_p_3.db
 
 # 4. 启动
 sudo systemctl start qor_recorder
 ```
 
-#### 10.4.2 MySQL 恢复
+#### 10.6.2 MySQL 恢复
 
 ```bash
 sudo systemctl stop qor_recorder
 gunzip < backups/qor_20260723.sql.gz | mysql -u qor -p qor_recorder
+sudo systemctl start qor_recorder
+```
+
+#### 10.6.3 MongoDB 恢复
+
+```bash
+sudo systemctl stop qor_recorder
+mongorestore --uri="$MONGODB_URI" --gzip --archive=backups/mongo_20260723.archive
 sudo systemctl start qor_recorder
 ```
 
@@ -1403,12 +1553,15 @@ sudo journalctl --vacuum-time=7d
 | 操作系统              |                                                   |
 | 部署方式              | [ ] systemd  [ ] Docker                           |
 | 应用版本              | `git rev-parse HEAD`                              |
-| 数据库类型            | [ ] SQLite  [ ] MySQL                             |
-| 数据库位置            | `/opt/qor_recorder/data/qor_recorder.db` 或 MySQL |
+| **数据库后端 (v4.0+)** | [ ] SQLite  [ ] MySQL  [ ] MongoDB               |
+| 数据库位置            | `/opt/qor_recorder/data/` 或 MySQL/MongoDB        |
+| 项目库数              | `ls data/qor_p_*.db | wc -l` (SQLite 模式)        |
 | 应用 URL             | `https://qor.example.com`                         |
 | 管理员账号            | admin (密码: 已修改为 ______)                     |
 | release 账号          | release (密码: 已修改为 ______)                   |
-| 备份策略              | 每日 02:00 自动备份到 `backups/`                  |
+| **viewer 账号 (v5.0)** | viewer (密码: 已修改为 ______)                   |
+| **API Key (dc-bot)** | `qor_xxxxxxxx` (创建于: ______)                   |
+| 备份策略              | 每日 02:00 自动备份到 `backups/main + backups/projects` |
 | 监控方式              | [ ] journalctl  [ ] Prometheus + Grafana          |
 | SSL 证书有效期        | `echo | openssl s_client -connect host:443 2>/dev/null | openssl x509 -noout -dates` |
 | SSL 自动续期          | [ ] certbot renew (systemd timer)                 |
@@ -1456,36 +1609,79 @@ sudo ufw allow|deny <port>/tcp
 部署人员 (IT):
 - [ ] 完成 5 节 (systemd) 或 6 节 (Docker) 部署
 - [ ] 完成 7 节 Nginx 反代与 HTTPS 配置
+- [ ] 完成 8 节数据库后端选择（SQLite / MySQL / MongoDB）
 - [ ] 完成 9 节安全加固清单
-- [ ] 完成 10 节自动备份配置
+- [ ] 完成 10 节自动备份配置 (主库 + 项目库)
 - [ ] 完成 12.5 节健康检查告警
 - [ ] 填写 14.1 部署信息表
 - [ ] 移交 14.1 信息表给应用管理员
 
 接收人员 (应用管理员):
-- [ ] 修改 admin / user / release 三个默认账户密码
+- [ ] 修改 **admin / release / viewer** 三个默认账户密码（v5.0 三级角色）
 - [ ] 验证 Web 界面访问正常
-- [ ] 验证数据上传功能
-- [ ] 验证 API Key 创建与上传流程
-- [ ] 阅读 `docs/user_guide.md`
-- [ ] 配置 IC 团队 DC 流程 Makefile (见 `scripts/Makefile.example`)
+- [ ] 创建 API Key (`dc-bot`, scope=upload), 写入 DC 流程的 `~/.qor_api_key`
+- [ ] 验证数据上传功能 (admin 上传一份 demo CSV)
+- [ ] 创建首个项目 (按 IC 项目代号), 验证 `data/qor_p_<id>.db` 自动生成
+- [ ] 创建首个模块 + 配置 owner/collaborators
+- [ ] 阅读 `docs/user_guide.md` 与 `docs/DATA_FORMAT.md`
+- [ ] 把 `scripts/Makefile.example` 复制到 DC run 目录, 修改变量后 `make upload-all` 验证
+- [ ] 如有 viewer 客户, 创建 viewer 角色用户, 批量发布数据后用 viewer 账号验证只读
+
+### 14.4 应用管理员的"首启 30 分钟"清单
+
+```bash
+# 1. 登录 (强制改密)
+#    https://qor.example.com/login
+#    admin / admin@2026  → 强密码
+#    release / release@2026 → 强密码
+#    viewer / viewer@2026 → 强密码
+
+# 2. 创建 API Key (Web → 管理 → API Key → 新建)
+#    name=dc-bot, scope=upload
+#    保存 key 到: echo "qor_xxx" > ~/.qor_api_key && chmod 600 ~/.qor_api_key
+
+# 3. 创建项目 (Web → 管理 → 项目 → 新建)
+#    name=ChipA (与 IC 项目代号一致)
+#    自动生成 /opt/qor_recorder/data/qor_p_<id>.db
+
+# 4. 创建模块 (Web → 管理 → 项目 → 进入 → 模块)
+#    name=cpu_top (与 RTL top module 一致)
+#    owner=admin (或指定用户)
+
+# 5. 测试上传 (DC 流程端)
+cd /scratch/runs/cpu_v1
+cp /opt/qor_recorder/scripts/Makefile.example Makefile
+# 编辑 Makefile: PROJECT_ID, API_KEY_FILE
+make upload-qor   # 上传 QoR
+make release      # 上传并发布 (viewer 可见)
+
+# 6. 验证 viewer
+#    用 viewer 账号登录 Web
+#    Dashboard 看到刚发布的数据
+#    违例分析 → 选多 clock → 应看到每个 clock 一张子图
+```
 
 ---
 
 ## 附录: 相关文档
 
-| 文档                     | 位置                              | 用途                |
-| ------------------------ | --------------------------------- | ------------------- |
-| 用户使用指南             | `docs/user_guide.md`              | 面向终端用户        |
-| 数据格式规范             | `docs/DATA_FORMAT.md`             | CSV 上传格式说明    |
-| 开发者文档               | `docs/developer_guide.md`         | 架构与开发流程      |
-| Docker Compose 配置      | `docker-compose.yml`              | Docker 部署         |
-| MySQL Compose 扩展       | `docker-compose.mysql.yml`        | Docker + MySQL      |
-| systemd 服务模板         | `deploy/qor_recorder.service`      | systemd 单元文件   |
-| 自动上传脚本             | `scripts/upload_qor.sh`           | DC 流程集成         |
-| Makefile 示例            | `scripts/Makefile.example`        | DC 流程自动化模板   |
-| 环境变量模板             | `.env.example`                    | 配置项参考          |
+| 文档                     | 位置                              | 用途                                       |
+| ------------------------ | --------------------------------- | ------------------------------------------ |
+| 用户使用指南             | `docs/user_guide.md`              | 面向终端用户 (admin / owner / viewer)      |
+| **数据格式规范 (v5.0)**   | `docs/DATA_FORMAT.md`             | CSV 上传格式 + 部署清单 + 角色权限         |
+| 开发者文档               | `docs/developer_guide.md`         | 架构与开发流程                              |
+| MongoDB 迁移文档         | `docs/MIGRATION_V4.md`            | v3.x → v4.0 分库 + MongoDB 迁移步骤        |
+| Docker Compose 配置      | `docker-compose.yml`              | Docker 部署                                 |
+| MySQL Compose 扩展       | `docker-compose.mysql.yml`        | Docker + MySQL                              |
+| systemd 服务模板         | `deploy/qor_recorder.service`      | systemd 单元文件                           |
+| 自动上传脚本             | `scripts/upload_qor.sh`           | DC 流程集成                                 |
+| Makefile 示例            | `scripts/Makefile.example`        | DC 流程自动化模板                           |
+| 环境变量模板             | `.env.example`                    | 配置项参考 (含 DB_TYPE 切换)                |
+| 迁移脚本 (单库→分库)     | `migrate_to_per_project_db.py`    | v3.x 数据迁到 v4.0+ 按项目分库              |
+| 迁移脚本 (SQLite→Mongo)  | `migrate_sqlite_to_mongo.py`      | SQLite 数据迁到 MongoDB                     |
+| 数据库初始化/校验         | `db_init.py`                       | `--check` 校验, `--demo` 演示数据          |
+| 演示数据生成             | `seed_demo_data.py`               | 5 项目 × 200+ 条记录的演示数据              |
 
 ---
 
-*如有部署问题,请联系部署人员或查阅 `docs/developer_guide.md`*
+*如有部署问题,请联系部署人员或查阅 `docs/developer_guide.md` 与 `docs/DATA_FORMAT.md` 第 20 节"实际环境部署清单".*

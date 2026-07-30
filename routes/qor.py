@@ -227,10 +227,12 @@ def api_qor_record_detail(record_id):
         rec = QorRecord.query.get(record_id)
     if rec is None:
         return jsonify({'error': '记录不存在'}), 404
-    # v5.0 viewer: 仅可看已发布记录, 未发布记录视同不存在
-    if current_user.is_viewer and not rec.is_released:
-        return jsonify({'error': '记录不存在'}), 404
-    if not current_user.is_admin and not current_user.is_release and not current_user.is_owner:
+    # v5.0 viewer: 仅可看已发布记录, 未发布记录视同不存在 (不受 ProjectMember 限制)
+    if current_user.is_viewer:
+        if not rec.is_released:
+            return jsonify({'error': '记录不存在'}), 404
+    elif not current_user.is_admin and not current_user.is_release and not current_user.is_owner:
+        # 其它角色: 需是项目成员
         member = ProjectMember.query.filter_by(
             project_id=rec.module.project_id, user_id=current_user.id,
         ).first()

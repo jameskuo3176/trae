@@ -60,6 +60,17 @@ _verify_*.py
 verify_*.py
 preview_demo_data.py
 
+# 调试期临时输出 (渲染结果 / 错误日志 / 解析中间产物)
+_*.py
+_*.js
+admin_rendered.html
+*.err
+apply_version_desc.py
+check_heads.py
+regen_riscv_demo.py
+diag_*.py
+demo_csv_out/
+
 # IDE 工具相关
 .trae/
 trae/

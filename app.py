@@ -43,6 +43,29 @@ def backup_database(db_path, backup_dir='backups', max_backups=10):
 def init_default_data():
     """初始化默认管理员与示例数据"""
     with app.app_context():
+        # 紧急重置 admin 密码: 启动时若设置了 EMERGENCY_RESET_ADMIN_PASSWORD=1,
+        # 自动生成 16 位强随机密码, 打印到终端, 并标记 must_change_password=True
+        # (正常情况下不要使用; 仅用于遗忘 admin 密码时的应急恢复)
+        if os.environ.get('EMERGENCY_RESET_ADMIN_PASSWORD') == '1':
+            import secrets
+            import string
+            from datetime import datetime as _dt
+            admin = User.query.filter_by(username='admin').first()
+            if admin is None:
+                admin = User(username='admin', role='admin', display_name='管理员')
+                admin.must_change_password = True
+                db.session.add(admin)
+            alpha = string.ascii_letters + string.digits
+            new_pw = ''.join(secrets.choice(alpha) for _ in range(16))
+            admin.set_password(new_pw)
+            admin.must_change_password = True
+            admin.password_changed_at = _dt.utcnow()
+            db.session.commit()
+            print('=' * 60)
+            print('[EMERGENCY] admin 密码已强制重置 (EMERGENCY_RESET_ADMIN_PASSWORD=1)')
+            print(f'[EMERGENCY] 新密码: {new_pw}')
+            print('[EMERGENCY] 请立即用此密码登录并修改为强密码, 然后取消该环境变量')
+            print('=' * 60)
         # 只创建主库表 (__bind_key__ != 'project' 的模型)
         # 项目库表在 create_project_db() 中按需创建
         from models import _collect_master_models

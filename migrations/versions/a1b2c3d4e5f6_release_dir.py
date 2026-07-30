@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 revision = 'a1b2c3d4e5f6_release_dir'
-# 当前最新迁移: g7a8b9c0d1e2 (must_change_password) — 当前 DB 的 head
-down_revision = 'g7a8b9c0d1e2'
+# 当前最新迁移: g7a8b9c0d1e3 (version_description) — 合并到统一 head
+down_revision = 'g7a8b9c0d1e3'
 branch_labels = None
 depends_on = None
 
