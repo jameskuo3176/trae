@@ -1,0 +1,17 @@
+docs: 新增 PACKAGE_MANAGEMENT.md (Python 依赖管理全面方案)
+
+涵盖用户要求的 5 大维度:
+1) 工具选型 (pip / uv / pip-tools / poetry 对比, 推荐组合)
+2) 版本控制 (requirements/*.in + .txt 双层 lockfile, --generate-hashes 哈希锁定)
+3) 安全管理 (pip-audit / safety / SBOM / license 扫描, 供应链攻击防护)
+4) 体积优化 (多阶段 Dockerfile / layer 缓存 / tree-shaking)
+5) 缓存策略 (pip cache dir / wheel 预下载 / BuildKit / K8s NFS)
+
+附加:
+- 三环境差异 (dev/test/prod) + 命令速查
+- CI/CD 集成 (GitHub Actions + pre-commit hook)
+- 零侵入迁移步骤 (从现状 requirements.txt 升级到 lockfile)
+- 故障排查表
+- Python vs Node 生态对照表 (项目无 npm 依赖, 供未来扩展参考)
+
+Co-Authored-By: Trae <noreply@trae.ai>
