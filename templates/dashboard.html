@@ -122,11 +122,10 @@
         <div class="form-group" style="margin: 0;">
             <label style="font-size: 12px; display: block;">X轴标签</label>
             <select id="chartLabelMode" onchange="rerenderAllCharts()" style="font-size: 13px;">
-                <option value="tag">标签 (Tag)</option>
-                <option value="auto">自动</option>
-                <option value="module">模块名</option>
-                <option value="both" selected>模块+标签</option>
-                <option value="module_tag_dir">模块+标签+目录</option>
+                <option value="both" selected>模块+标签 (智能消歧)</option>
+                <option value="module">仅模块名 (智能消歧)</option>
+                <option value="tag">仅标签 (智能消歧)</option>
+                <option value="module_tag_dir">模块+标签+目录 (总显)</option>
             </select>
         </div>
         <div class="form-group" style="margin: 0;">
@@ -169,8 +168,7 @@
     <div class="card chart-card" data-chart-id="area">
         <div class="card-header">
             <span>面积对比</span>
-            <select id="chartAreaMetric" multiple onchange="renderAreaChart()" class="btn-sm"
-                data-multi
+            <select id="chartAreaMetric" multiple onchange="renderAreaChart()" class="btn-sm" data-multi
                 style="font-size: 12px; min-width: 180px; min-height: 90px;">
                 <option value="area_total" selected>总面积</option>
                 <option value="area_combinational" selected>组合逻辑面积</option>
@@ -187,7 +185,8 @@
         <div class="card-header">
             <span id="chartTimingTitle">时序分析 (按时钟)</span>
             <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
-                <label style="font-size:11px; display:flex; align-items:center; gap:3px; padding:2px 6px; background:var(--color-surface-hover); border-radius:3px;">
+                <label
+                    style="font-size:11px; display:flex; align-items:center; gap:3px; padding:2px 6px; background:var(--color-surface-hover); border-radius:3px;">
                     <input type="checkbox" id="chartTimingMode" onchange="onTimingModeChange()"
                         style="width:auto; margin:0;" title="按指标聚合: metric 多选 + clock 多选 (并排显示 N 张图, 每图对应一个 clock)">
                     按指标聚合 (违例分析)
@@ -197,15 +196,15 @@
                     <option value="tns">TNS</option>
                     <option value="number">违例路径数</option>
                 </select>
-                <select id="chartTimingMetricMulti" multiple onchange="renderTimingChart()" class="btn-sm"
-                    data-multi style="display:none; font-size: 12px; min-width: 220px; min-height: 60px;"
+                <select id="chartTimingMetricMulti" multiple onchange="renderTimingChart()" class="btn-sm" data-multi
+                    style="display:none; font-size: 12px; min-width: 220px; min-height: 60px;"
                     title="多选 metric 同时显示 (WNS/TNS/违例路径数)">
                     <option value="wns" selected>WNS</option>
                     <option value="tns" selected>TNS</option>
                     <option value="number" selected>违例路径数</option>
                 </select>
-                <select id="chartTimingClocks" multiple onchange="renderTimingChart()" class="btn-sm"
-                    data-multi style="font-size: 12px; min-width: 160px; min-height: 28px;"
+                <select id="chartTimingClocks" multiple onchange="renderTimingChart()" class="btn-sm" data-multi
+                    style="font-size: 12px; min-width: 160px; min-height: 28px;"
                     title="选择要绘制的时钟 (Ctrl+多选); 切换项目/模块后自动刷新">
                 </select>
             </div>
@@ -217,8 +216,7 @@
     <div class="card chart-card" data-chart-id="power">
         <div class="card-header">
             <span>功耗分析 (多选对比)</span>
-            <select id="chartPowerMetric" multiple onchange="renderPowerChart()" class="btn-sm"
-                data-multi
+            <select id="chartPowerMetric" multiple onchange="renderPowerChart()" class="btn-sm" data-multi
                 style="font-size: 12px; min-width: 220px; min-height: 90px; vertical-align: top;">
                 <option value="power_total" selected>总功耗</option>
                 <option value="power_internal">内部功耗</option>
@@ -233,8 +231,7 @@
     <div class="card chart-card" data-chart-id="cell">
         <div class="card-header">
             <span>Cell 数量对比</span>
-            <select id="chartCellMetric" multiple onchange="renderCellChart()" class="btn-sm"
-                data-multi
+            <select id="chartCellMetric" multiple onchange="renderCellChart()" class="btn-sm" data-multi
                 style="font-size: 12px; min-width: 180px; min-height: 90px;">
                 <option value="cell_count" selected>总单元数</option>
                 <option value="sequential_cell_count" selected>时序单元数</option>
@@ -248,8 +245,7 @@
     <div class="card chart-card" data-chart-id="pie" data-span="2">
         <div class="card-header">
             <span>面积构成 (饼图 - 多选对比)</span>
-            <select id="chartPieTarget" multiple onchange="renderPieChart()" class="btn-sm"
-                data-multi
+            <select id="chartPieTarget" multiple onchange="renderPieChart()" class="btn-sm" data-multi
                 style="font-size: 12px; min-width: 220px; min-height: 90px; vertical-align: top;">
             </select>
         </div>
@@ -1638,49 +1634,94 @@
     }
 
     function getLabels(data) {
-        data = data || getFilteredData();
-        const mode = document.getElementById('chartLabelMode').value;
-        return data.map(r => makeLabelForRecord(r, mode).label);
+        const objs = getLabelObjs(data);
+        return objs.map(o => o.label);
     }
 
-    // 表格视图使用: 同时返回 label (主文本) 和 dir (短化目录) 用于第二列
+    // 表格视图使用: 返回 [{label, dir, wasDisambiguated}, ...]
+    //   - label: 智能消歧后的最终标签 (可能拼了 short_dir 或 #id)
+    //   - dir:   短化后的 full_dir (供表格"目录"列)
+    //   - wasDisambiguated: 该行是否因重名被自动加了消歧后缀
+    // 设计原则: full_dir 才是 run 的真身, 其他 tag 只是简称. 同简称时自动拼 short_dir 消歧.
     function getLabelObjs(data) {
         data = data || getFilteredData();
         const mode = document.getElementById('chartLabelMode').value;
-        return data.map(r => makeLabelForRecord(r, mode));
-    }
-    // 是否在表格模式中显示"目录"列
-    function _shouldShowDir(mode) {
-        return ['both', 'auto', 'module_tag_dir'].includes(mode);
+        return _computeSmartLabels(data, mode);
     }
 
-    // 单条记录生成标签 (供 getLabels / renderPowerChart 表格复用)
-    // 返回 [label, dirSuffix]:
-    //   - label: 显示在 X 轴 / 表格第一列的主文本
-    //   - dirSuffix: 短化的 full_dir, 可选, 用于在表格第二列展示
-    function makeLabelForRecord(r, mode) {
-        if (mode === 'tag') return { label: r.tag || r.version || r.module_name || '', dir: null };
-        if (mode === 'module') return { label: r.module_name || '', dir: null };
+    // 单条记录生成"基础"简称 (不含消歧后缀)
+    function _baseLabel(r, mode) {
         if (mode === 'module_tag_dir') {
-            // 模块+标签+目录: 必带 full_dir (含 release_dir_effective 优先)
+            // 模式: 总是显式拼 full_dir (不依赖消歧, 完整显示)
             let label = r.module_name || '';
             const tag = r.tag || r.version;
             if (tag && tag !== 'v1') label += ` (${tag})`;
             const dir = _shortDir(r.release_dir_effective || r.full_dir);
             if (dir) label += ` · ${dir}`;
-            return { label, dir };
+            else label += ` #${r.id}`;
+            return label;
         }
-        if (mode === 'both') {
-            let label = r.module_name || '';
-            const tag = r.tag || r.version;
-            if (tag && tag !== 'v1') label += ` (${tag})`;
-            return { label, dir: _shortDir(r.release_dir_effective || r.full_dir) };
-        }
-        // auto: 智能选择 (对单条记录无法判断整体, 默认模块+标签)
+        if (mode === 'tag') return r.tag || r.version || r.module_name || '';
+        if (mode === 'module') return r.module_name || '';
+        // both / auto / 默认
         let label = r.module_name || '';
         const tag = r.tag || r.version;
         if (tag && tag !== 'v1') label += ` (${tag})`;
-        return { label, dir: _shortDir(r.release_dir_effective || r.full_dir) };
+        return label;
+    }
+
+    // 智能消歧: 同 base label 出现 > 1 次时, 自动拼 short_dir
+    // - 全部 unique: 不拼, 保持简洁
+    // - 重复: 拼 short_dir (按 release_dir_effective → full_dir 顺序取)
+    // - full_dir 也相同: fallback 到 #id
+    function _computeSmartLabels(data, mode) {
+        const bases = data.map(r => _baseLabel(r, mode));
+        // mode=module_tag_dir 已在 _baseLabel 内处理, 不再消歧
+        if (mode === 'module_tag_dir') {
+            return data.map((r, i) => ({
+                label: bases[i],
+                dir: _shortDir(r.release_dir_effective || r.full_dir),
+                wasDisambiguated: true,
+            }));
+        }
+        // 1) 分组
+        const groups = new Map();
+        data.forEach((r, i) => {
+            const k = bases[i];
+            if (!groups.has(k)) groups.set(k, []);
+            groups.get(k).push(i);
+        });
+        // 2) 默认 result: 标签=base, dir=short, wasDisambiguated=false
+        const result = data.map((r, i) => ({
+            label: bases[i],
+            dir: _shortDir(r.release_dir_effective || r.full_dir),
+            wasDisambiguated: false,
+        }));
+        // 3) 重名组: 拼消歧后缀
+        for (const [_, idxs] of groups) {
+            if (idxs.length <= 1) continue;
+            idxs.forEach(i => {
+                const r = data[i];
+                const dir = _shortDir(r.release_dir_effective || r.full_dir);
+                if (dir) {
+                    result[i].label = `${bases[i]} · ${dir}`;
+                } else {
+                    result[i].label = `${bases[i]} #${r.id}`;
+                }
+                result[i].wasDisambiguated = true;
+            });
+        }
+        return result;
+    }
+
+    // 是否在表格模式中显示"目录"列
+    //   - module_tag_dir: 总是显示
+    //   - tag / module: 总是显示 (简称太短, 全显示 dir 便于辨识)
+    //   - both / auto: 仅在有重名被消歧时显示 (避免无谓列宽)
+    function _shouldShowDirColumn(labelObjs, mode) {
+        if (mode === 'module_tag_dir') return true;
+        if (mode === 'tag' || mode === 'module') return true;
+        return labelObjs.some(o => o.wasDisambiguated);
     }
 
     // 缩短 full_dir 为可读形式: 取最后 2 段, 不超过 ~24 字符
@@ -1826,12 +1867,12 @@
         const n = option.series.filter(s => s && s.type === 'bar').length;
         const barWidth = n <= 1 ? '60%'
             : n <= 2 ? '50%'
-            : n <= 3 ? '38%'
-            : n <= 4 ? '30%'
-            : n <= 5 ? '22%'
-            : n <= 7 ? '16%'
-            : n <= 10 ? '12%'
-            : '10%';
+                : n <= 3 ? '38%'
+                    : n <= 4 ? '30%'
+                        : n <= 5 ? '22%'
+                            : n <= 7 ? '16%'
+                                : n <= 10 ? '12%'
+                                    : '10%';
         option.series.forEach(s => {
             if (s && s.type === 'bar') {
                 if (s.barMinHeight == null) s.barMinHeight = 3;       // 最小高度 px, 0 值也能看见
@@ -1863,8 +1904,8 @@
         // 表格模式: 跳过 echarts, 直接渲染可排序 HTML 表格
         if (chartType === 'table') {
             const mode = document.getElementById('chartLabelMode').value;
-            const showDir = _shouldShowDir(mode);
-            const labelObjs = data.map(r => makeLabelForRecord(r, mode));
+            const labelObjs = getLabelObjs(data);
+            const showDir = _shouldShowDirColumn(labelObjs, mode);
             const headers = ['模块/版本', ...(showDir ? ['目录'] : []), ...metrics.map(m => AREA_METRIC_LABELS[m] || m)];
             const rows = data.map((r, i) => {
                 const obj = labelObjs[i] || { label: '', dir: null };
@@ -1959,8 +2000,8 @@
         const chartType = getChartType();
         if (chartType === 'table') {
             const mode = document.getElementById('chartLabelMode').value;
-            const showDir = _shouldShowDir(mode);
-            const labelObjs = data.map(r => makeLabelForRecord(r, mode));
+            const labelObjs = getLabelObjs(data);
+            const showDir = _shouldShowDirColumn(labelObjs, mode);
             const headers = ['模块/版本', ...(showDir ? ['目录'] : []), ...metrics.map(m => CELL_METRIC_LABELS[m] || m)];
             const rows = data.map((r, i) => {
                 const obj = labelObjs[i] || { label: '', dir: null };
@@ -2160,8 +2201,8 @@
             // 表格模式: 每个 clock 一组列, 横向合并到一张表
             if (chartType === 'table') {
                 const mode = document.getElementById('chartLabelMode').value;
-                const showDir = _shouldShowDir(mode);
-                const labelObjs = dataForRender.map(r => makeLabelForRecord(r, mode));
+                const labelObjs = getLabelObjs(dataForRender);
+                const showDir = _shouldShowDirColumn(labelObjs, mode);
                 const unitMap = { wns: ' ns', tns: ' ns', number: '' };
                 const labelMap = { wns: 'WNS', tns: 'TNS', number: '违例路径数' };
                 const headers = ['模块/版本', ...(showDir ? ['目录'] : [])];
@@ -2214,12 +2255,12 @@
             const n = clockSet.length;
             const flexBasis = (n === 1) ? '100%'
                 : (n === 2) ? 'calc(50% - 6px)'
-                : (n === 3) ? 'calc(33.333% - 8px)'
-                : 'calc(50% - 6px)';
+                    : (n === 3) ? 'calc(33.333% - 8px)'
+                        : 'calc(50% - 6px)';
             const subHeight = (n === 1) ? '500px'
                 : (n === 2) ? '460px'
-                : (n <= 4) ? '400px'
-                : '380px';
+                    : (n <= 4) ? '400px'
+                        : '380px';
 
             const METRIC_COLORS = { wns: '#E04A4A', tns: '#2C3E50', number: '#7AB7B7' };
             const METRIC_UNIT = { wns: 'ns', tns: 'ns', number: '' };
@@ -2311,8 +2352,8 @@
         // 表格模式
         if (chartType === 'table') {
             const mode = document.getElementById('chartLabelMode').value;
-            const showDir = _shouldShowDir(mode);
-            const labelObjs = dataForRender.map(r => makeLabelForRecord(r, mode));
+            const labelObjs = getLabelObjs(dataForRender);
+            const showDir = _shouldShowDirColumn(labelObjs, mode);
             if (clockSet.length === 0) {
                 return initChart('chartTiming', '暂无时钟数据 (CSV 应包含 <CLOCKNAME>_wns/_tns/_path 列)');
             }
@@ -2341,7 +2382,7 @@
             }
             const legacyField = (metric === 'wns') ? 'wns_setup'
                 : (metric === 'tns') ? 'tns_setup'
-                : (metric === 'number') ? 'nvp_setup' : null;
+                    : (metric === 'number') ? 'nvp_setup' : null;
             if (!legacyField || !data.some(r => r[legacyField] != null)) {
                 return initChart('chartTiming', '暂无时钟组数据 (CSV 应包含 <CLOCKNAME>_wns/_tns/_path 列)');
             }
@@ -2458,8 +2499,8 @@
         // 表格模式: 渲染可排序表格
         if (chartType === 'table') {
             const mode = document.getElementById('chartLabelMode').value;
-            const labelObjs = powerData.map(r => makeLabelForRecord(r, mode));
-            const showDir = ['both', 'auto', 'module_tag_dir'].includes(mode);
+            const labelObjs = getLabelObjs(powerData);
+            const showDir = _shouldShowDirColumn(labelObjs, mode);
             const headers = ['模块/版本', ...(showDir ? ['目录'] : []), ...selectedMetrics.map(m => `${powerMetricNames[m] || m} (mW)`)];
             const rows = powerData.map((r, i) => {
                 const obj = labelObjs[i] || { label: '', dir: null };
@@ -2583,11 +2624,12 @@
         // 表格模式: 列出每个选中 record 的 4 个 component 值
         if (chartType === 'table') {
             const mode = document.getElementById('chartLabelMode').value;
-            const showDir = _shouldShowDir(mode);
+            const labelObjs = getLabelObjs(data);
+            const showDir = _shouldShowDirColumn(labelObjs, mode);
             const headers = ['模块/版本', ...(showDir ? ['目录'] : []), ...COMP_NAMES, '总和 (um2)'];
             const rows = selectedIdx.map(idx => {
                 const r = data[idx];
-                const obj = makeLabelForRecord(r, mode);
+                const obj = labelObjs[idx] || { label: '', dir: null };
                 const cells = [obj.label];
                 if (showDir) cells.push(obj.dir || '-');
                 let total = 0;
@@ -2600,7 +2642,8 @@
                 cells.push(Math.round(total));
                 return cells;
             });
-            renderAsTable('chartPie', headers, rows, showDir ? [2, 3, 4, 5, 6] : [1, 2, 3, 4, 5]);
+            const numericCols = showDir ? [2, 3, 4, 5, 6] : [1, 2, 3, 4, 5];
+            renderAsTable('chartPie', headers, rows, numericCols);
             return;
         }
 
@@ -2678,8 +2721,8 @@
         // 表格模式
         if (chartType === 'table') {
             const mode = document.getElementById('chartLabelMode').value;
-            const showDir = _shouldShowDir(mode);
-            const labelObjs = data.map(r => makeLabelForRecord(r, mode));
+            const labelObjs = getLabelObjs(data);
+            const showDir = _shouldShowDirColumn(labelObjs, mode);
             const headers = ['模块/版本', ...(showDir ? ['目录'] : []), `${title}${unit ? ' (' + unit + ')' : ''}`];
             const rows = data.map((r, i) => {
                 const v = r[metric];
@@ -2788,8 +2831,8 @@
         // 表格模式
         if (chartType === 'table') {
             const mode = document.getElementById('chartLabelMode').value;
-            const showDir = _shouldShowDir(mode);
-            const labelObjs = data.map(r => makeLabelForRecord(r, mode));
+            const labelObjs = getLabelObjs(data);
+            const showDir = _shouldShowDirColumn(labelObjs, mode);
             const headers = ['模块/版本', ...(showDir ? ['目录'] : []), '水平 (H)', '垂直 (V)', '综合 (B)'];
             const rows = data.map((r, i) => {
                 const obj = labelObjs[i] || { label: '', dir: null };
@@ -4214,8 +4257,8 @@
         if (clockSet.length === 0) {
             const legacyField = (mode === 'aggregate') ? null
                 : (metric === 'wns') ? 'wns_setup'
-                : (metric === 'tns') ? 'tns_setup'
-                : (metric === 'number') ? 'nvp_setup' : null;
+                    : (metric === 'tns') ? 'tns_setup'
+                        : (metric === 'number') ? 'nvp_setup' : null;
             if (!legacyField) return { headers: [..._BASE_HEADERS], rows: data.map(r => _baseRow(r)) };
             return {
                 headers: [..._BASE_HEADERS, legacyField],
