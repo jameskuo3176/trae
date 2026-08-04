@@ -3,11 +3,124 @@
 封装数据保存/合并/校验等业务逻辑, 供多个路由复用。
 """
 import json
+import re
 from datetime import datetime
 
 from flask_login import current_user
 
 from models import db, Module, QorRecord, ViolationPath
+
+
+# ---------------------------------------------------------------------------
+# 路径解析: 从 source 路径自动提取 full_dir / tag / version
+# ---------------------------------------------------------------------------
+
+# 默认版本号正则: 匹配形如 syn_run_0804 / impl_run_0423 / pr_run_2024 的段
+_DEFAULT_VERSION_RE = re.compile(r'^[a-zA-Z]+_run_\d+$')
+
+# 默认 rpts 标记: 以此作为 full_dir 的截断点
+_DEFAULT_RPTS_MARKER = '/rpts/'
+
+
+def parse_source_path(source_path, *,
+                      top_module=None,
+                      version_pattern=None,
+                      rpts_marker=None):
+    """从 source 路径自动提取 full_dir、tag 和 version。
+
+    示例路径:
+      /project_dir/Syn/week2_run/syn_run_0804/main/modulea_t_cfg1_rundir/rpts/Synthesis/file
+
+    提取结果:
+      full_dir: /project_dir/Syn/week2_run/syn_run_0804/main/modulea_t_cfg1_rundir
+      tag:      cfg1_rundir  (去除模块名前缀 modulea_t_ 后)
+      version:  syn_run_0804
+
+    解析规则:
+      1. full_dir = rpts_marker 之前的完整路径
+      2. version = full_dir 各段中匹配 version_pattern 的第一个段
+      3. tag = full_dir 最后一个路径段; 若提供 top_module, 自动去除模块名前缀
+
+    Args:
+        source_path: 源文件完整路径 (str)
+        top_module: 模块名, 用于从 tag 中去除模块名前缀 (可选)
+        version_pattern: 版本号正则 (str 或 compiled re), 默认匹配 *_run_数字 格式
+        rpts_marker: rpts 目录标记, 默认 '/rpts/'
+
+    Returns:
+        dict: {'full_dir': str, 'tag': str, 'version': str | None}
+
+    Raises:
+        ValueError: 路径格式不符合预期 (缺少 rpts_marker 等)
+    """
+    if not source_path or not isinstance(source_path, str):
+        raise ValueError(f'source_path 必须为非空字符串, 实际: {source_path!r}')
+
+    marker = rpts_marker or _DEFAULT_RPTS_MARKER
+
+    # 规范化 version_pattern: 支持 str 或 compiled re
+    if version_pattern is None:
+        ver_re = _DEFAULT_VERSION_RE
+    elif isinstance(version_pattern, str):
+        ver_re = re.compile(version_pattern)
+    else:
+        ver_re = version_pattern
+
+    # 1. 提取 full_dir: rpts_marker 之前的部分
+    idx = source_path.find(marker)
+    if idx == -1:
+        raise ValueError(
+            f'路径中未找到 "{marker}" 标记, 无法确定 full_dir 截断点: {source_path}'
+        )
+    full_dir = source_path[:idx]
+
+    if not full_dir:
+        raise ValueError(f'full_dir 为空, 路径格式异常: {source_path}')
+
+    # 2. 提取 tag: full_dir 的最后一个路径段
+    #    兼容 Unix (/) 和 Windows (\) 路径分隔符
+    segments = [s for s in re.split(r'[/\\]', full_dir) if s]
+    if not segments:
+        raise ValueError(f'full_dir 路径段为空: {full_dir}')
+
+    raw_tag = segments[-1]
+
+    # 去除模块名前缀 (如 modulea_t_ → 保留 cfg1_rundir)
+    if top_module:
+        # 精确匹配 top_module 本身
+        if raw_tag == top_module:
+            tag = raw_tag
+        elif raw_tag.startswith(top_module + '_'):
+            tag = raw_tag[len(top_module) + 1:]
+        else:
+            # top_module 可能只是部分匹配, 回退到通用逻辑
+            parts = raw_tag.split('_', 1)
+            if len(parts) >= 2 and len(parts[0]) >= 3:
+                tag = parts[1]
+            else:
+                tag = raw_tag
+    else:
+        # 无 top_module 时, 尝试按通用模式去除前缀 (第一个 _ 之前的部分)
+        # 仅当 tag 包含至少两个 _ 分隔的部分时才尝试
+        parts = raw_tag.split('_', 1)
+        if len(parts) >= 2 and len(parts[0]) >= 3:
+            # 前缀长度 >= 3 且 tag 包含多个部分 → 可能是模块名
+            tag = parts[1]
+        else:
+            tag = raw_tag
+
+    # 3. 提取 version: 遍历 full_dir 各段, 匹配版本号正则
+    version = None
+    for seg in segments:
+        if ver_re.match(seg):
+            version = seg
+            break
+
+    return {
+        'full_dir': full_dir,
+        'tag': tag,
+        'version': version,
+    }
 
 
 def _coerce_extra_fields(value):
@@ -80,6 +193,8 @@ def save_records_to_db(records, project, module_id, version, source_filename,
         'nvp_setup': (0, 1e9), 'nvp_hold': (0, 1e9),
         'cell_count': (0, 1e9), 'instance_count': (0, 1e9),
         'net_count': (0, 1e9), 'sequential_cell_count': (0, 1e9),
+        'ram_cell_count': (0, 1e9), 'macro_cell_count': (0, 1e9),
+        'register_count': (0, 1e9),  # DC 报告的 total_flops (寄存器数)
         'mbb_ratio': (0, 100), 'clock_gating_ratio': (0, 100),
         'utilization': (0, 100),
         'congestion': (0, 100), 'congestion_h': (0, 100),
@@ -102,7 +217,8 @@ def save_records_to_db(records, project, module_id, version, source_filename,
             if v < lo or v > hi:
                 return None
         if field in ('nvp_setup', 'nvp_hold', 'cell_count', 'instance_count',
-                     'net_count', 'sequential_cell_count'):
+                     'net_count', 'sequential_cell_count', 'ram_cell_count',
+                     'macro_cell_count', 'register_count'):
             return int(v)
         return v
 
@@ -142,10 +258,31 @@ def save_records_to_db(records, project, module_id, version, source_filename,
 
             rec_version = sanitize_str(record.get('version')) or sanitize_str(version) or 'v1'
 
-            # 去重
-            existing = QorRecord.query.filter_by(
-                module_id=mod.id, version=rec_version,
-            ).first()
+            # 提取本条 record 的 full_dir (用于精确去重)
+            # 来源: record.full_dir > extra_fields.full_dir (CSV/JSON 通用)
+            _rec_full_dir = sanitize_str(record.get('full_dir'))
+            if not _rec_full_dir:
+                _ne = record.get('extra_fields')
+                if isinstance(_ne, dict):
+                    _rec_full_dir = sanitize_str(_ne.get('full_dir'))
+                elif isinstance(_ne, str) and _ne.strip():
+                    try:
+                        _ne2 = json.loads(_ne)
+                        if isinstance(_ne2, dict):
+                            _rec_full_dir = sanitize_str(_ne2.get('full_dir'))
+                    except (ValueError, TypeError):
+                        pass
+            _rec_full_dir = str(_rec_full_dir)[:500] if _rec_full_dir else None
+
+            # 去重: QorRecord 唯一键是 (module_id, version, full_dir) —
+            # full_dir 是 run 的真实唯一标识, 同一 run 下多 scenarios/path_groups
+            # 通过不同 full_dir 后缀区分 (见 dc_report_to_json.py)
+            q = QorRecord.query.filter_by(module_id=mod.id, version=rec_version)
+            if _rec_full_dir:
+                existing = q.filter_by(full_dir=_rec_full_dir).first()
+            else:
+                # 兼容旧调用: 没传 full_dir 时, 退化到仅 (module_id, version) 去重
+                existing = q.first()
 
             if existing:
                 for f in FLOAT_FIELDS_SET:
@@ -205,17 +342,19 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                         existing.released_by = current_user.id
                 updated_count += 1
             else:
-                _fd = ''
-                _ne = record.get('extra_fields')
-                if isinstance(_ne, dict):
-                    _fd = _ne.get('full_dir', '') or ''
-                elif isinstance(_ne, str):
-                    try:
-                        _ne2 = json.loads(_ne)
-                        if isinstance(_ne2, dict):
-                            _fd = _ne2.get('full_dir', '') or ''
-                    except (ValueError, TypeError):
-                        _fd = ''
+                # 新建 record 路径: 优先从 record.full_dir 读, 退化到 extra_fields.full_dir
+                _fd = sanitize_str(record.get('full_dir')) or ''
+                if not _fd:
+                    _ne = record.get('extra_fields')
+                    if isinstance(_ne, dict):
+                        _fd = _ne.get('full_dir', '') or ''
+                    elif isinstance(_ne, str):
+                        try:
+                            _ne2 = json.loads(_ne)
+                            if isinstance(_ne2, dict):
+                                _fd = _ne2.get('full_dir', '') or ''
+                        except (ValueError, TypeError):
+                            _fd = ''
                 _rd = record.get('release_dir')
                 # 整批 default_release_dir 优先于 CSV 自带值
                 if default_release_dir is not None:

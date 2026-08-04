@@ -6,7 +6,6 @@
   - 用户主题
 """
 import json
-import re
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
@@ -14,10 +13,7 @@ from flask_login import current_user, login_required
 from flask import current_app
 
 import repo
-from models import (
-    db, User, Project, UserDashboard, DashboardGroup,
-    DEFAULT_THEME, THEME_PRESETS,
-)
+from models import db, User, Project, UserDashboard, DashboardGroup
 
 bp = Blueprint('dashboard', __name__)
 
@@ -242,94 +238,36 @@ def my_default_group():
 # 主题
 # =========================================================================
 
-# 允许在主题 JSON 中保存的字段及其类型校验
-_THEME_FIELDS = {
-    'name': str,
-    'primary': str,
-    'primary_gradient_end': str,
-    'background': str,
-    'surface': str,
-    'surface_hover': str,
-    'text': str,
-    'text_secondary': str,
-    'border': str,
-    'navbar_text': str,
-    'navbar_text_active': str,
-}
-
-# 颜色字段 (粗略校验: #hex / rgb()/rgba()/hsl())
-_COLOR_RE = re.compile(r'^(#[0-9a-fA-F]{3,8}|rgb\(.+\)|rgba\(.+\)|hsl\(.+\)|hsla\(.+\))$')
-
-
 def _validate_theme(data):
-    """校验并清洗主题数据, 返回 (theme_dict, error_message)"""
-    if not isinstance(data, dict):
-        return None, '主题数据必须为对象'
-    cleaned = {}
-    for key, expected_type in _THEME_FIELDS.items():
-        if key not in data:
-            continue
-        val = data[key]
-        if not isinstance(val, expected_type):
-            return None, f'字段 {key} 类型错误'
-        if key != 'name':
-            # 颜色字段校验
-            if not _COLOR_RE.match(val.strip()):
-                return None, f'字段 {key} 不是合法颜色值: {val}'
-        cleaned[key] = val.strip() if isinstance(val, str) else val
-    # name 字段若为空, 用 'custom'
-    if not cleaned.get('name'):
-        cleaned['name'] = 'custom'
-    return cleaned, None
+    theme = data.get('theme', '').strip() if isinstance(data, dict) else ''
+    custom = data.get('custom') if isinstance(data, dict) else None
+    if not theme:
+        return None, 'theme 必填'
+    return {'theme': theme, 'custom': custom}, None
 
 
 @bp.route('/api/user/theme')
 @login_required
 def get_user_theme():
-    """获取当前用户的主题"""
+    """获取用户主题"""
     return jsonify({
-        'theme': current_user.get_theme(),
-        'presets': THEME_PRESETS,
-        'default': DEFAULT_THEME,
+        'theme': current_user.theme or 'default',
+        'custom': json.loads(current_user.custom_theme) if current_user.custom_theme else None,
     })
 
 
 @bp.route('/api/user/theme', methods=['POST'])
 @login_required
 def save_user_theme():
-    """保存当前用户的自定义主题
-
-    请求体:
-      - {preset: 'classic'}: 应用预设主题
-      - {theme: {...}}: 保存自定义主题 (字段经校验)
-      - {reset: true}: 重置为默认主题
-    """
+    """保存用户主题"""
     data = request.get_json() or {}
-
-    # 重置
-    if data.get('reset'):
-        current_user.theme = None
-        db.session.commit()
-        return jsonify({'ok': True, 'theme': current_user.get_theme()})
-
-    # 应用预设
-    preset_name = data.get('preset')
-    if preset_name:
-        if preset_name not in THEME_PRESETS:
-            return jsonify({'error': f'未知预设: {preset_name}'}), 400
-        current_user.set_theme(dict(THEME_PRESETS[preset_name]))
-        db.session.commit()
-        return jsonify({'ok': True, 'theme': current_user.get_theme()})
-
-    # 自定义主题
-    theme_data = data.get('theme')
-    if theme_data is None:
-        return jsonify({'error': '缺少 theme 字段或 preset/reset 参数'}), 400
-
-    cleaned, err = _validate_theme(theme_data)
+    payload, err = _validate_theme(data)
     if err:
         return jsonify({'error': err}), 400
-
-    current_user.set_theme(cleaned)
+    current_user.theme = payload['theme']
+    if payload.get('custom'):
+        current_user.custom_theme = json.dumps(payload['custom'], ensure_ascii=False)
+    else:
+        current_user.custom_theme = None
     db.session.commit()
-    return jsonify({'ok': True, 'theme': current_user.get_theme()})
+    return jsonify({'ok': True})

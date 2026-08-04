@@ -341,7 +341,7 @@ class QorRecord(db.Model):
     area_black_box = db.Column(db.Float)
     area_macro = db.Column(db.Float)
 
-    # ---- 时序 (Timing, 单位: ns) ----
+    # ---- 时序 (Timing, 单位: ps) ----
     # Setup
     wns_setup = db.Column(db.Float)   # Worst Negative Slack
     tns_setup = db.Column(db.Float)   # Total Negative Slack
@@ -362,6 +362,8 @@ class QorRecord(db.Model):
     instance_count = db.Column(db.Integer)
     net_count = db.Column(db.Integer)
     sequential_cell_count = db.Column(db.Integer)
+    ram_cell_count = db.Column(db.Integer)      # RAM 单元数 (DC: area.tile.cell_count.ram)
+    macro_cell_count = db.Column(db.Integer)    # Macro 单元数 (DC: area.tile.cell_count.macro)
 
     # ---- 频率 ----
     target_frequency = db.Column(db.Float)  # MHz
@@ -377,6 +379,15 @@ class QorRecord(db.Model):
     congestion_h = db.Column(db.Float)        # 水平拥塞指数 (Horizontal)
     congestion_v = db.Column(db.Float)        # 垂直拥塞指数 (Vertical)
     congestion_b = db.Column(db.Float)        # 综合拥塞指数 (Both)
+
+    # ---- 寄存器/触发器数 (DC: misc.fgcg.total_flops) ----
+    # 与 cell_count (DC: area.tile.cell_count.total) 区分: 寄存器数更贴近 flip-flop 实际规模
+    register_count = db.Column(db.Integer)    # 时序单元数 (FF/Latch), DC 工具上报为 total_flops
+
+    # ---- 原始 DC 报告 (Text/JSON) ----
+    # 存储 DC 报告原始 JSON 内容, dashboard 表格视图直接渲染该结构.
+    # CSV 上传记录该字段为 None; JSON 上传会写入完整原文以便无损展示.
+    raw_dc_report = db.Column(db.Text)        # 完整 DC 报告 JSON 字符串 (ensure_ascii=False)
 
     # ---- 额外字段 (JSON) ----
     extra_fields = db.Column(db.Text)  # JSON string
@@ -463,6 +474,10 @@ class QorRecord(db.Model):
             'instance_count': self.instance_count,
             'net_count': self.net_count,
             'sequential_cell_count': self.sequential_cell_count,
+            'ram_cell_count': self.ram_cell_count,
+            'macro_cell_count': self.macro_cell_count,
+            'register_count': self.register_count,  # 寄存器数 (DC: misc.fgcg.total_flops)
+            'raw_dc_report': self.raw_dc_report,  # 原始 DC 报告 JSON 字符串
             'target_frequency': self.target_frequency,
             'achieved_frequency': self.achieved_frequency,
             'mbb_ratio': self.mbb_ratio,

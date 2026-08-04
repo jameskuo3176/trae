@@ -10,6 +10,16 @@
 > - Dashboard 违例分析页：时钟多选（每个 clock 并排渲染一张子图）
 > - `release_dir` 字段作为独立列，与 `full_dir` 类似用于按目录发布管理
 > - 字段兼容：`tag` 仍可作为 `version` 别名；`module_name` 也支持 `module` 别名
+>
+> **v5.1 更新（2026-08-04）**:
+> - **DC 报告直传**: `/api/v1/qor/upload?project_id=N&version=V` 支持原始 DC JSON 直传
+>   - `project_id` / `version` 走 URL query, 不进 JSON
+>   - `module` = DC.`top_module` (无须指定)
+>   - `register_count` = DC.`misc.fgcg.total_flops` (新增字段)
+>   - 完整 DC JSON 存 `QorRecord.raw_dc_report` (新增字段)
+>   - 1 个 DC 报告 = 1 条 QorRecord (多 scenarios/path_groups 存到 `extra_fields.scenarios`)
+> - **Dashboard DC 报告表格视图** (默认): 行=字段路径, 列=选中的 run, 支持多 run 对比 + 变化标注 (≥5% 标红/标绿) + CSV 导出
+> - `upload_qor.sh` 自动识别 DC 报告格式, 直接转发, 不再走 `dc_report_to_json.py` 中转
 
 > **v4.0 更新（2026-07-28）**:
 > - 引入**按项目分库**架构：每个项目独立 DB 文件 (`qor_p_<id>.db`)，主库只存系统级数据
@@ -1234,6 +1244,238 @@ A: 会的. 数组中每条 record 创建一个独立的 QorRecord, 但共享 `up
 
 **Q: 缺省时 version / full_dir 取哪个?**
 A: 优先级: `record.version` > `upload.version`, `record.full_dir` > `upload.full_dir`. 顶层 `upload` 提供"批次默认值", 降低重复.
+
+---
+
+## 6.6 DC 综合报告 JSON 格式 (v5.0+, 直传模式)
+
+> 上游工具 (DC/Genus/Tempus 等) 直接产出的结构化 JSON, 端点 `/api/v1/qor/upload`
+> 自动识别 + 转换 + 入库. **不再需要 `dc_report_to_json.py` 作为中间步骤**.
+> upload_qor.sh 在 `--json` 模式下自动识别该格式 (顶层含 `top_module` + `timing`/`area`/`misc`).
+>
+> 关键设计:
+> - `project_id` / `version` **走 URL query**, 不进入 JSON, 与 §6.5 CSV 上传保持一致
+> - `module` 来自 DC 报告的 `top_module` (无须指定)
+> - `register_count` 来自 `misc.fgcg.total_flops`
+> - 完整 DC 报告 JSON 存到 `QorRecord.raw_dc_report`, Dashboard 表格视图直接渲染
+> - 1 个 DC 报告 = 1 条 QorRecord, 多 scenarios / path_groups 存到 `extra.scenarios` 审计
+
+### 6.6.1 顶层结构
+
+```json
+{
+  "scheme_version": 1,            // 整数 (上游固定)
+  "generated_at": "ISO 8601",
+  "stage": "Synthesis",           // 或 PnR / STA / Route
+  "top_module": "modulea_t",      // → module (自动)
+  "run": {"directory": "cfg1_rundir"},   // → full_dir
+
+  "timing": {
+    "default": {                  // mandatory
+      "scenarios": {
+        "<scenario>": {           // 如 "tt0p6v_tt"
+          "path_groups": {
+            "<path_group>": {     // 如 "FUNCCLK" / "SRAMCLK"
+              "WNS": -10, "TNS": 0, "NVP": 0,
+              "Clk_Period": 1000, "LoL": 40
+            }
+          }
+        }
+      }
+    },
+    "final": {...}                // optional, 优化后
+  },
+
+  "area": {
+    "tile": {
+      "cell_count": {total, sequential, combinational, ram, macro},
+      "area":       {total, total_cell, sequential, ...}
+    },
+    "block": {"<block_name>": {...}}
+  },
+
+  "misc": {
+    "fgcg": {gated_flops, not_gated_flops, total_flops, clock_gating_cells},
+    "mbb_ratio": "0.00%",
+    "utilization": 0.4254,
+    "vt_ratio": {...},
+    "flop_count": {...},
+    "congestion": {summary_lines[], both_dirs_percentage},
+    "no_clock": {count}
+  }
+}
+```
+
+### 6.6.2 字段映射 (DC 报告 → QorRecord)
+
+**核心原则: 1 个 DC 报告 = 1 个 run = 1 条 QorRecord.** run 内的多个 scenarios × path_groups
+全部进 `record.extra.scenarios` 审计; QorRecord 扁平字段 (wns/tns/nvp) 取 `timing.default` 的
+worst-case 聚合.
+
+| DC 上游字段 | QorRecord 字段 | 说明 |
+|-------------|----------------|------|
+| `top_module` | `module.name` (自动创建/查找) | **无须 `--module-name` 覆盖** |
+| `run.directory` | `qor_records.full_dir` | run 目录, 1 run = 1 record |
+| `area.tile.area.total` | `qor_records.area_total` | tile 视角整 chip 面积 |
+| `area.tile.area.sequential` | `area_sequential` | |
+| `area.tile.area.macro` | `area_macro` + `area_black_box` | DC 的 macro 等价 §6.5 black_box |
+| `area.tile.cell_count.total` | `cell_count` | |
+| `area.tile.cell_count.sequential` | `sequential_cell_count` | |
+| `area.tile.cell_count.combinational` | `instance_count` | |
+| `timing.default.scenarios[*].path_groups[*].WNS` | `wns_setup` (QorRecord) | **min of all (scenario, path_group)** |
+| `timing.default.scenarios[*].path_groups[*].TNS` | `tns_setup` | **min of all** |
+| `timing.default.scenarios[*].path_groups[*].NVP` | `nvp_setup` | **sum of all** |
+| `misc.utilization` | `utilization` | 0-1 小数 |
+| `misc.mbb_ratio` | `mbb_ratio` | 0-1 小数 |
+| `misc.fgcg.gated_flops.percentage` | `clock_gating_ratio` | 0-1 小数 |
+| `misc.congestion.both_dirs_percentage` | `congestion_b` | 0-1 小数 |
+| `misc.congestion.summary_lines` (H/V) | `congestion_h` / `congestion_v` | 正则解析 "H/V routing: ... (X%)" |
+| **`misc.fgcg.total_flops`** | **`register_count`** | **寄存器数** (DC 原始值, 无折算) |
+| 完整 DC JSON 字符串 | `qor_records.raw_dc_report` | 透传, Dashboard 表格视图渲染用 |
+| `timing.default.scenarios[*].path_groups[*]` | `extra_fields.scenarios` | 全量审计 |
+| `timing.final` / `area.block` / `misc.*` | `extra_fields.timing_final/blocks/misc_*` | 摘要 + 全量 |
+
+### 6.6.3 上传协议
+
+```
+POST /api/v1/qor/upload?project_id=<id>&version=<v>
+Header: X-API-Key: qor_xxxxxxxx
+Content-Type: application/json
+Body:    { 完整 DC 报告 JSON 对象, 顶层含 top_module/timing/area/misc ... }
+```
+
+**示例**:
+
+```bash
+curl -X POST "http://localhost:5000/api/v1/qor/upload?project_id=1&version=v1.0" \
+     -H "X-API-Key: qor_xxxxxxxx" \
+     -H "Content-Type: application/json" \
+     --data @examples/dc_report.v1.json
+```
+
+**响应** (200 OK):
+
+```json
+{
+  "ok": true,
+  "format": "dc_report",
+  "module_name": "modulea_t",
+  "schema_version": "1.0",
+  "record_ids": [42],
+  "saved": 1,
+  "updated": 0,
+  "skipped": 0,
+  "alerts_triggered": 0,
+  "uploaded_by": "admin"
+}
+```
+
+**错误**:
+
+| HTTP | 场景 | 错误消息示例 |
+|------|------|--------------|
+| 400 | 缺 `project_id` query 参数 | `缺少 project_id (通过 ?project_id=N 或 DC 报告内嵌 upload.project_id 提供)` |
+| 400 | 缺 `version` query 参数 | `缺少 version` |
+| 400 | 顶层不含 `top_module` | `DC 报告缺 top_module 顶层字段` |
+| 401 | API Key 无效/撤销 | `API Key 无效或已撤销` |
+| 403 | 无项目访问权限 | `无项目访问权限` |
+| 404 | project_id 不存在 | `项目 999 不存在` |
+
+### 6.6.4 record 生成粒度 (1 run = 1 record)
+
+```yaml
+# 输入: 1 个 DC 报告 (1 个 run)
+scenarios:
+  tt0p6v_tt:           # scenario #1
+    path_groups:
+      FUNCCLK:  {WNS: -10, TNS:   0, NVP:  0, period: 1000, lol: 40}
+      SRAMCLK:  {WNS: -25, TNS: -120, NVP: 14, period:  800, lol: 38}
+  ss0p81v_ss:          # scenario #2
+    path_groups:
+      FUNCCLK:  {WNS: -50, TNS: -800, NVP: 50, period: 1200, lol: 42}
+```
+
+→ **1 条 record 入库**:
+- `module.name` = `modulea_t` (DC.top_module)
+- `full_dir` = `cfg1_rundir` (DC.run.directory)
+- `register_count` = `1218349` (DC.misc.fgcg.total_flops)
+- `wns_setup` = `min(-10, -25, -50)` = **-50** (worst-case)
+- `tns_setup` = `min(0, -120, -800)` = **-800**
+- `nvp_setup` = `sum(0, 14, 50)` = **64**
+- `raw_dc_report` = 完整 DC 报告 JSON 字符串 (Dashboard 表格视图用)
+- `extra_fields.scenarios` = 全量审计 (scenario × path_group)
+
+**为什么这样设计:**
+- QorRecord 主键 `(module_id, version, full_dir)` 一个 run 只占一行, 避免 dashboard 出现
+  同一 run 的 N 条"伪重复"行
+- QoR 工程师关注的是"这个 run 在所有 corner/clock 下最差多少" → 扁平字段直接给答案
+- 想看完整 DC 报告内容 → 走 `raw_dc_report` (Dashboard 表格视图默认呈现)
+- 想看单一 scenario / clock 细节 → 走 `extra_fields.scenarios[scenario][path_group]`
+
+### 6.6.5 CLI 一键上传
+
+```bash
+export QOR_API_KEY=qor_xxxxxxxx
+
+# 1) 直接上传 (推荐, 一条命令完成)
+./scripts/upload_qor.sh 1 v1.0 examples/dc_report.v1.json --json
+
+# 2) 上传并立即标记为已发布
+./scripts/upload_qor.sh 1 v1.0 examples/dc_report.v1.json --json --release
+
+# 3) 覆盖 release_dir (默认 = full_dir = run.directory)
+./scripts/upload_qor.sh 1 v1.0 examples/dc_report.v1.json --json \
+    --release --release-dir v1.0/main/cpu_core
+
+# 4) 调试: --keep-json 保留转换后的 §6.5 JSON
+./scripts/upload_qor.sh 1 v1.0 examples/dc_report.v1.json --json \
+    --keep-json /tmp/converted.json
+```
+
+`upload_qor.sh` 在 `--json` 模式下自动检测:
+- 顶层含 `top_module` + `timing` + `area` + `misc` → DC 报告, 直接转发
+- 顶层含 `schema_version` + `records` → §6.5 JSON, 直接转发
+- 其它 `.csv` → 调 `csv_to_json.py` 转换
+
+### 6.6.6 Dashboard 表格视图 (v5.0+ 默认)
+
+Dashboard 在原"图表区域"之前默认展示 **DC 报告表格视图**:
+
+**① DC 报告内容** (顶部对比表, 行=字段路径, 列=选中的 run):
+- 行按 `JSON 路径` 排序: `$.top_module`, `$.timing.default.scenarios.tt0p6v_tt.path_groups.FUNCCLK.WNS` ...
+- 列是用户在底部勾选要对比的 run
+- 单元格值: 数字按科学计数 / 4位有效数字格式化; 字符串 > 80 字符截断
+- 与基准 run 比较, **变化 ≥5% 标红/标绿** (WNS/TNS/NVP/area/power 上升=变差, frequency/clock_gating 上升=变好)
+
+**② 数据集** (底部 run 列表, 多选):
+- 列: 选择 / ID / 项目 / 模块 / 版本 / 目录 / **寄存器数** / WNS / TNS / 总面积 / 总 cell / 操作
+- 复选框直接控制顶部对比表列
+- "全选当前列表" / "清空选择" 按钮
+- "设为基准" 按钮: 选定后, 顶部表格的变化标注以此为基准
+- 表格列头点击排序 (复用 TBLX 排序器)
+
+**导出**: "下载 CSV" 按钮把当前选中的 run × 所有字段路径导出为 Excel 友好的 CSV (含 BOM).
+
+### 6.6.7 端到端测试
+
+[`test_e2e_raw_dc_upload.py`](../test_e2e_raw_dc_upload.py) 覆盖:
+- converter 校验/转换 (1 DC 报告 → 1 record, 聚合自 2 scenarios × 3 path_groups)
+- `register_count = misc.fgcg.total_flops` 字段精确断言
+- `raw_dc_report` 字段存储完整 DC JSON (含 top_module/timing/area/misc)
+- `Module` 按 `top_module` 自动创建
+- 聚合正确性 (WNS=min, TNS=min, NVP=sum)
+- clocks 字段正确性 (取第一个 scenario 的 path_groups)
+- extra.scenarios 全量审计 (2 scenarios × 3 path_groups)
+- 幂等性 (re-upload: saved=0, updated=1)
+- 错误处理: 缺 project_id / version / top_module 全部 400
+
+[`test_e2e_dc_upload.py`](../test_e2e_dc_upload.py) — 旧版走 `dc_report_to_json.py` 的端到端测试, 保留作为参考.
+
+### 6.6.8 完整示例
+
+[`examples/dc_report.v1.json`](../examples/dc_report.v1.json) — 一个完整的 DC 综合报告
+(含 2 scenarios × 3 path_groups, 含 timing.final, area.block 2 个子模块, misc 全字段).
+直传 + Dashboard 表格视图后入库为 **1 条** QorRecord, `raw_dc_report` 字段保存完整 DC JSON.
 
 ---
 

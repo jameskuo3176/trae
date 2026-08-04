@@ -6,13 +6,15 @@
   - /locks (数据锁)
   - /apikeys (API Key 管理)
   - /upload (CSV multipart 自动化上传)
-  - /qor/upload (JSON §6.5 统一上传, 推荐)
+  - /qor/upload (JSON 统一上传: §6.5 + 原始 DC 报告)
   - /alerts (告警规则与事件)
 
 认证方式:
   - X-API-Key 请求头
   - 浏览器 session
 """
+import json
+import re
 from datetime import datetime, timedelta
 
 from flask import Blueprint, current_app, g, jsonify, request
@@ -468,44 +470,321 @@ def api_v1_upload():
     })
 
 
+# ----------------------------------------------------------------------------
+# 原始 DC 报告上传处理
+# ----------------------------------------------------------------------------
+
+def _handle_dc_report_upload(dc_report: dict, user):
+    """处理原始 DC 报告 JSON 上传.
+
+    流程:
+      1. 校验 DC 报告 (scheme_version, top_module, run.directory, timing.default.scenarios)
+      2. 从 URL query 参数 (?project_id=&version=&mark_released=) 读取元数据
+         (DC 报告本身不含这些信息, project/version 由调用方提供)
+      3. 自动用 top_module 创建/查找 Module
+      4. 调 convert_dc_to_qor_record 转 §6.5 record
+      5. 走 save_records_to_db 落库 (与 §6.5 共用底层逻辑)
+      6. 把原始 DC 报告全文写入 QorRecord.raw_dc_report (供 dashboard 表格视图)
+
+    响应同 §6.5 上传协议, 额外字段:
+      - format: 'dc_report'
+      - module_name: <top_module>
+    """
+    # 1. 校验
+    try:
+        from scripts.dc_report_to_json import (
+            validate_dc_report as _validate_dc,
+            DCReportError,
+            convert_dc_to_qor_record,
+        )
+        _validate_dc(dc_report)
+    except ImportError:
+        return jsonify({
+            'error': 'DC 报告上传需要 scripts/dc_report_to_json.py 模块',
+        }), 500
+    except DCReportError as e:
+        return jsonify({
+            'error': e.message,
+            'path': e.path,
+        }), 400
+
+    # 2. 从 query 参数提取 project_id / version / mark_released
+    #    优先级: ?project_id= > upload.project_id (DC 报告内, 兜底) > 403
+    project_id = request.args.get('project_id', type=int)
+    version = request.args.get('version')
+    mark_released_q = request.args.get('mark_released', '').lower() in ('1', 'true', 'yes')
+    full_dir_override = request.args.get('full_dir') or None
+    release_dir_override = request.args.get('release_dir') or None
+
+    # 兼容: 允许 DC 报告内嵌一个 upload.project_id (覆盖 ?project_id=)
+    inline_upload = dc_report.get('upload') or {}
+    if not project_id and isinstance(inline_upload.get('project_id'), int):
+        project_id = int(inline_upload['project_id'])
+    if not version and isinstance(inline_upload.get('version'), str):
+        version = inline_upload['version']
+    if not mark_released_q and inline_upload.get('mark_released') is True:
+        mark_released_q = True
+
+    if not project_id or project_id < 1:
+        return jsonify({
+            'error': '缺少 project_id (通过 ?project_id=N 或 DC 报告内嵌 upload.project_id 提供)',
+        }), 400
+    if not version:
+        return jsonify({
+            'error': '缺少 version (通过 ?version=v1.0 或 DC 报告内嵌 upload.version 提供)',
+        }), 400
+
+    # 3. 权限 + 数据锁
+    if not can_edit_project(user, project_id):
+        return jsonify({'error': '无权限上传到此项目'}), 403
+    writable, err = check_project_writable(project_id)
+    if not writable:
+        return jsonify({'error': err}), 403
+
+    # 4. 转换 DC 报告 → §6.5 record (1 个 DC = 1 条 record)
+    payload = convert_dc_to_qor_record(
+        dc_report,
+        project_id=project_id,
+        version=version,
+        full_dir_override=full_dir_override,
+        release_dir_override=release_dir_override,
+        mark_released=mark_released_q,
+    )
+    records = payload['records']  # 始终 1 条
+    top_module = records[0]['module_name']
+
+    # 4.1 把嵌套结构 (timing/area/cells/ratios/congestion) 摊平为顶层字段,
+    #     以便 save_records_to_db (期望 wns_setup / area_total / cell_count 等顶层字段) 能正确写入
+    for r in records:
+        timing = r.get('timing') or {}
+        setup = timing.get('setup') or {}
+        if 'wns_setup' not in r and setup.get('wns') is not None:
+            r['wns_setup'] = setup['wns']
+        if 'tns_setup' not in r and setup.get('tns') is not None:
+            r['tns_setup'] = setup['tns']
+        if 'nvp_setup' not in r and setup.get('nvp') is not None:
+            r['nvp_setup'] = setup['nvp']
+        hold = timing.get('hold') or {}
+        if 'wns_hold' not in r and hold.get('wns') is not None:
+            r['wns_hold'] = hold['wns']
+        if 'tns_hold' not in r and hold.get('tns') is not None:
+            r['tns_hold'] = hold['tns']
+        if 'nvp_hold' not in r and hold.get('nvp') is not None:
+            r['nvp_hold'] = hold['nvp']
+
+        area = r.get('area') or {}
+        if 'area_total' not in r and area.get('total') is not None:
+            r['area_total'] = area['total']
+        if 'area_combinational' not in r and area.get('combinational') is not None:
+            r['area_combinational'] = area['combinational']
+        if 'area_sequential' not in r and area.get('sequential') is not None:
+            r['area_sequential'] = area['sequential']
+        if 'area_macro' not in r and area.get('macro') is not None:
+            r['area_macro'] = area['macro']
+        if 'area_black_box' not in r and area.get('memory') is not None:
+            r['area_black_box'] = area['memory']
+        elif 'area_black_box' not in r and area.get('black_box') is not None:
+            r['area_black_box'] = area['black_box']
+
+        cells = r.get('cells') or {}
+        if 'cell_count' not in r and cells.get('cell_count') is not None:
+            r['cell_count'] = cells['cell_count']
+        if 'sequential_cell_count' not in r and cells.get('sequential_cell_count') is not None:
+            r['sequential_cell_count'] = cells['sequential_cell_count']
+        if 'instance_count' not in r and cells.get('instance_count') is not None:
+            r['instance_count'] = cells['instance_count']
+        if 'ram_cell_count' not in r and cells.get('ram_cell_count') is not None:
+            r['ram_cell_count'] = cells['ram_cell_count']
+        if 'macro_cell_count' not in r and cells.get('macro_cell_count') is not None:
+            r['macro_cell_count'] = cells['macro_cell_count']
+
+        ratios = r.get('ratios') or {}
+        if 'utilization' not in r and ratios.get('utilization') is not None:
+            r['utilization'] = ratios['utilization']
+        if 'mbb_ratio' not in r and ratios.get('mbb_ratio') is not None:
+            r['mbb_ratio'] = ratios['mbb_ratio']
+        if 'clock_gating_ratio' not in r and ratios.get('clock_gating_ratio') is not None:
+            r['clock_gating_ratio'] = ratios['clock_gating_ratio']
+
+        cong = r.get('congestion') or {}
+        if 'congestion_b' not in r and cong.get('max') is not None:
+            r['congestion_b'] = cong['max']
+        if 'congestion_h' not in r and cong.get('h') is not None:
+            r['congestion_h'] = cong['h']
+        if 'congestion_v' not in r and cong.get('v') is not None:
+            r['congestion_v'] = cong['v']
+
+    # 5. 切到目标项目库, 自动创建 Module
+    project = Project.query.get_or_404(project_id)
+    result = {
+        'ok': True,
+        'format': 'dc_report',
+        'schema_version': '1.0',
+        'saved': 0,
+        'updated': 0,
+        'skipped': 0,
+        'record_ids': [],
+        'alerts_triggered': 0,
+        'module_name': top_module,
+        'uploaded_by': user.username,
+    }
+    triggered_alerts: list = []
+
+    with switch_to_project(project_id):
+        # 自动创建/查找 Module (按 top_module)
+        mod = Module.query.filter_by(project_id=project_id, name=top_module).first()
+        if not mod:
+            mod = Module(
+                project_id=project_id,
+                name=top_module,
+                description=f'auto-created from DC report (top_module={top_module})',
+            )
+            db.session.add(mod)
+            db.session.flush()
+        module_id = mod.id
+
+        # 检查数据锁
+        locked_by_other, lock = check_data_lock('module', module_id, user)
+        if locked_by_other:
+            return jsonify({
+                'error': f'模块被 {lock.user.username} 锁定',
+                'lock': lock.to_dict(),
+            }), 409
+
+        saved, skipped, updated = save_records_to_db(
+            records, project, module_id, version,
+            source_filename='json:dc_report',
+            mark_released=mark_released_q,
+            owner_id=user.id,
+            default_release_dir=release_dir_override,
+        )
+        result['saved'] = saved
+        result['updated'] = updated
+        result['skipped'] = skipped
+
+        # 把 raw_dc_report + register_count 写入刚保存的 QorRecord
+        # (在 commit 之前, 避免二次 commit 后 session 状态导致查询不到)
+        if saved or updated:
+            # 4.2a 预处理: 解析 congestion.summary_lines 注入 H/V 数值字段,
+            #         转换 both_dirs_percentage 从字符串 "0.19%" → 数值 0.0019
+            _dc = dc_report  # 浅拷贝引用, 直接修改原始 dict (不影响后续)
+            misc = _dc.get('misc') or {}
+            cong = misc.get('congestion') or {}
+            # 解析 both_dirs_percentage
+            bdp_raw = cong.get('both_dirs_percentage')
+            if isinstance(bdp_raw, str):
+                bdp_clean = bdp_raw.strip().rstrip('%')
+                try:
+                    bdp_val = float(bdp_clean)
+                    cong['both_dirs_percentage'] = bdp_val / 100.0 if bdp_val > 1.0 else bdp_val
+                except (ValueError, TypeError):
+                    pass
+            # 解析 H/V routing from summary_lines
+            if isinstance(cong.get('summary_lines'), list):
+                for line in cong['summary_lines']:
+                    if not isinstance(line, str):
+                        continue
+                    m = re.search(r'^\s*([HV])\s+routing:.*?GRCs\s*=\s*\d+\s*\(([\d.]+)%\)', line)
+                    if m:
+                        direction = m.group(1).lower()  # 'h' or 'v'
+                        gcrs_pct_str = m.group(2)
+                        try:
+                            gcrs_pct = float(gcrs_pct_str)
+                            cong[direction] = gcrs_pct / 100.0 if gcrs_pct > 1.0 else gcrs_pct
+                        except (ValueError, TypeError):
+                            pass
+            raw_json = json.dumps(_dc, ensure_ascii=False)
+            for r in records:
+                rd_full = r.get('full_dir') or ''
+                qq = QorRecord.query.filter_by(
+                    module_id=module_id,
+                    version=version or 'v1',
+                )
+                if rd_full:
+                    qq = qq.filter_by(full_dir=rd_full)
+                qor = qq.first()
+                if qor:
+                    qor.raw_dc_report = raw_json
+                    # register_count 也单独保存 (从 record 提取)
+                    if r.get('register_count') is not None:
+                        try:
+                            qor.register_count = int(r['register_count'])
+                        except (TypeError, ValueError):
+                            pass
+        db.session.commit()
+
+        # 收集 record_id + 告警
+        affected_records: list = []
+        seen_ids: set = set()
+        for r in records:
+            mn = r.get('module_name')
+            if not mn:
+                continue
+            m = Module.query.filter_by(project_id=project_id, name=mn).first()
+            if not m:
+                continue
+            rd_full = r.get('full_dir') or ''
+            qq = QorRecord.query.filter_by(module_id=m.id, version=version or 'v1')
+            if rd_full:
+                qq = qq.filter_by(full_dir=rd_full)
+            qor = qq.first()
+            if qor and qor.id not in seen_ids:
+                seen_ids.add(qor.id)
+                affected_records.append(qor)
+        for qor in affected_records:
+            result['record_ids'].append(qor.id)
+            triggered_alerts.extend(check_alerts_for_new_record(qor))
+
+    result['alerts_triggered'] = len(triggered_alerts)
+    if triggered_alerts:
+        result['alerts'] = [
+            {'rule_id': a.get('rule_id'), 'level': a.get('level'),
+             'message': a.get('message')}
+            for a in triggered_alerts
+        ]
+    return jsonify(result)
+
+
 @bp.route('/qor/upload', methods=['POST'])
 @api_auth_required(required_scope='upload')
 @with_db_retry()
 def api_v1_qor_upload_json():
-    """JSON §6.5 统一上传端点
+    """JSON 统一上传端点 (兼容 §6.5 上传协议 + 原始 DC 报告)
 
-    单次请求可同时提交 records + violation_paths + notes, 服务端按顺序
-    调用对应的 save_*_to_db 函数 (与 CSV 上传共用底层逻辑).
-
-    认证:  X-API-Key 头 (scope=upload) 或 session
-    Content-Type: application/json
+    两种输入格式:
+      1. §6.5 上传协议: {schema_version, upload: {project_id, version, ...}, records: [...]}
+      2. 原始 DC 报告:  {scheme_version (int), top_module, run.directory, timing, area, misc}
+                         - 自动检测: 顶层含 top_module + timing + area + misc
+                         - 自动用 top_module 作为 module_name, project_id/version
+                           从 URL query 参数 (优先) 或 upload 段读取
+                         - 原始报告全文存 QorRecord.raw_dc_report
 
     响应:
       {
         "ok": true,
         "schema_version": "1.0",
-        "saved": 1,         # 新建 QorRecord 数
-        "updated": 0,       # 更新已有 QorRecord 数
-        "skipped": 0,       # 跳过数 (缺字段/范围异常)
-        "violation_paths_saved": 12,
-        "violation_paths_skipped": 0,
-        "notes_saved": 3,
-        "notes_skipped": 0,
-        "record_ids": [42],
-        "alerts_triggered": 0,
-        "uploaded_by": "admin",
+        "saved": 1, "updated": 0, "skipped": 0,
+        "record_ids": [42], "alerts_triggered": 0,
+        "format": "dc_report" | "v6.5",
+        "module_name": "modulea_t",  # DC 格式时
+        "uploaded_by": "admin"
       }
-
-    错误码:
-      400 - 校验失败 (响应含 error + path)
-      403 - 无权限 / 项目已锁
-      404 - 项目不存在
-      409 - 资源被他人锁定
     """
     user = g.auth_user
 
     # 1. 解析 JSON 主体
     data = request.get_json(silent=True)
+
+    # 1.1 检测格式: 原始 DC 报告 vs §6.5 上传协议
+    #     DC 报告特征: 顶层同时含 top_module + timing + area + misc
+    is_dc = (
+        isinstance(data, dict)
+        and all(k in data for k in ('top_module', 'timing', 'area', 'misc'))
+    )
+    if is_dc:
+        return _handle_dc_report_upload(data, user)
+
+    # 1.2 否则按 §6.5 协议处理
     try:
         data = validate_upload_json(data)
     except JSONUploadError as e:
@@ -595,22 +874,41 @@ def api_v1_qor_upload_json():
                     result['skipped'] += skipped
 
                     # 收集 record_id + 触发告警
-                    affected_mods = set()
+                    # 一个 request 可能包含多条 record (例如 DC 报告 N 个 scenario×path_group),
+                    # 每条 record 通过 (module_id, version, full_dir) 唯一定位.
+                    affected_records: list = []
+                    seen_ids: set = set()
                     for r in records:
                         mn = r.get('module_name')
                         if not mn:
                             continue
                         m = Module.query.filter_by(project_id=project_id, name=mn).first()
-                        if m:
-                            affected_mods.add(m.id)
-                    for mid in affected_mods:
+                        if not m:
+                            continue
+                        # 提取本条 record 的 full_dir (与 save_records_to_db 一致)
+                        rd_full = r.get('full_dir') or ''
+                        if not rd_full and isinstance(r.get('extra_fields'), dict):
+                            rd_full = (r['extra_fields'] or {}).get('full_dir') or ''
+                        if not rd_full and isinstance(r.get('extra_fields'), str):
+                            try:
+                                _ef = json.loads(r['extra_fields'])
+                                if isinstance(_ef, dict):
+                                    rd_full = _ef.get('full_dir') or ''
+                            except Exception:
+                                pass
                         rec_version = version or 'v1'
-                        qor = QorRecord.query.filter_by(
-                            module_id=mid, version=rec_version,
-                        ).first()
-                        if qor:
-                            result['record_ids'].append(qor.id)
-                            triggered_alerts.extend(check_alerts_for_new_record(qor))
+                        qq = QorRecord.query.filter_by(
+                            module_id=m.id, version=rec_version,
+                        )
+                        if rd_full:
+                            qq = qq.filter_by(full_dir=rd_full)
+                        qor = qq.first()
+                        if qor and qor.id not in seen_ids:
+                            seen_ids.add(qor.id)
+                            affected_records.append(qor)
+                    for qor in affected_records:
+                        result['record_ids'].append(qor.id)
+                        triggered_alerts.extend(check_alerts_for_new_record(qor))
         except Exception as e:
             db.session.rollback()
             current_app.logger.exception('JSON upload: records save failed')

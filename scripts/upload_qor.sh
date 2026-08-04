@@ -89,9 +89,21 @@ usage() {
   --module-name <NAME>  notes CSV 用, 关联模块 (--json 模式需要)
   --timing-group <TG>   violation CSV 用, 缺省从文件名提取 (--json 模式)
   --server <URL>        服务器地址 (覆盖 QOR_SERVER 环境变量)
-  --json                使用 JSON §6.5 协议 (POST /api/v1/qor/upload), 推荐
+  --json                使用 JSON 协议 (POST /api/v1/qor/upload), 推荐
+                        配合 JSON 文件时会自动识别 §6.5 / DC 报告格式
   --keep-json <FILE>    --json 模式下保存转换后的 JSON 到指定文件 (调试用)
   -h, --help            显示本帮助
+
+DC 报告格式 (自动识别):
+  当 --json 模式 + 输入文件是 JSON 且包含 top_module + timing + area + misc
+  顶层字段时, 会被识别为 DC 综合报告格式, 直接转发原始 JSON 到端点.
+  关键: project_id / version 不进入 JSON, 走 URL query (?project_id=N&version=V).
+  端点自动:
+    - module = DC.top_module (无须 --module-name)
+    - register_count = DC.misc.fgcg.total_flops
+    - raw_dc_report = 完整 DC JSON 透传, Dashboard 表格视图直接渲染
+    - full_dir = DC.run.directory
+    - 1 个 DC 报告 = 1 条 QorRecord (多 scenarios / path_groups 存到 extra.scenarios)
 
 环境变量:
   QOR_API_KEY           API Key (必填)
@@ -107,6 +119,8 @@ usage() {
   ./upload_qor.sh 1 v1.0 run_notes.csv notes --full-dir "$PWD" --release
   ./upload_qor.sh 1 v1.0 qor.csv qor --release-dir v1.0/main/cpu_core
   ./upload_qor.sh 1 v1.0 qor.csv --json --release
+  ./upload_qor.sh 1 v1.0 dc_report.json --json --release
+  ./upload_qor.sh 1 v1.0 /path/to/dc_report.json --json
 EOF
     exit 1
 }
@@ -222,53 +236,108 @@ if [ ! -f "$CSV_FILE" ]; then
 fi
 
 # =========================================================================
-# JSON §6.5 协议分支
+# JSON 协议分支 (兼容 §6.5 JSON, DC 报告 JSON 自动识别)
 # =========================================================================
 if [ "$USE_JSON" = "1" ]; then
-    # 1) 定位 csv_to_json.py (相对脚本目录)
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    CSV_TO_JSON="${CSV_TO_JSON:-${SCRIPT_DIR}/csv_to_json.py}"
-    if [ ! -f "$CSV_TO_JSON" ]; then
-        echo "[ERROR] 找不到 csv_to_json.py: $CSV_TO_JSON"
-        echo "  请设置 CSV_TO_JSON 环境变量指向正确路径"
-        exit 1
-    fi
+    JSON_PAYLOAD=""
 
-    # 2) 构造 csv_to_json.py 参数
-    CSV_ARGS=(--project-id "$PROJECT_ID" --version "$VERSION")
-    if [ -n "$FULL_DIR" ]; then
-        CSV_ARGS+=(--full-dir "$FULL_DIR")
-    fi
-    if [ -n "$RELEASE_DIR" ] && [ "$DATA_TYPE" = "qor" ]; then
-        CSV_ARGS+=(--release-dir "$RELEASE_DIR")
-    fi
-    if [ -n "$OPT_MODULE_NAME" ]; then
-        CSV_ARGS+=(--module-name "$OPT_MODULE_NAME")
-    fi
-    if [ -n "$OPT_TIMING_GROUP" ]; then
-        CSV_ARGS+=(--timing-group "$OPT_TIMING_GROUP")
-    fi
-    CSV_ARGS+=(--data-type "$DATA_TYPE")
+    # 文件扩展名为 .json 时, 优先尝试作为已存在的 §6.5 JSON 加载;
+    # 若顶层含 top_module + timing/area/misc, 则识别为 DC 报告格式并转换.
+    FILE_EXT="${CSV_FILE##*.}"
+    if [ "$FILE_EXT" = "json" ] || [ "$FILE_EXT" = "JSON" ]; then
+        IS_DC_REPORT=$(python3 -c "
+import json, sys
+try:
+    with open(r'''$CSV_FILE''', 'r', encoding='utf-8') as f:
+        d = json.load(f)
+    if isinstance(d, dict) and {'top_module','timing','area','misc'}.issubset(d.keys()):
+        print('1')
+    else:
+        print('0')
+except Exception:
+    print('0')
+" 2>/dev/null || echo "0")
 
-    # 3) 转换 CSV → JSON
-    echo "[INFO] 转换 $CSV_FILE -> JSON §6.5 (使用 $CSV_TO_JSON)"
-    if [ -n "$KEEP_JSON" ]; then
-        if ! python3 "$CSV_TO_JSON" "${CSV_ARGS[@]}" -o "$KEEP_JSON" "$CSV_FILE"; then
-            echo "[ERROR] CSV -> JSON 转换失败"
-            exit 3
+        if [ "$IS_DC_REPORT" = "1" ]; then
+            # DC 报告格式: 直接把原始 JSON 转发到 /api/v1/qor/upload
+            # 关键: project_id / version 不进 JSON, 走 URL query (?project_id=&version=)
+            # 端点会自动:
+            #   - module = DC.top_module (无须指定)
+            #   - register_count = misc.fgcg.total_flops
+            #   - raw_dc_report = 完整 DC JSON 透传
+            #   - full_dir = run.directory (DC 报告自带的 run 目录)
+            #   - 1 个 DC 报告 = 1 条 QorRecord
+            echo "[INFO] 检测到 DC 报告格式 -> 直接转发 (project_id/version 走 URL)"
+
+            JSON_PAYLOAD=$(cat "$CSV_FILE")
+
+            # 仅注入后端必需字段 (mark_released, module_id 覆盖, release_dir 覆盖)
+            INJECTED_JSON=$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+up = data.setdefault('upload', {})
+if '$MODULE_ID':
+    up['module_id'] = int('$MODULE_ID')
+# DC 报告内置 release_dir = run.directory; 命令行 --release-dir 优先级更高
+if '$RELEASE_DIR':
+    up['release_dir'] = '$RELEASE_DIR'
+if $MARK_RELEASED == 1:
+    up['mark_released'] = True
+print(json.dumps(data, ensure_ascii=False))
+" <<< "$JSON_PAYLOAD" 2>/dev/null) || INJECTED_JSON="$JSON_PAYLOAD"
+
+            if [ -n "$KEEP_JSON" ]; then
+                echo "$INJECTED_JSON" > "$KEEP_JSON"
+            fi
+            JSON_PAYLOAD="$INJECTED_JSON"
+        else
+            # 已是 §6.5 JSON, 直接读
+            echo "[INFO] 检测到 §6.5 JSON 格式, 直接读取"
+            JSON_PAYLOAD=$(cat "$CSV_FILE")
         fi
-        JSON_PAYLOAD=$(cat "$KEEP_JSON")
-        echo "[INFO] JSON 已保存到 $KEEP_JSON"
     else
-        JSON_PAYLOAD=$(python3 "$CSV_TO_JSON" "${CSV_ARGS[@]}" "$CSV_FILE") || {
-            echo "[ERROR] CSV -> JSON 转换失败"
-            exit 3
-        }
-    fi
+        # CSV 文件: 调 csv_to_json.py
+        CSV_TO_JSON="${CSV_TO_JSON:-${SCRIPT_DIR}/csv_to_json.py}"
+        if [ ! -f "$CSV_TO_JSON" ]; then
+            echo "[ERROR] 找不到 csv_to_json.py: $CSV_TO_JSON"
+            echo "  请设置 CSV_TO_JSON 环境变量指向正确路径"
+            exit 1
+        fi
 
-    # 4) 注入 upload 顶层字段 (mark_released, module_id, full_dir, release_dir)
-    #    python3 -c 一行补齐, 避免依赖 jq
-    INJECTED_JSON=$(python3 -c "
+        CSV_ARGS=(--project-id "$PROJECT_ID" --version "$VERSION")
+        if [ -n "$FULL_DIR" ]; then
+            CSV_ARGS+=(--full-dir "$FULL_DIR")
+        fi
+        if [ -n "$RELEASE_DIR" ] && [ "$DATA_TYPE" = "qor" ]; then
+            CSV_ARGS+=(--release-dir "$RELEASE_DIR")
+        fi
+        if [ -n "$OPT_MODULE_NAME" ]; then
+            CSV_ARGS+=(--module-name "$OPT_MODULE_NAME")
+        fi
+        if [ -n "$OPT_TIMING_GROUP" ]; then
+            CSV_ARGS+=(--timing-group "$OPT_TIMING_GROUP")
+        fi
+        CSV_ARGS+=(--data-type "$DATA_TYPE")
+
+        echo "[INFO] 转换 $CSV_FILE -> JSON §6.5 (使用 $CSV_TO_JSON)"
+        if [ -n "$KEEP_JSON" ]; then
+            if ! python3 "$CSV_TO_JSON" "${CSV_ARGS[@]}" -o "$KEEP_JSON" "$CSV_FILE"; then
+                echo "[ERROR] CSV -> JSON 转换失败"
+                exit 3
+            fi
+            JSON_PAYLOAD=$(cat "$KEEP_JSON")
+            echo "[INFO] JSON 已保存到 $KEEP_JSON"
+        else
+            JSON_PAYLOAD=$(python3 "$CSV_TO_JSON" "${CSV_ARGS[@]}" "$CSV_FILE") || {
+                echo "[ERROR] CSV -> JSON 转换失败"
+                exit 3
+            }
+        fi
+
+        # 注入 upload 顶层字段
+        # 注: project_id / version 也走 URL query, JSON 内不重复 (端点会优先用 URL, 兼容旧 JSON 仍然有 upload 字段)
+        INJECTED_JSON=$(python3 -c "
 import json, sys
 data = json.loads(sys.stdin.read())
 up = data.setdefault('upload', {})
@@ -285,13 +354,17 @@ if '$RELEASE_DIR' and '$DATA_TYPE' == 'qor':
 print(json.dumps(data, ensure_ascii=False))
 " <<< "$JSON_PAYLOAD")
 
-    if [ -n "$KEEP_JSON" ]; then
-        echo "$INJECTED_JSON" > "$KEEP_JSON"
+        if [ -n "$KEEP_JSON" ]; then
+            echo "$INJECTED_JSON" > "$KEEP_JSON"
+        fi
+        JSON_PAYLOAD="$INJECTED_JSON"
     fi
 
     # 5) POST JSON
-    echo "[INFO] 上传 (JSON §6.5) -> $SERVER/api/v1/qor/upload"
-    echo "       project=$PROJECT_ID version=$VERSION type=$DATA_TYPE release=$MARK_RELEASED"
+    # 关键: project_id / version 走 URL query (即使为空也带上, 让端点统一处理)
+    UPLOAD_URL="$SERVER/api/v1/qor/upload?project_id=$PROJECT_ID&version=$(printf %s "$VERSION" | python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read()))')"
+    echo "[INFO] 上传 -> $UPLOAD_URL"
+    echo "       project=$PROJECT_ID version=$VERSION release=$MARK_RELEASED"
     if [ -n "$MODULE_ID" ]; then
         echo "       module_id=$MODULE_ID"
     fi
@@ -302,10 +375,10 @@ print(json.dumps(data, ensure_ascii=False))
         echo "       release_dir=$RELEASE_DIR"
     fi
 
-    RESPONSE=$(curl -sS -X POST "$SERVER/api/v1/qor/upload" \
+    RESPONSE=$(curl -sS -X POST "$UPLOAD_URL" \
         -H "X-API-Key: $API_KEY" \
         -H "Content-Type: application/json" \
-        --data-raw "$INJECTED_JSON" \
+        --data-raw "$JSON_PAYLOAD" \
         -w "\n%{http_code}" 2>&1) || {
         echo "[ERROR] curl 请求失败"
         exit 2
@@ -343,9 +416,9 @@ except Exception as e:
     print(f'解析失败: {e}')
 " 2>/dev/null || echo "")
         if [ -n "$SUMMARY" ]; then
-            echo "[OK] 上传成功 ($DATA_TYPE, $SUMMARY)"
+            echo "[OK] 上传成功 ($SUMMARY)"
         else
-            echo "[OK] 上传成功 ($DATA_TYPE)"
+            echo "[OK] 上传成功"
         fi
         exit 0
     else
