@@ -10,6 +10,25 @@ from flask_login import current_user
 from models import db, Module, QorRecord, ViolationPath
 
 
+def _coerce_extra_fields(value):
+    """规范化 extra_fields: 接受 dict / JSON 字符串 / None.
+
+    QorRecord.extra_fields 是 Text 列, SQLAlchemy 直接绑定 dict 会触发
+    InterfaceError (SQLite 不支持 dict 类型). 统一在写入前序列化为 JSON 字符串.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        return s or None
+    if isinstance(value, dict):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return json.dumps(str(value), ensure_ascii=False)
+    return None
+
+
 def _sync_congestion(rec):
     """同步拥塞指数字段, 保持向后兼容
 
@@ -219,7 +238,7 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                         if cleaned is not None:
                             setattr(qor, f, cleaned)
                 _sync_congestion(qor)
-                qor.extra_fields = record.get('extra_fields')
+                qor.extra_fields = _coerce_extra_fields(record.get('extra_fields'))
                 if mark_released:
                     qor.is_released = True
                     qor.released_at = datetime.utcnow()
@@ -334,7 +353,7 @@ def merge_power_to_db(records, project, module_id, version, source_filename,
             for f in power_fields:
                 if f in record and record[f] is not None:
                     setattr(qor, f, record[f])
-            qor.extra_fields = record.get('extra_fields')
+            qor.extra_fields = _coerce_extra_fields(record.get('extra_fields'))
             if mark_released:
                 qor.is_released = True
                 qor.released_at = datetime.utcnow()

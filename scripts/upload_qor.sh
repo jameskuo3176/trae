@@ -10,11 +10,19 @@
 #   violation  - 违例路径 CSV (关联到已有 QorRecord, 文件名建议含 timing_group)
 #   notes      - Run 备注 CSV (2~3 列: item, description[, full_dir])
 #
+# 支持的上传协议:
+#   1. multipart/form-data  -> POST /api/v1/upload      (默认, 旧协议)
+#   2. application/json     -> POST /api/v1/qor/upload  (--json 启用, JSON §6.5)
+#
+#   --json 模式会先调用 scripts/csv_to_json.py 将 CSV 转为 §6.5 JSON,
+#   然后用单一请求把 records + violation_paths + notes 一起发到新端点.
+#   推荐使用, 因为底层共用 save_records_to_db 业务逻辑, 行为一致.
+#
 # 用法:
 #   ./upload_qor.sh <project_id> <version> <csv_file> [data_type] [options]
 #
 # 示例:
-#   # 1. 上传 QoR 数据
+#   # 1. 上传 QoR 数据 (multipart)
 #   ./upload_qor.sh 1 v1.0 qor_report.csv
 #
 #   # 2. 上传并立即标记为已发布 (对 release 账号可见)
@@ -35,6 +43,10 @@
 #   # 7. 同时指定模块 ID 和 full_dir
 #   QOR_MODULE_ID=5 ./upload_qor.sh 1 v1.0 run_notes.csv notes --full-dir "$PWD"
 #
+#   # 8. 使用 JSON §6.5 协议 (推荐)
+#   ./upload_qor.sh 1 v1.0 qor_report.csv --json
+#   ./upload_qor.sh 1 v1.0 qor_report.csv qor --json --release --release-dir v1.0/main/cpu
+#
 # 环境变量:
 #   QOR_API_KEY   - API Key (必填, 格式: qor_xxxxxxxx)
 #   QOR_SERVER    - 服务器地址 (默认: http://localhost:5000)
@@ -51,6 +63,7 @@
 #   0 - 上传成功
 #   1 - 参数/环境错误
 #   2 - 上传失败 (HTTP 非 200)
+#   3 - JSON 转换失败
 # =========================================================================
 
 set -euo pipefail
@@ -73,7 +86,11 @@ usage() {
   --full-dir <DIR>      Run 目录路径 (用于 notes, 区分同 module+version 下的不同 run)
   --release-dir <DIR>   发布目录 (v5.0, 仅 qor 类型有效, 整批覆盖)
   --module-id <ID>      模块 ID (覆盖 QOR_MODULE_ID 环境变量)
+  --module-name <NAME>  notes CSV 用, 关联模块 (--json 模式需要)
+  --timing-group <TG>   violation CSV 用, 缺省从文件名提取 (--json 模式)
   --server <URL>        服务器地址 (覆盖 QOR_SERVER 环境变量)
+  --json                使用 JSON §6.5 协议 (POST /api/v1/qor/upload), 推荐
+  --keep-json <FILE>    --json 模式下保存转换后的 JSON 到指定文件 (调试用)
   -h, --help            显示本帮助
 
 环境变量:
@@ -89,6 +106,7 @@ usage() {
   ./upload_qor.sh 1 v1.0 qor_report.csv
   ./upload_qor.sh 1 v1.0 run_notes.csv notes --full-dir "$PWD" --release
   ./upload_qor.sh 1 v1.0 qor.csv qor --release-dir v1.0/main/cpu_core
+  ./upload_qor.sh 1 v1.0 qor.csv --json --release
 EOF
     exit 1
 }
@@ -101,7 +119,12 @@ DATA_TYPE="qor"
 MARK_RELEASED=0
 OPT_FULL_DIR=""
 OPT_MODULE_ID=""
+OPT_MODULE_NAME=""
+OPT_TIMING_GROUP=""
 OPT_SERVER=""
+OPT_RELEASE_DIR=""
+USE_JSON=0
+KEEP_JSON=""
 
 # 至少需要 3 个位置参数
 if [ "$#" -lt 3 ]; then
@@ -136,9 +159,25 @@ while [ "$#" -gt 0 ]; do
             OPT_MODULE_ID="${2:-}"
             shift 2 || { echo "[ERROR] --module-id 需要参数"; exit 1; }
             ;;
+        --module-name)
+            OPT_MODULE_NAME="${2:-}"
+            shift 2 || { echo "[ERROR] --module-name 需要参数"; exit 1; }
+            ;;
+        --timing-group)
+            OPT_TIMING_GROUP="${2:-}"
+            shift 2 || { echo "[ERROR] --timing-group 需要参数"; exit 1; }
+            ;;
         --server)
             OPT_SERVER="${2:-}"
             shift 2 || { echo "[ERROR] --server 需要参数"; exit 1; }
+            ;;
+        --json)
+            USE_JSON=1
+            shift
+            ;;
+        --keep-json)
+            KEEP_JSON="${2:-}"
+            shift 2 || { echo "[ERROR] --keep-json 需要参数"; exit 1; }
             ;;
         -h|--help)
             usage
@@ -182,7 +221,142 @@ if [ ! -f "$CSV_FILE" ]; then
     exit 1
 fi
 
-# --- 构造表单 ---
+# =========================================================================
+# JSON §6.5 协议分支
+# =========================================================================
+if [ "$USE_JSON" = "1" ]; then
+    # 1) 定位 csv_to_json.py (相对脚本目录)
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    CSV_TO_JSON="${CSV_TO_JSON:-${SCRIPT_DIR}/csv_to_json.py}"
+    if [ ! -f "$CSV_TO_JSON" ]; then
+        echo "[ERROR] 找不到 csv_to_json.py: $CSV_TO_JSON"
+        echo "  请设置 CSV_TO_JSON 环境变量指向正确路径"
+        exit 1
+    fi
+
+    # 2) 构造 csv_to_json.py 参数
+    CSV_ARGS=(--project-id "$PROJECT_ID" --version "$VERSION")
+    if [ -n "$FULL_DIR" ]; then
+        CSV_ARGS+=(--full-dir "$FULL_DIR")
+    fi
+    if [ -n "$RELEASE_DIR" ] && [ "$DATA_TYPE" = "qor" ]; then
+        CSV_ARGS+=(--release-dir "$RELEASE_DIR")
+    fi
+    if [ -n "$OPT_MODULE_NAME" ]; then
+        CSV_ARGS+=(--module-name "$OPT_MODULE_NAME")
+    fi
+    if [ -n "$OPT_TIMING_GROUP" ]; then
+        CSV_ARGS+=(--timing-group "$OPT_TIMING_GROUP")
+    fi
+    CSV_ARGS+=(--data-type "$DATA_TYPE")
+
+    # 3) 转换 CSV → JSON
+    echo "[INFO] 转换 $CSV_FILE -> JSON §6.5 (使用 $CSV_TO_JSON)"
+    if [ -n "$KEEP_JSON" ]; then
+        if ! python3 "$CSV_TO_JSON" "${CSV_ARGS[@]}" -o "$KEEP_JSON" "$CSV_FILE"; then
+            echo "[ERROR] CSV -> JSON 转换失败"
+            exit 3
+        fi
+        JSON_PAYLOAD=$(cat "$KEEP_JSON")
+        echo "[INFO] JSON 已保存到 $KEEP_JSON"
+    else
+        JSON_PAYLOAD=$(python3 "$CSV_TO_JSON" "${CSV_ARGS[@]}" "$CSV_FILE") || {
+            echo "[ERROR] CSV -> JSON 转换失败"
+            exit 3
+        }
+    fi
+
+    # 4) 注入 upload 顶层字段 (mark_released, module_id, full_dir, release_dir)
+    #    python3 -c 一行补齐, 避免依赖 jq
+    INJECTED_JSON=$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+up = data.setdefault('upload', {})
+up['project_id'] = $PROJECT_ID
+up['version'] = '$VERSION'
+if $MARK_RELEASED == 1:
+    up['mark_released'] = True
+if '$MODULE_ID':
+    up['module_id'] = int('$MODULE_ID')
+if '$FULL_DIR':
+    up['full_dir'] = '$FULL_DIR'
+if '$RELEASE_DIR' and '$DATA_TYPE' == 'qor':
+    up['release_dir'] = '$RELEASE_DIR'
+print(json.dumps(data, ensure_ascii=False))
+" <<< "$JSON_PAYLOAD")
+
+    if [ -n "$KEEP_JSON" ]; then
+        echo "$INJECTED_JSON" > "$KEEP_JSON"
+    fi
+
+    # 5) POST JSON
+    echo "[INFO] 上传 (JSON §6.5) -> $SERVER/api/v1/qor/upload"
+    echo "       project=$PROJECT_ID version=$VERSION type=$DATA_TYPE release=$MARK_RELEASED"
+    if [ -n "$MODULE_ID" ]; then
+        echo "       module_id=$MODULE_ID"
+    fi
+    if [ -n "$FULL_DIR" ]; then
+        echo "       full_dir=$FULL_DIR"
+    fi
+    if [ -n "$RELEASE_DIR" ]; then
+        echo "       release_dir=$RELEASE_DIR"
+    fi
+
+    RESPONSE=$(curl -sS -X POST "$SERVER/api/v1/qor/upload" \
+        -H "X-API-Key: $API_KEY" \
+        -H "Content-Type: application/json" \
+        --data-raw "$INJECTED_JSON" \
+        -w "\n%{http_code}" 2>&1) || {
+        echo "[ERROR] curl 请求失败"
+        exit 2
+    }
+
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+
+    echo "[INFO] HTTP 状态: $HTTP_CODE"
+    echo "[INFO] 响应: $BODY"
+
+    if [ "$HTTP_CODE" = "200" ]; then
+        # 解析 saved/updated/notes/violation_paths 计数 (用 python3 避免 jq 依赖)
+        SUMMARY=$(python3 -c "
+import json
+try:
+    d = json.loads('''$BODY''')
+    parts = []
+    if d.get('saved'):
+        parts.append(f\"saved={d['saved']}\")
+    if d.get('updated'):
+        parts.append(f\"updated={d['updated']}\")
+    if d.get('skipped'):
+        parts.append(f\"skipped={d['skipped']}\")
+    if d.get('violation_paths_saved'):
+        parts.append(f\"violations={d['violation_paths_saved']}\")
+    if d.get('notes_saved'):
+        parts.append(f\"notes={d['notes_saved']}\")
+    if d.get('record_ids'):
+        parts.append(f\"record_ids={d['record_ids']}\")
+    if d.get('alerts_triggered'):
+        parts.append(f\"alerts={d['alerts_triggered']}\")
+    print(', '.join(parts) or '无变化')
+except Exception as e:
+    print(f'解析失败: {e}')
+" 2>/dev/null || echo "")
+        if [ -n "$SUMMARY" ]; then
+            echo "[OK] 上传成功 ($DATA_TYPE, $SUMMARY)"
+        else
+            echo "[OK] 上传成功 ($DATA_TYPE)"
+        fi
+        exit 0
+    else
+        echo "[FAIL] 上传失败 (HTTP $HTTP_CODE)"
+        exit 2
+    fi
+fi
+
+# =========================================================================
+# multipart/form-data 分支 (旧协议, 保持兼容)
+# =========================================================================
 FORM_ARGS=(-H "X-API-Key: $API_KEY"
            -F "project_id=$PROJECT_ID"
            -F "version=$VERSION"

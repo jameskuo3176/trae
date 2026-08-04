@@ -5,7 +5,8 @@
   - /projects/{id}/members (成员管理)
   - /locks (数据锁)
   - /apikeys (API Key 管理)
-  - /upload (自动化上传)
+  - /upload (CSV multipart 自动化上传)
+  - /qor/upload (JSON §6.5 统一上传, 推荐)
   - /alerts (告警规则与事件)
 
 认证方式:
@@ -31,6 +32,13 @@ from models import (
 from qor_parser import parse_csv_file, parse_violation_csv, parse_notes_csv
 from services.qor_import import (
     save_records_to_db, merge_power_to_db, save_violations_to_db, save_notes_to_db,
+)
+from services.json_upload import (
+    JSONUploadError,
+    validate_upload_json,
+    json_to_qor_records,
+    json_to_violation_records,
+    json_to_notes_records,
 )
 from alerts import check_alerts_for_new_record
 
@@ -458,6 +466,216 @@ def api_v1_upload():
         'file_results': file_results,
         'uploaded_by': user.username,
     })
+
+
+@bp.route('/qor/upload', methods=['POST'])
+@api_auth_required(required_scope='upload')
+@with_db_retry()
+def api_v1_qor_upload_json():
+    """JSON §6.5 统一上传端点
+
+    单次请求可同时提交 records + violation_paths + notes, 服务端按顺序
+    调用对应的 save_*_to_db 函数 (与 CSV 上传共用底层逻辑).
+
+    认证:  X-API-Key 头 (scope=upload) 或 session
+    Content-Type: application/json
+
+    响应:
+      {
+        "ok": true,
+        "schema_version": "1.0",
+        "saved": 1,         # 新建 QorRecord 数
+        "updated": 0,       # 更新已有 QorRecord 数
+        "skipped": 0,       # 跳过数 (缺字段/范围异常)
+        "violation_paths_saved": 12,
+        "violation_paths_skipped": 0,
+        "notes_saved": 3,
+        "notes_skipped": 0,
+        "record_ids": [42],
+        "alerts_triggered": 0,
+        "uploaded_by": "admin",
+      }
+
+    错误码:
+      400 - 校验失败 (响应含 error + path)
+      403 - 无权限 / 项目已锁
+      404 - 项目不存在
+      409 - 资源被他人锁定
+    """
+    user = g.auth_user
+
+    # 1. 解析 JSON 主体
+    data = request.get_json(silent=True)
+    try:
+        data = validate_upload_json(data)
+    except JSONUploadError as e:
+        return jsonify({
+            'error': e.message,
+            'path': e.path,
+        }), e.status_code
+
+    upload = data['upload']
+    project_id = upload['project_id']
+    version = upload['version']
+    mark_released = bool(upload.get('mark_released', False))
+    default_module_id = upload.get('module_id')
+    default_release_dir = upload.get('release_dir') or None
+    default_full_dir = upload.get('full_dir') or None
+
+    # 2. 权限 + 数据锁
+    if not can_edit_project(user, project_id):
+        return jsonify({'error': '无权限上传到此项目'}), 403
+    writable, err = check_project_writable(project_id)
+    if not writable:
+        return jsonify({'error': err}), 403
+
+    if default_module_id:
+        locked_by_other, lock = check_data_lock('module', int(default_module_id), user)
+        if locked_by_other:
+            return jsonify({
+                'error': f'模块被 {lock.user.username} 锁定',
+                'lock': lock.to_dict(),
+            }), 409
+    else:
+        locked_by_other, lock = check_data_lock('project', project_id, user)
+        if locked_by_other:
+            return jsonify({
+                'error': f'项目被 {lock.user.username} 锁定',
+                'lock': lock.to_dict(),
+            }), 409
+
+    project = Project.query.get_or_404(project_id)
+
+    # 3. 汇总响应
+    result = {
+        'ok': True,
+        'schema_version': data['schema_version'],
+        'saved': 0,
+        'updated': 0,
+        'skipped': 0,
+        'violation_paths_saved': 0,
+        'violation_paths_skipped': 0,
+        'notes_saved': 0,
+        'notes_skipped': 0,
+        'record_ids': [],
+        'alerts_triggered': 0,
+        'metadata_recorded': bool(data.get('metadata')),
+        'uploaded_by': user.username,
+    }
+    triggered_alerts: list = []
+
+    # 4a. records → save_records_to_db
+    raw_records = data.get('records') or []
+    if raw_records:
+        try:
+            records = json_to_qor_records(
+                data,
+                default_version=version,
+                default_full_dir=default_full_dir,
+                default_release_dir=default_release_dir,
+            )
+            if not records:
+                result['warnings'] = (result.get('warnings') or []) + [
+                    'records[] 全部因缺 module_name/version 被跳过',
+                ]
+            else:
+                # 必须切到目标项目库, 否则 db_routing 兜底逻辑会把数据
+                # 写入第 1 个项目库 (跨项目路由默认行为)
+                with switch_to_project(project_id):
+                    saved, skipped, updated = save_records_to_db(
+                        records, project, default_module_id, version,
+                        source_filename='json:upload',
+                        mark_released=mark_released,
+                        owner_id=user.id,
+                        default_release_dir=default_release_dir,
+                    )
+                    db.session.commit()
+                    result['saved'] += saved
+                    result['updated'] += updated
+                    result['skipped'] += skipped
+
+                    # 收集 record_id + 触发告警
+                    affected_mods = set()
+                    for r in records:
+                        mn = r.get('module_name')
+                        if not mn:
+                            continue
+                        m = Module.query.filter_by(project_id=project_id, name=mn).first()
+                        if m:
+                            affected_mods.add(m.id)
+                    for mid in affected_mods:
+                        rec_version = version or 'v1'
+                        qor = QorRecord.query.filter_by(
+                            module_id=mid, version=rec_version,
+                        ).first()
+                        if qor:
+                            result['record_ids'].append(qor.id)
+                            triggered_alerts.extend(check_alerts_for_new_record(qor))
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.exception('JSON upload: records save failed')
+            return jsonify({
+                'error': f'保存 records 失败: {e}',
+                'stage': 'records',
+            }), 500
+
+    # 4b. violation_paths → save_violations_to_db
+    raw_violations = data.get('violation_paths') or []
+    if raw_violations:
+        try:
+            vp_records = json_to_violation_records(data, default_version=version)
+            # 按 timing_group 分组 (CSV 端点行为)
+            from collections import defaultdict
+            by_group: dict = defaultdict(list)
+            for v in vp_records:
+                tg = v.get('timing_group') or 'default'
+                by_group[tg].append(v)
+            total_saved = total_skipped = 0
+            with switch_to_project(project_id):
+                for tg, recs in by_group.items():
+                    saved, skipped = save_violations_to_db(
+                        recs, project, default_module_id, version,
+                        source_filename='json:upload', timing_group=tg,
+                    )
+                    db.session.commit()
+                    total_saved += saved
+                    total_skipped += skipped
+            result['violation_paths_saved'] += total_saved
+            result['violation_paths_skipped'] += total_skipped
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.exception('JSON upload: violations save failed')
+            return jsonify({
+                'error': f'保存 violation_paths 失败: {e}',
+                'stage': 'violation_paths',
+            }), 500
+
+    # 4c. notes → save_notes_to_db
+    raw_notes = data.get('notes') or []
+    if raw_notes:
+        try:
+            note_records = json_to_notes_records(data, default_full_dir=default_full_dir)
+            if note_records:
+                with switch_to_project(project_id):
+                    saved, skipped = save_notes_to_db(
+                        note_records, project, default_module_id, version,
+                        source_filename='json:upload',
+                        full_dir=default_full_dir,
+                    )
+                    db.session.commit()
+                result['notes_saved'] += saved
+                result['notes_skipped'] += skipped
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.exception('JSON upload: notes save failed')
+            return jsonify({
+                'error': f'保存 notes 失败: {e}',
+                'stage': 'notes',
+            }), 500
+
+    result['alerts_triggered'] = len(triggered_alerts)
+    result['alerts'] = triggered_alerts  # 供客户端按需展示
+    return jsonify(result)
 
 
 # =========================================================================

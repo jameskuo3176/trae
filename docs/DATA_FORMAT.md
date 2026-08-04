@@ -910,18 +910,35 @@ cd /scratch/runs/v2.0 && make upload-notes
 
 #### (2) 服务端校验流程
 
+服务端使用自实现的轻量校验器 ([`services/json_upload.py`](../services/json_upload.py) 的
+`validate_upload_json()`), **不依赖 `jsonschema` 第三方包**, 避免给部署环境增加
+新依赖. 校验逻辑与上面的 schema 语义等价, 但错误路径用 JSONPath 字符串
+(如 `$.records[3].module_name`) 返回.
+
 ```
 1. 收到 JSON
-2. 校验 schema_version (必须是 1.x, 未知版本拒绝并提示升级)
-3. jsonschema 校验整体结构 (失败返回 400 + 错误字段路径)
-4. 业务校验:
-   - project_id 存在
-   - module_name 已在项目中, 或有创建权限
-   - 数值范围 (复用 §10 单位约定)
-   - clocks[*].period 必须 > 0
-5. 写入数据库 (复用 save_records_to_db)
-6. 触发告警 (wns_setup < 0 → setup 告警)
-7. 返回 {ok, saved, updated, skipped, warnings}
+2. 校验顶层结构: 必须是对象, 且 schema_version / upload 必填
+3. 校验 schema_version: 必须是 1.x 格式, 不支持则 400
+4. 校验 upload 必填字段 (project_id 整数 >= 1, version 非空字符串 <= 64 字符)
+5. 校验 records[] / violation_paths[] / notes[] 结构 (若提供)
+   - 每条 record.module_name 必填
+   - violation_paths 必须有 startpoint/endpoint/slack/timing_group
+   - notes[].items 不能为空
+6. 业务校验 (在路由层):
+   - can_edit_project(user, project_id) - 权限
+   - check_project_writable() - 项目级数据锁
+   - check_data_lock() - 模块级数据锁
+7. 写入数据库 (复用 save_records_to_db / save_violations_to_db / save_notes_to_db)
+8. 触发告警 (wns_setup < 0 → setup 告警)
+9. 返回 {ok, saved, updated, skipped, record_ids, alerts_triggered, ...}
+```
+
+校验失败示例 (400):
+```json
+{
+  "error": "必填, 字符串",
+  "path": "$.records[0].module_name"
+}
 ```
 
 #### (3) 与 CSV 的互转
@@ -1036,6 +1053,7 @@ python scripts/json_to_csv.py run.json --split
 
 #### (1) API: `POST /api/v1/qor/upload` (JSON body)
 
+**请求**:
 ```bash
 curl -X POST http://localhost:5000/api/v1/qor/upload \
     -H "X-API-Key: qor_xxxxxxxx" \
@@ -1043,8 +1061,15 @@ curl -X POST http://localhost:5000/api/v1/qor/upload \
     -d @run.json
 ```
 
-**响应**:
+**请求头**:
+| 头 | 必填 | 说明 |
+|----|------|------|
+| `X-API-Key` | 是 | API Key, scope 必须含 `upload` |
+| `Content-Type` | 是 | `application/json` |
 
+**请求体**: 见 §6.5.3 (一个 JSON 对象, 含 `schema_version` / `upload` / `records` / `violation_paths` / `notes` / `metadata`).
+
+**响应 200**:
 ```json
 {
   "ok": true,
@@ -1053,15 +1078,76 @@ curl -X POST http://localhost:5000/api/v1/qor/upload \
   "updated": 0,
   "skipped": 0,
   "violation_paths_saved": 150,
-  "violation_paths_covered_groups": ["SRAMCLK", "CLK_CPU"],
+  "violation_paths_skipped": 0,
   "notes_saved": 4,
-  "warnings": [],
-  "record_id": 23,
-  "metadata_recorded": true
+  "notes_skipped": 0,
+  "record_ids": [23],
+  "alerts_triggered": 2,
+  "alerts": [...],
+  "metadata_recorded": true,
+  "uploaded_by": "james.kuo"
 }
 ```
 
-#### (2) Makefile 集成 (推荐)
+| 字段 | 含义 |
+|------|------|
+| `saved` | 新建 QorRecord 数 |
+| `updated` | 覆盖已有 QorRecord 数 (按 `module_id+version` 匹配) |
+| `skipped` | 字段缺失/数值越界导致跳过 |
+| `violation_paths_saved` / `violation_paths_skipped` | 违例路径保存/跳过计数 |
+| `notes_saved` / `notes_skipped` | Run 备注保存/跳过计数 |
+| `record_ids` | 受影响 QorRecord 的 id 列表 (按 record 顺序) |
+| `alerts_triggered` | 触发的告警规则数 |
+| `metadata_recorded` | `metadata` 段是否被解析 (当前仅解析, 不入库) |
+
+**错误响应**:
+
+| 状态码 | 含义 | 响应字段 |
+|--------|------|----------|
+| 400 | JSON 校验失败 | `{"error": "...", "path": "$.records[3].module_name"}` |
+| 401 | 缺/无效 X-API-Key 或 session | `{"error": "..."}` |
+| 403 | 无项目编辑权限 / 项目已锁 (`must_change_password=True`) | `{"error": "..."}` |
+| 404 | `project_id` 不存在 | `{"error": "..."}` |
+| 409 | 模块/项目被他人锁定 | `{"error": "...", "lock": {...}}` |
+| 500 | 服务端异常 (DB 错误等) | `{"error": "...", "stage": "records\|violation_paths\|notes"}` |
+
+`path` 字段使用 JSONPath 语法 (`$.records[3].module_name`), 客户端可直接定位出错的字段.
+
+**幂等性**: 同一份 JSON 重复提交, 第 1 次 `saved=1`, 后续 `updated=1` (按 `module_id+version` 匹配更新). `record_ids` 始终返回受影响 QorRecord 的最新 id.
+
+#### (2) upload_qor.sh --json 模式 (推荐 DC 流程)
+
+[`scripts/upload_qor.sh`](../scripts/upload_qor.sh) 已支持 `--json` 模式, 内部自动调用 `csv_to_json.py` 转 JSON 后发到新端点:
+
+```bash
+# QoR 数据
+./upload_qor.sh 1 v1.0 qor_report.csv --json
+
+# QoR + 立即发布
+./upload_qor.sh 1 v1.0 qor_report.csv qor --json --release
+
+# QoR + 指定 release_dir
+./upload_qor.sh 1 v1.0 qor_report.csv --json --release-dir v1.0/main/cpu
+
+# Violation paths (文件名建议 SRAMCLK_violations.csv, 自动提取 timing_group)
+./upload_qor.sh 1 v1.0 SRAMCLK_violations.csv violation --json
+
+# Notes (必须 --module-name)
+./upload_qor.sh 1 v1.0 run_notes.csv notes --json --module-name cpu_top --full-dir "$PWD"
+
+# 调试: 保留转换后的 JSON 文件
+./upload_qor.sh 1 v1.0 qor.csv --json --keep-json /tmp/run.json
+```
+
+底层流程:
+1. `csv_to_json.py` 把 CSV 转换为 §6.5 JSON
+2. `upload_qor.sh` 注入 `upload.project_id` / `mark_released` / `module_id` / `full_dir` / `release_dir`
+3. POST `/api/v1/qor/upload` (Content-Type: application/json)
+4. 解析响应, 输出 `saved/updated/notes/violations/record_ids/alerts` 摘要
+
+> **推荐**: DC 流程默认使用 `--json`. 旧 multipart 入口 (`/api/v1/upload`) 保持兼容, 旧 Makefile 无需修改.
+
+#### (3) Makefile 集成 (推荐)
 
 ```makefile
 # DC 综合流程结束: 一份 run.json 搞定全部数据
@@ -1085,7 +1171,7 @@ upload-run-release:
 	@rm -f run.release.json
 ```
 
-#### (3) 兼容 CSV 入口 (旧 Makefile 仍可工作)
+#### (4) 兼容 CSV 入口 (旧 Makefile 仍可工作)
 
 ```bash
 # 单文件: CSV → multipart/form-data → /api/v1/upload (旧入口)
