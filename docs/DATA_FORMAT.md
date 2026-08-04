@@ -514,6 +514,643 @@ cd /scratch/runs/v2.0 && make upload-notes
 
 ---
 
+## 6.5 JSON 统一上传格式 (v5.0+ 推荐, CSV 超集)
+
+> **设计目标**: 用一个 JSON 文件描述一次综合 run 的**完整快照**——含 QoR / 功耗 / 违例路径 / Run 备注 / Run 元数据, 是 §3~§6 全部 CSV 格式的**超集**, 同时向下兼容 (CSV → JSON 转换器可逆).
+>
+> **建议**: 长期使用 JSON 替代 CSV (DC 流程 Makefile 端直接生成 JSON, 系统一站式解析). CSV 仍保留 (老 Makefile 兼容), 但新项目/新工具建议直接输出 JSON.
+
+### 6.5.1 设计原则
+
+| 原则                  | 说明                                                                |
+|-----------------------|---------------------------------------------------------------------|
+| **CSV 超集**           | §3~§6 任何字段都能映射到 JSON 节点, 零信息损失                       |
+| **结构化分组**         | 时序/面积/功耗/拥塞按域分组, 而非平铺 30+ 个键                       |
+| **多 clock 原生**      | `clocks` 用对象而非列名匹配, 避免 `_` 命名的脆弱解析                  |
+| **Schema 版本化**      | 顶层 `schema_version` 字段, 未来加字段向后兼容                       |
+| **一次提交, 多种类型** | 单个 JSON 可同时含 `records` + `violation_paths` + `notes`            |
+| **审计元数据**         | `metadata` 段记录工具版本、Git commit、运行时长, 便于溯源             |
+| **JSON Schema 校验**   | 提供 `schemas/qor_upload.v1.json` (JSON Schema Draft 2020-12)         |
+| **CSV 互转**           | `scripts/csv_to_json.py` / `json_to_csv.py` 双向无损                |
+
+### 6.5.2 顶层结构
+
+```jsonc
+{
+  "schema_version": "1.0",        // 必填, 格式 "MAJOR.MINOR"
+  "upload": { ... },              // 上传控制参数 (项目 / 版本 / 标签)
+  "records": [ ... ],             // QoR + 功耗记录 (1..N)
+  "violation_paths": [ ... ],     // 违例路径 (0..N, 可选)
+  "notes": [ ... ],               // Run 备注 (0..N, 可选)
+  "metadata": { ... }             // Run 元数据 (工具/Git/运行时, 可选)
+}
+```
+
+### 6.5.3 完整 Schema (推荐, 一份 JSON = 一次完整 run)
+
+```json
+{
+  "schema_version": "1.0",
+
+  "upload": {
+    "project_id": 1,
+    "project_name": "ChipA",                  // 备用, project_id 优先
+    "version": "v1.0",
+    "module_name": "cpu_top",                 // 主模块 (用于快速路由, 也可放在 records[0])
+    "module_id": 5,                           // 已知 module_id 时显式传入
+    "mark_released": false,                   // 上传后立即发布
+    "full_dir": "/scratch/runs/cpu/v1.0",     // notes 默认目录
+    "release_dir": "v1.0/main/cpu",          // v5.0 发布目录
+    "uploader_note": "baseline before MBFF refactor"
+  },
+
+  "records": [
+    {
+      "module_name": "cpu_top",
+      "version": "v1.0",
+      "version_description": "baseline, no MBFF",  // v5.0 (与 upload.version 区别: 这是描述)
+      "full_dir": "/scratch/runs/cpu/v1.0",
+      "release_dir": "v1.0/main/cpu",
+      "source_file": "reports/cpu_top/qor.rpt",    // 原始报告路径, 留痕
+      "comment": "baseline",
+
+      "area": {
+        "total": 12345.6,
+        "combinational": 5678.9,
+        "sequential": 3456.7,
+        "black_box": 0.0,
+        "macro": 1110.0
+      },
+      "timing": {
+        "setup": { "wns": -0.123, "tns": -0.456, "nvp": 12 },
+        "hold":  { "wns":  0.012, "tns":  0.034, "nvp":  3 }
+      },
+      "power": {
+        "internal":   5.6,
+        "switching":  3.2,
+        "leakage":    1.1,
+        "total":      9.9
+      },
+      "cells": {
+        "cell_count":           8500,
+        "instance_count":       9000,
+        "net_count":            12000,
+        "sequential_cell_count": 2100
+      },
+      "frequency": {
+        "target":    500.0,
+        "achieved":  476.2
+      },
+      "ratios": {                                // 一律 0-1 小数
+        "mbb_ratio":          0.85,
+        "clock_gating_ratio": 0.92,
+        "utilization":        0.75
+      },
+      "congestion": {
+        "h": 0.16,
+        "v": 0.20,
+        "b": 0.20,
+        "max": 0.20                              // = max(h, v), 旧字段兼容
+      },
+
+      "clocks": {                                // 多 clock 原生 (CSV 用列名模式匹配)
+        "SRAMCLK": {
+          "period": 2.50,
+          "wns":   -0.123,
+          "tns":   -0.456,
+          "path":  "/clk_div/SRAMCLK/end_reg"
+        },
+        "CLK_CPU": {
+          "period": 1.00,
+          "wns":   -0.050,
+          "tns":   -0.200,
+          "path":  "/reg/.../cpu_core/reg1"
+        }
+      },
+
+      "extra": {                                 // 任意自定义字段
+        "density": 0.78,
+        "DRC_violations": 23,
+        "scan_chain_count": 8,
+        "tag": "baseline"
+      }
+    }
+  ],
+
+  "violation_paths": [
+    {
+      "module_name": "cpu_top",
+      "timing_group": "SRAMCLK",
+      "type": "setup",                           // "setup" | "hold"
+      "slack": -0.020,
+      "startpoint": "a_reg/CK",
+      "endpoint":   "b_refg_0_/D",
+      "depth": 27,
+      "pure_depth": 23,
+      "cell_delay": 500.0,
+      "net_delay": 77.0,
+      "et_slack": 9.0,
+      "st_slack": -10.0,
+      "st_fanin":  1, "st_fanout": 122,
+      "et_fanin": 122, "et_fanout": 11,
+      "clock_domain": "SRAMCLK",
+      "extra": { "fanout": 3, "cell_type": "NAND2X1" }
+    }
+  ],
+
+  "notes": [
+    {
+      "module_name": "cpu_top",
+      "full_dir": "/scratch/runs/cpu/v1.0",
+      "items": [
+        { "category": "constraint", "item": "max_transition",  "value": "0.150",  "unit": "ns" },
+        { "category": "flow",        "item": "compile_strategy", "value": "compile_ultra" },
+        { "category": "result",      "item": "WNS_slack",       "value": "-0.123",  "unit": "ns" },
+        { "category": "modification", "item": "关键路径优化",     "description": "retiming + 插入 buffer 解决 hold" }
+      ]
+    }
+  ],
+
+  "metadata": {
+    "tool": {
+      "name":    "Design Compiler",
+      "version": "2026.03-SP4",
+      "host":    "syn-server-01",
+      "user":    "james.kuo"
+    },
+    "git": {
+      "commit":  "a1b2c3d4e5f6",
+      "branch":  "main",
+      "tag":     "v1.0-rc1"
+    },
+    "runtime": {
+      "wall_clock_seconds": 4523,
+      "peak_memory_mb":    32768
+    },
+    "uploaded_at": "2026-07-30T14:23:11+08:00",
+    "uploader_ip":  "10.0.0.123",
+    "uploader_note": "release after MCM sign-off"
+  }
+}
+```
+
+### 6.5.4 字段映射 (CSV ↔ JSON)
+
+| CSV (§3)            | JSON 路径                                    | 类型   | 单位 |
+|---------------------|----------------------------------------------|--------|------|
+| `module_name`       | `records[].module_name` (顶层 `upload.module_name` 也可) | string | -    |
+| `version`           | `upload.version` (或 `records[].version`)     | string | -    |
+| `full_dir`          | `upload.full_dir` / `records[].full_dir`     | string | -    |
+| `tag`               | `records[].extra.tag`                        | string | -    |
+| `area_total`        | `records[].area.total`                       | float  | um²  |
+| `area_combinational`| `records[].area.combinational`               | float  | um²  |
+| `area_sequential`   | `records[].area.sequential`                  | float  | um²  |
+| `area_black_box`    | `records[].area.black_box`                   | float  | um²  |
+| `area_macro`        | `records[].area.macro`                       | float  | um²  |
+| `wns_setup`         | `records[].timing.setup.wns`                 | float  | ns   |
+| `tns_setup`         | `records[].timing.setup.tns`                 | float  | ns   |
+| `nvp_setup`         | `records[].timing.setup.nvp`                 | int    | 条   |
+| `wns_hold`          | `records[].timing.hold.wns`                  | float  | ns   |
+| `tns_hold`          | `records[].timing.hold.tns`                  | float  | ns   |
+| `nvp_hold`          | `records[].timing.hold.nvp`                  | int    | 条   |
+| `power_internal`    | `records[].power.internal`                   | float  | mW   |
+| `power_switching`   | `records[].power.switching`                  | float  | mW   |
+| `power_leakage`     | `records[].power.leakage`                    | float  | mW   |
+| `power_total`       | `records[].power.total`                      | float  | mW   |
+| `cell_count`        | `records[].cells.cell_count`                 | int    | -    |
+| `instance_count`    | `records[].cells.instance_count`             | int    | -    |
+| `net_count`         | `records[].cells.net_count`                  | int    | -    |
+| `sequential_cell_count` | `records[].cells.sequential_cell_count`  | int    | -    |
+| `target_frequency`  | `records[].frequency.target`                 | float  | MHz  |
+| `achieved_frequency`| `records[].frequency.achieved`               | float  | MHz  |
+| `mbb_ratio`         | `records[].ratios.mbb_ratio`                 | float  | 0-1  |
+| `clock_gating_ratio`| `records[].ratios.clock_gating_ratio`        | float  | 0-1  |
+| `utilization`       | `records[].ratios.utilization`               | float  | 0-1  |
+| `congestion_h`      | `records[].congestion.h`                     | float  | 0-1  |
+| `congestion_v`      | `records[].congestion.v`                     | float  | 0-1  |
+| `congestion_b`      | `records[].congestion.b`                     | float  | 0-1  |
+| `congestion`        | `records[].congestion.max` (旧字段)          | float  | 0-1  |
+| `SRAMCLK_period`    | `records[].clocks.SRAMCLK.period`            | float  | ns   |
+| `SRAMCLK_wns`       | `records[].clocks.SRAMCLK.wns`               | float  | ns   |
+| `SRAMCLK_tns`       | `records[].clocks.SRAMCLK.tns`               | float  | ns   |
+| `SRAMCLK_path`      | `records[].clocks.SRAMCLK.path`              | string | -    |
+| `comment`           | `records[].comment`                          | string | -    |
+| `source_file`       | `records[].source_file`                      | string | -    |
+| 任意额外列           | `records[].extra.<key>`                      | any    | -    |
+
+| CSV (§4 power)        | JSON 路径                              |
+|-----------------------|----------------------------------------|
+| `module_name`         | `records[].module_name`                |
+| `version`             | `upload.version`                       |
+| `power_*`             | `records[].power.*`                    |
+
+| CSV (§5 violation)    | JSON 路径                              |
+|-----------------------|----------------------------------------|
+| `STARTPOINT`          | `violation_paths[].startpoint`         |
+| `ENDPOINT`            | `violation_paths[].endpoint`           |
+| `SLACK`               | `violation_paths[].slack`              |
+| `DEPTH`               | `violation_paths[].depth`              |
+| `PURE_DEPTH`          | `violation_paths[].pure_depth`         |
+| `CELL_DELAY`          | `violation_paths[].cell_delay`         |
+| `NET_DELAY`           | `violation_paths[].net_delay`          |
+| `ET_SLACK`            | `violation_paths[].et_slack`           |
+| `ST_SLACK`            | `violation_paths[].st_slack`           |
+| `ST_FANIN`            | `violation_paths[].st_fanin`           |
+| `ST_FANOUT`           | `violation_paths[].st_fanout`          |
+| `ET_FANIN`            | `violation_paths[].et_fanin`           |
+| `ET_FANOUT`           | `violation_paths[].et_fanout`          |
+| (timing_group 来自文件名) | `violation_paths[].timing_group`   |
+| (type 来自 metadata)  | `violation_paths[].type` (setup/hold)  |
+
+| CSV (§6 notes)         | JSON 路径                            |
+|------------------------|--------------------------------------|
+| `item`                 | `notes[].items[].item`               |
+| `description`          | `notes[].items[].description` (或 `value`) |
+| `full_dir`             | `notes[].full_dir` (或顶层 `upload.full_dir`) |
+
+### 6.5.5 约束与校验
+
+#### (1) JSON Schema 校验
+
+`schemas/qor_upload.v1.json`:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qor-recorder/schemas/qor_upload.v1.json",
+  "title": "QoR Upload",
+  "type": "object",
+  "required": ["schema_version", "upload", "records"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "upload": {
+      "type": "object",
+      "required": ["project_id", "version"],
+      "properties": {
+        "project_id":     { "type": "integer", "minimum": 1 },
+        "project_name":   { "type": "string" },
+        "version":        { "type": "string", "minLength": 1, "maxLength": 64 },
+        "module_name":    { "type": "string" },
+        "module_id":      { "type": "integer", "minimum": 1 },
+        "mark_released":  { "type": "boolean" },
+        "full_dir":       { "type": "string", "maxLength": 1024 },
+        "release_dir":    { "type": "string", "maxLength": 1024 },
+        "uploader_note":  { "type": "string", "maxLength": 1024 }
+      }
+    },
+    "records": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["module_name"],
+        "properties": {
+          "module_name":          { "type": "string" },
+          "version":              { "type": "string" },
+          "version_description":  { "type": "string", "maxLength": 1024 },
+          "full_dir":             { "type": "string" },
+          "release_dir":          { "type": "string" },
+          "source_file":          { "type": "string" },
+          "comment":              { "type": "string" },
+          "area":                 { "$ref": "#/$defs/area" },
+          "timing":               { "$ref": "#/$defs/timing" },
+          "power":                { "$ref": "#/$defs/power" },
+          "cells":                { "$ref": "#/$defs/cells" },
+          "frequency":            { "$ref": "#/$defs/frequency" },
+          "ratios":               { "$ref": "#/$defs/ratios" },
+          "congestion":           { "$ref": "#/$defs/congestion" },
+          "clocks":               { "type": "object", "additionalProperties": { "$ref": "#/$defs/clock" } },
+          "extra":                { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+    "violation_paths": { "type": "array" },
+    "notes":           { "type": "array" },
+    "metadata":        { "type": "object" }
+  },
+  "$defs": {
+    "area": {
+      "type": "object",
+      "properties": {
+        "total":          { "type": "number", "minimum": 0, "maximum": 1e9 },
+        "combinational":  { "type": "number", "minimum": 0, "maximum": 1e9 },
+        "sequential":     { "type": "number", "minimum": 0, "maximum": 1e9 },
+        "black_box":      { "type": "number", "minimum": 0, "maximum": 1e9 },
+        "macro":          { "type": "number", "minimum": 0, "maximum": 1e9 }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "properties": {
+        "setup": { "$ref": "#/$defs/timing_endpoint" },
+        "hold":  { "$ref": "#/$defs/timing_endpoint" }
+      }
+    },
+    "timing_endpoint": {
+      "type": "object",
+      "properties": {
+        "wns": { "type": "number", "minimum": -1e6, "maximum": 1e6 },
+        "tns": { "type": "number", "minimum": -1e9, "maximum": 1e9 },
+        "nvp": { "type": "integer", "minimum": 0, "maximum": 1e9 }
+      }
+    },
+    "power": {
+      "type": "object",
+      "properties": {
+        "internal":  { "type": "number", "minimum": 0, "maximum": 1e6 },
+        "switching": { "type": "number", "minimum": 0, "maximum": 1e6 },
+        "leakage":   { "type": "number", "minimum": 0, "maximum": 1e6 },
+        "total":     { "type": "number", "minimum": 0, "maximum": 1e6 }
+      }
+    },
+    "cells": {
+      "type": "object",
+      "properties": {
+        "cell_count":            { "type": "integer", "minimum": 0 },
+        "instance_count":        { "type": "integer", "minimum": 0 },
+        "net_count":             { "type": "integer", "minimum": 0 },
+        "sequential_cell_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "frequency": {
+      "type": "object",
+      "properties": {
+        "target":   { "type": "number", "minimum": 0, "maximum": 1e6 },
+        "achieved": { "type": "number", "minimum": 0, "maximum": 1e6 }
+      }
+    },
+    "ratios": {
+      "type": "object",
+      "properties": {
+        "mbb_ratio":          { "type": "number", "minimum": 0, "maximum": 1 },
+        "clock_gating_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "utilization":        { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "congestion": {
+      "type": "object",
+      "properties": {
+        "h":   { "type": "number", "minimum": 0, "maximum": 1 },
+        "v":   { "type": "number", "minimum": 0, "maximum": 1 },
+        "b":   { "type": "number", "minimum": 0, "maximum": 1 },
+        "max": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "clock": {
+      "type": "object",
+      "properties": {
+        "period": { "type": "number", "minimum": 0, "maximum": 1e3 },
+        "wns":    { "type": "number", "minimum": -1e3, "maximum": 1e3 },
+        "tns":    { "type": "number", "minimum": -1e3, "maximum": 1e3 },
+        "path":   { "type": "string", "maxLength": 1024 }
+      }
+    }
+  }
+}
+```
+
+#### (2) 服务端校验流程
+
+```
+1. 收到 JSON
+2. 校验 schema_version (必须是 1.x, 未知版本拒绝并提示升级)
+3. jsonschema 校验整体结构 (失败返回 400 + 错误字段路径)
+4. 业务校验:
+   - project_id 存在
+   - module_name 已在项目中, 或有创建权限
+   - 数值范围 (复用 §10 单位约定)
+   - clocks[*].period 必须 > 0
+5. 写入数据库 (复用 save_records_to_db)
+6. 触发告警 (wns_setup < 0 → setup 告警)
+7. 返回 {ok, saved, updated, skipped, warnings}
+```
+
+#### (3) 与 CSV 的互转
+
+`scripts/csv_to_json.py` (示例, 反向也类似):
+
+```python
+import csv, json, sys, argparse
+from pathlib import Path
+
+CLOCK_PATTERN_RE = __import__('re').compile(
+    r'^(.+?)_(hold_wns|hold_tns|hold_path|period|wns|tns|path)$',
+    __import__('re').IGNORECASE,
+)
+
+def csv_to_json(csv_path: Path, project_id: int, version: str,
+                full_dir: str = None, release_dir: str = None) -> dict:
+    """CSV §3 (qor 宽表) → JSON §6.5"""
+    with open(csv_path, encoding='utf-8-sig', newline='') as f:
+        rows = list(csv.DictReader(f))
+    records = []
+    for row in rows:
+        rec = {
+            "module_name": row["module_name"],
+            "version":     version,
+            "full_dir":    full_dir or row.get("full_dir"),
+            "release_dir": release_dir or row.get("release_dir"),
+            "comment":     row.get("comment"),
+            "source_file": str(csv_path),
+            "area": {}, "timing": {"setup": {}, "hold": {}}, "power": {},
+            "cells": {}, "frequency": {}, "ratios": {}, "congestion": {},
+            "clocks": {}, "extra": {},
+        }
+        for k, v in row.items():
+            if v == "" or v is None: continue
+            lk = k.lower().replace(" ", "_")
+            m = CLOCK_PATTERN_RE.match(k)
+            if m:
+                clk, suf = m.group(1), m.group(2).lower()
+                rec["clocks"].setdefault(clk, {})[suf] = float(v) if "path" not in suf else v
+                continue
+            # area
+            if lk.startswith("area_"):
+                rec["area"][lk[5:]] = float(v)
+            # timing
+            elif lk.endswith("_setup") and lk.startswith(("wns_","tns_","nvp_")):
+                rec["timing"]["setup"][lk[:-6]] = float(v) if "wns" in lk or "tns" in lk else int(v)
+            elif lk.endswith("_hold") and lk.startswith(("wns_","tns_","nvp_")):
+                rec["timing"]["hold"][lk[:-5]] = float(v) if "wns" in lk or "tns" in lk else int(v)
+            # power
+            elif lk.startswith("power_"):
+                rec["power"][lk[6:]] = float(v)
+            # cells
+            elif lk in ("cell_count","instance_count","net_count","sequential_cell_count"):
+                rec["cells"][lk] = int(v)
+            # frequency
+            elif lk in ("target_frequency","achieved_frequency"):
+                rec["frequency"][lk] = float(v)
+            # ratios
+            elif lk in ("mbb_ratio","clock_gating_ratio","utilization"):
+                v2 = float(v);  rec["ratios"][lk] = v2/100 if v2 > 1 else v2
+            # congestion
+            elif lk in ("congestion_h","congestion_v","congestion_b","congestion"):
+                v2 = float(v);  rec["congestion"][lk[11:] or "max"] = v2/100 if v2 > 1 else v2
+            else:
+                rec["extra"][k] = v
+        records.append(rec)
+    return {
+        "schema_version": "1.0",
+        "upload": {
+            "project_id":  project_id,
+            "version":     version,
+            "full_dir":    full_dir,
+            "release_dir": release_dir,
+        },
+        "records": records,
+    }
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("csv")
+    p.add_argument("--project-id", type=int, required=True)
+    p.add_argument("--version", required=True)
+    p.add_argument("--full-dir")
+    p.add_argument("--release-dir")
+    p.add_argument("--output", default="-")
+    args = p.parse_args()
+    data = csv_to_json(Path(args.csv), args.project_id, args.version,
+                      args.full_dir, args.release_dir)
+    out = sys.stdout if args.output == "-" else open(args.output, "w", encoding="utf-8")
+    json.dump(data, out, ensure_ascii=False, indent=2)
+    out.write("\n")
+```
+
+#### (4) 命令行转换
+
+```bash
+# CSV → JSON
+python scripts/csv_to_json.py qor.csv --project-id 1 --version v1.0 \
+    --full-dir /scratch/runs/v1.0 --release-dir v1.0/main/cpu \
+    -o run.json
+
+# JSON → CSV (宽表, 仅 records[0])
+python scripts/json_to_csv.py run.json -o qor.csv
+
+# JSON → 多 CSV (records/violation_paths/notes 各一个)
+python scripts/json_to_csv.py run.json --split
+# 产出: run.qor.csv  run.violations.csv  run.notes.csv
+```
+
+### 6.5.6 提交方式
+
+#### (1) API: `POST /api/v1/qor/upload` (JSON body)
+
+```bash
+curl -X POST http://localhost:5000/api/v1/qor/upload \
+    -H "X-API-Key: qor_xxxxxxxx" \
+    -H "Content-Type: application/json" \
+    -d @run.json
+```
+
+**响应**:
+
+```json
+{
+  "ok": true,
+  "schema_version": "1.0",
+  "saved": 1,
+  "updated": 0,
+  "skipped": 0,
+  "violation_paths_saved": 150,
+  "violation_paths_covered_groups": ["SRAMCLK", "CLK_CPU"],
+  "notes_saved": 4,
+  "warnings": [],
+  "record_id": 23,
+  "metadata_recorded": true
+}
+```
+
+#### (2) Makefile 集成 (推荐)
+
+```makefile
+# DC 综合流程结束: 一份 run.json 搞定全部数据
+UPLOAD_URL = https://qor.example.com/api/v1/qor/upload
+UPLOAD_AUTH = X-API-Key:$(shell cat ~/.qor_api_key)
+
+upload-run:
+	@echo "[INFO] 上传 run.json → $(UPLOAD_URL)"
+	@curl -fsS -X POST $(UPLOAD_URL) \
+	    -H "$(UPLOAD_AUTH)" \
+	    -H "Content-Type: application/json" \
+	    -d @run.json
+	@echo "[OK] run 上传完成"
+
+upload-run-release:
+	@jq '.upload.mark_released = true' run.json > run.release.json
+	@curl -fsS -X POST $(UPLOAD_URL) \
+	    -H "$(UPLOAD_AUTH)" \
+	    -H "Content-Type: application/json" \
+	    -d @run.release.json
+	@rm -f run.release.json
+```
+
+#### (3) 兼容 CSV 入口 (旧 Makefile 仍可工作)
+
+```bash
+# 单文件: CSV → multipart/form-data → /api/v1/upload (旧入口)
+# 多类型: 4 个 CSV → 4 次 form 上传 (旧入口)
+# 新 Makefile 建议: CSV → csv_to_json.py → run.json → JSON 上传
+```
+
+### 6.5.7 优点 vs CSV
+
+| 维度       | CSV (旧)                       | JSON (新, §6.5)                       |
+|------------|--------------------------------|---------------------------------------|
+| **多 clock** | 列名 `_` 模式匹配, 脆弱           | `clocks` 对象, 原生支持, 任意字段       |
+| **结构化**   | 平铺 30+ 列, 难读                | 按域分组 (area/timing/power/...), 自文档 |
+| **多类型**   | 4 个文件 + 4 次上传               | 1 个文件, 1 次上传, 事务一致            |
+| **元数据**   | 只能在 CSV 旁附 README            | `metadata` 段结构化, Git/工具/运行时    |
+| **校验**     | 服务端按列名容错                  | JSON Schema 强校验, 错误带字段路径      |
+| **扩展性**   | 加列 (需改 schema)                | 加 `extra.*` 任意嵌套, 不改 schema      |
+| **审计**     | 文件名 + uploader 备注            | `metadata` + `uploader_note` + 原始 JSON 留档 |
+| **互转**     | 难                               | `csv_to_json.py` / `json_to_csv.py` 无损 |
+| **CI 友好**  | 中等 (需要 base64 等)             | 强 (直接 `curl -d @run.json`)          |
+| **人类可读** | 高                                | 高 (配合 `jq` 工具)                     |
+
+### 6.5.8 迁移路径 (CSV → JSON)
+
+#### 阶段 1: 双轨并行 (1-2 周)
+- 上传接口同时接受 CSV (`/api/v1/upload`) 和 JSON (`/api/v1/qor/upload`)
+- Makefile 默认 CSV, 提供 `make convert-and-upload` 走 JSON
+- 工具: `csv_to_json.py` 已实现
+
+#### 阶段 2: 切换默认 (2-4 周)
+- 新项目/新模块默认用 JSON (`make upload-run`)
+- 旧项目保留 CSV 路径, 1:1 兼容
+
+#### 阶段 3: 弃用 CSV (4 周后, 可选)
+- 文档标记 CSV 弃用
+- 服务端仍接受 CSV 但日志 warning
+- 长期计划: CSV 接口进入 maintenance mode
+
+### 6.5.9 完整示例文件
+
+完整样本: [`examples/qor_run.v1.json`](../examples/qor_run.v1.json) (随项目发布).
+Schema 文件: [`schemas/qor_upload.v1.json`](../schemas/qor_upload.v1.json).
+
+### 6.5.10 FAQ
+
+**Q: 现有 CSV 数据会自动转换吗?**
+A: 不会自动. 但提供 `csv_to_json.py` 工具, 一行命令 `python csv_to_json.py xxx.csv --project-id 1 --version v1.0 > run.json` 即可. 历史 CSV 上传路径保持不变.
+
+**Q: JSON 比 CSV 大很多, 慢吗?**
+A: 单 run JSON ≈ 5-10 KB (无 violation_paths), 加违例后 50-500 KB. 仍远小于 1 MB, 远低于 `multipart/form-data` 上传极限. JSON 解析 < 50ms.
+
+**Q: 必须把 clocks 重组成对象吗?**
+A: 推荐. 也可以平铺为 `extra_fields.SRAMCLK_wns` 等 (沿用 CSV 兼容), 但失去结构化优势.
+
+**Q: extra.* 的键名有约束吗?**
+A: 无. 任意 JSON 值. 服务端会存入 `extra_fields` JSON 字段, 详情页可查看.
+
+**Q: 多模块 (一次提交多条 records) 会创建多个 run 吗?**
+A: 会的. 数组中每条 record 创建一个独立的 QorRecord, 但共享 `upload.version` (若 record 自带 version, 则以 record 为准).
+
+**Q: 缺省时 version / full_dir 取哪个?**
+A: 优先级: `record.version` > `upload.version`, `record.full_dir` > `upload.full_dir`. 顶层 `upload` 提供"批次默认值", 降低重复.
+
+---
+
 ## 7. API 端点参考
 
 ### 7.1 上传 CSV（推荐）
