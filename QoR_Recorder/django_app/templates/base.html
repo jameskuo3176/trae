@@ -1445,6 +1445,25 @@
             -webkit-text-fill-color: transparent;
             text-shadow: 0 0 30px rgba(0, 212, 255, 0.2);
         }
+
+        /* ── 加载动画 ── */
+        @keyframes dcPulse {
+            0%, 100% { opacity: 0.4; transform: scale(0.95); }
+            50% { opacity: 1; transform: scale(1.05); }
+        }
+        @keyframes spinInline {
+            to { transform: rotate(360deg); }
+        }
+        .loading-spinner-inline {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--color-border);
+            border-top-color: var(--color-primary);
+            border-radius: 50%;
+            animation: spinInline 0.8s linear infinite;
+            flex-shrink: 0;
+        }
     </style>
     {% if user.is_authenticated %}
     {% with theme=user.get_theme %}

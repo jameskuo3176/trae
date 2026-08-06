@@ -1442,6 +1442,18 @@
         const selectedVersions = Array.from(document.getElementById('filterVersion').selectedOptions).map(o => o.value).filter(Boolean);
         const dirPrefix = document.getElementById('filterDirPrefix').value.trim();
 
+        // ── 筛选条件变更检测: 比较当前指纹与上次指纹, 若不同则重置数据集选择状态 ──
+        const newFingerprint = _computeFilterFingerprint();
+        const filterChanged = (newFingerprint !== _lastFilterFingerprint);
+        if (filterChanged) {
+            console.log('[Filter] 筛选条件已变更, 重置数据集选择状态');
+            _lastFilterFingerprint = newFingerprint;
+            _dcReportSelectedIds.clear();
+            _dcReportBaselineId = null;
+            // 更新 DC 报告视图为加载状态
+            _showDcLoading();
+        }
+
         // ── 路径分离: 目录过滤 vs 模块/版本过滤 ──
         if (dirPrefix) {
             // ====== 路径 A: 目录前缀过滤 ======
@@ -1509,6 +1521,9 @@
         initViolationPanels();
         // 加载 Run 备注面板
         initNotesPanel();
+
+        // 隐藏 DC 报告加载状态
+        _hideDcLoading();
     }
 
     function getFilteredData() {
@@ -1547,6 +1562,16 @@
     //   - 点击导航栏锚点快速跳转到对应卡片
 
     let _dcReportSelectedIds = new Set();
+    let _lastFilterFingerprint = '';
+
+    function _computeFilterFingerprint() {
+        const projId = document.getElementById('filterProject').value;
+        const modSelect = document.getElementById('filterModules');
+        const selectedModules = Array.from(modSelect.selectedOptions).map(o => o.value).filter(Boolean).sort().join(',');
+        const selectedVersions = Array.from(document.getElementById('filterVersion').selectedOptions).map(o => o.value).filter(Boolean).sort().join(',');
+        const dirPrefix = document.getElementById('filterDirPrefix').value.trim();
+        return `${projId}|${selectedModules}|${selectedVersions}|${dirPrefix}`;
+    }
     let _dcReportBaselineId = null;
 
     function _parseRawDc(rec) {
@@ -1837,6 +1862,30 @@
         }
 
         return sections;
+    }
+
+    function _showDcLoading() {
+        const navEl = document.getElementById('dcNavLinks');
+        const container = document.getElementById('dcSectionsContainer');
+        const checklistEl = document.getElementById('dcRunChecklist');
+        if (navEl) navEl.innerHTML = '<div style="padding:12px;color:var(--color-text-secondary);font-size:12px;display:flex;align-items:center;gap:8px;"><span class="loading-spinner-inline"></span> 加载中...</div>';
+        if (checklistEl) checklistEl.innerHTML = '<div style="color:var(--color-text-secondary);font-size:11px;padding:4px 0;display:flex;align-items:center;gap:6px;"><span class="loading-spinner-inline"></span> 更新数据集...</div>';
+        if (container) {
+            container.innerHTML = `<div class="empty-state" style="padding: 48px 24px; text-align: center;">
+                <div style="font-size: 32px; margin-bottom: 12px; animation: dcPulse 1.2s ease-in-out infinite;">⏳</div>
+                <div style="font-size: 14px; color: var(--color-text); margin-bottom: 6px;">正在加载数据...</div>
+                <div style="font-size: 12px; color: var(--color-text-secondary);">根据新的筛选条件获取最新记录</div>
+            </div>`;
+        }
+    }
+
+    function _hideDcLoading() {
+        // 此函数作为占位, 实际隐藏由 renderDcReportSections() 重新渲染完成
+        // 如果 renderDcReportSections 未正常执行, 此处作为兜底清理
+        const container = document.getElementById('dcSectionsContainer');
+        if (container && container.innerHTML.includes('正在加载数据')) {
+            container.innerHTML = '';
+        }
     }
 
     function renderDcReportSections() {
