@@ -1,0 +1,44 @@
+# =========================================================================
+# QoR Recorder - Docker Compose MySQL 模式扩展配置
+#
+# 使用此配置与主配置文件配合:
+#   docker-compose -f docker-compose.yml -f docker-compose.mysql.yml up -d
+#
+# 注意:
+#   1. 首次启动会自动创建数据库
+#   2. MySQL 数据存储在 qor_mysql_data 卷中
+#   3. 请修改 MYSQL_ROOT_PASSWORD 和 MYSQL_PASSWORD
+# =========================================================================
+
+version: '3.8'
+
+services:
+  qor_recorder:
+    # 覆盖 SQLite 配置, 使用 MySQL
+    environment:
+      - DATABASE_URL=mysql+pymysql://qor:${MYSQL_PASSWORD:-qor_password}@mysql:3306/qor_recorder?charset=utf8mb4
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # MySQL 数据库服务
+  mysql:
+    image: mysql:8.0
+    container_name: qor_recorder_mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root_password}
+      - MYSQL_DATABASE=qor_recorder
+      - MYSQL_USER=qor
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-qor_password}
+    volumes:
+      - qor_mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root_password}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  qor_mysql_data:
+    driver: local

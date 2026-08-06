@@ -1,0 +1,6 @@
+tag,full_dir,comment,reg_count,comb_count,macro_count,total_count,reg_area,comb_area,macro_area,stdcell_area,total_area,no_clock,unconstraint,SYS_CLK_period,SYS_CLK_wns,SYS_CLK_tns,SYS_CLK_path,I2C_CLK_period,I2C_CLK_wns,I2C_CLK_tns,I2C_CLK_path
+run_20260101,/proj/decoder/module_alu/v1,initial version,120,580,2,702,144.0,348.0,50.0,492.0,542.0,0,0,2.0,-0.15,-0.42,3,5.0,0.12,0.0,0
+run_20260110,/proj/decoder/module_alu/v2,pipeline optimization,135,620,2,757,162.0,372.0,50.0,534.0,584.0,0,0,2.0,-0.08,-0.21,1,5.0,0.18,0.0,0
+run_20260120,/proj/decoder/module_alu/v3,fixed timing,132,610,2,744,158.4,366.0,50.0,524.4,574.4,0,0,2.0,-0.02,-0.05,1,5.0,0.22,0.0,0
+run_20260201,/proj/decoder/module_alu/v4,area reduction,128,595,2,725,153.6,357.0,50.0,510.6,560.6,0,0,2.0,0.05,0.0,0,5.0,0.28,0.0,0
+run_20260215,/proj/decoder/module_alu/v5,final release,130,600,2,732,156.0,360.0,50.0,516.0,566.0,0,0,2.0,0.12,0.0,0,5.0,0.30,0.0,0

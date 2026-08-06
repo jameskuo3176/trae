@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block title %}登录 - QoR Recorder{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: center; align-items: center; min-height: 70vh;">
+    <div class="card" style="width: 400px;">
+        <div class="card-header" style="justify-content: center; border-bottom: 2px solid #1a237e;">
+            QoR Recorder 系统
+        </div>
+        <div class="card-body">
+            <form method="POST">
+                {% csrf_token %}
+                <div class="form-group">
+                    <label>用户名</label>
+                    <input type="text" name="username" style="width: 100%;" required autofocus placeholder="请输入用户名">
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input type="password" name="password" data-pw-toggle style="width: 100%; padding-right: 36px;" required placeholder="请输入密码">
+                </div>
+                <button type="submit" class="btn" style="width: 100%; margin-top: 8px;">登录</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

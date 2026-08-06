@@ -1,0 +1,10 @@
+{% extends 'base.html' %}
+{% block title %}错误 - QoR Recorder{% endblock %}
+
+{% block content %}
+<div style="text-align: center; padding: 80px 20px;">
+    <h1 style="font-size: 72px; color: #1a237e; margin-bottom: 16px;">{{ code }}</h1>
+    <p style="font-size: 18px; color: #666; margin-bottom: 24px;">{{ message }}</p>
+    <a href="{% url 'dashboard' %}" class="btn">返回首页</a>
+</div>
+{% endblock %}

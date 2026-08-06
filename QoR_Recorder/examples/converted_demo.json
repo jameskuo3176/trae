@@ -1,0 +1,187 @@
+{
+  "schema_version": "1.0",
+  "upload": {
+    "project_id": 1,
+    "version": "v1.0",
+    "mark_released": false
+  },
+  "records": [
+    {
+      "module_name": "modulea_t",
+      "version": "v1.0",
+      "full_dir": "modulea_t_cfg1_rundir",
+      "release_dir": "modulea_t_cfg1_rundir",
+      "area": {
+        "total": 23455.0,
+        "combinational": 4550.0,
+        "sequential": 21000.0,
+        "memory": 2220.0,
+        "macro": 0.0,
+        "black_box": 0.0
+      },
+      "cells": {
+        "cell_count": 404455454,
+        "sequential_cell_count": 1218571,
+        "instance_count": 43545
+      },
+      "ratios": {
+        "utilization": 0.4254,
+        "mbb_ratio": 0.0,
+        "clock_gating_ratio": 0.9778
+      },
+      "congestion": {
+        "max": 0.19,
+        "h": 0.07,
+        "v": 0.32
+      },
+      "timing": {
+        "setup": {
+          "wns": -50.0,
+          "tns": -800.0,
+          "nvp": 64
+        }
+      },
+      "clocks": {
+        "FUNCCLK": {
+          "period": 1000.0,
+          "wns": -10.0,
+          "tns": 0.0,
+          "nvp": 0
+        },
+        "SRAMCLK": {
+          "period": 800.0,
+          "wns": -25.0,
+          "tns": -120.0,
+          "nvp": 14
+        }
+      },
+      "extra": {
+        "stage": "Synthesis",
+        "generated_at": "2026-08-06T04:54:50.920+00:00",
+        "default_path": "/project_dir/Syn/week2_run/syn_run_0804/main/modulea_t_cfg1_rundir/rpts/Synthesis/Synthesis.rpt.gz",
+        "dc_metadata_report": "qor",
+        "dc_metadata_design": "modulea_t",
+        "dc_metadata_version": "Y-2020.05",
+        "dc_metadata_date": "Mon Aug 3 04:43:44 2026",
+        "timing_final": {
+          "status": "ok",
+          "source": "/project_dir/Syn/week2_run/syn_run_0804/main/modulea_t_cfg1_rundir/rpts/Synthesis/Synthesis_final.rpt.gz",
+          "metadata": {
+            "report": "qor",
+            "design": "modulea_t",
+            "version": "Y-2020.05",
+            "date": "Mon Aug 3 05:10:12 2026"
+          },
+          "scenarios": {
+            "tt0p6v_tt": {
+              "wns_worst": -2.0,
+              "tns_total": 0.0,
+              "nvp_total": 0
+            }
+          }
+        },
+        "blocks": {
+          "modulea_t": {
+            "total_area": 734839,
+            "standard_cell_area": 375196,
+            "memory_area": 359643,
+            "total_cell_count": 3046237,
+            "standard_cell_count": 3046015,
+            "memory_count": 222,
+            "macro_count": 0
+          },
+          "modulea_sub": {
+            "total_area": 102030,
+            "standard_cell_area": 90500,
+            "memory_area": 11530,
+            "total_cell_count": 450000,
+            "standard_cell_count": 449000,
+            "memory_count": 1000,
+            "macro_count": 0
+          }
+        },
+        "misc_fgcg": {
+          "gated_flops": {
+            "count": 1191277,
+            "percentage": "97.78%"
+          },
+          "not_gated_flops": {
+            "count": 27072,
+            "percentage": "2.22%"
+          },
+          "total_flops": 1218349,
+          "clock_gating_cells": 10430
+        },
+        "misc_vt_ratio": {
+          "LVTLL06": "0.00%",
+          "LVT06": "99.96%",
+          "ELVT06": "0.00%",
+          "ULVTLL06": "0.00%",
+          "ULVT06": "0.03%",
+          "undefined": "0.00%",
+          "SVT06": "0.00%",
+          "LVT": "99.96%",
+          "ULVT": "0.03%"
+        },
+        "misc_flop_count": {
+          "source": "/project_dir/Syn/week2_run/syn_run_0804/main/modulea_t_cfg1_rundir/rpts/Synthesis/flop_count.rpt",
+          "status": "ok",
+          "total_sequential_cells": 1218571,
+          "single_bit_flip_flops": 1218571,
+          "single_bit_latches": 0,
+          "warnings": []
+        },
+        "misc_congestion": {
+          "source": "/project_dir/Syn/week2_run/syn_run_0804/main/modulea_t_cfg1_rundir/rpts/Synthesis/route.rpt",
+          "status": "ok",
+          "summary_lines": [
+            "Both Dirs: Overflow = 32684 Max = 81 (1 GRCs) GRCs = 28473 (0.19%)",
+            "H routing: Overflow = 6261 Max = 81 (1 GRCs) GRCs = 4850 (0.07%)",
+            "V routing: Overflow = 26423 Max = 70 (1 GRCs) GRCs = 23623 (0.32%)"
+          ],
+          "both_dirs_percentage": "0.19%",
+          "warnings": []
+        },
+        "misc_no_clock": {
+          "source": "/project_dir/Syn/week2_run/syn_run_0804/main/modulea_t_cfg1_rundir/rpts/Synthesis/no_clock.rpt",
+          "status": "ok",
+          "count": 19,
+          "warnings": []
+        },
+        "scenarios": {
+          "tt0p6v_tt": {
+            "FUNCCLK": {
+              "wns": -10.0,
+              "tns": 0.0,
+              "nvp": 0,
+              "period": 1000.0,
+              "lol": 40
+            },
+            "SRAMCLK": {
+              "wns": -25.0,
+              "tns": -120.0,
+              "nvp": 14,
+              "period": 800.0,
+              "lol": 38
+            }
+          },
+          "ss0p81v_ss": {
+            "FUNCCLK": {
+              "wns": -50.0,
+              "tns": -800.0,
+              "nvp": 50,
+              "period": 1200.0,
+              "lol": 42
+            }
+          }
+        },
+        "dc_full_dir": "modulea_t_cfg1_rundir",
+        "aggregate_wns_min": -50.0,
+        "aggregate_tns_min": -800.0,
+        "aggregate_nvp_sum": 64,
+        "timing_group_count": 2,
+        "path_group_count": 3
+      }
+    }
+  ]
+}

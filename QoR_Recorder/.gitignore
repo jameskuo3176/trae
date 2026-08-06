@@ -1,0 +1,82 @@
+# 编译输出
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# 数据目录 (数据库/备份/上传文件, 与源代码分离)
+data/
+
+# 数据库 (兜底: 排除根目录下的遗留数据库文件)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# 备份 (兜底: 排除根目录下的遗留备份)
+backups/
+*.sql
+
+# 上传文件 (兜底: 排除根目录下的遗留上传)
+uploads/
+
+# 日志
+*.log
+logs/
+
+# 环境变量
+.env
+.env.local
+.env.production
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 虚拟环境
+venv/
+.env/
+.venv/
+env/
+
+# Flask 开发服务器
+instance/
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 临时验证脚本 (开发期手动跑, 不入库)
+_test_*.py
+_tmp_*.py
+_check_*.py
+_http_*.py
+_verify_*.py
+verify_*.py
+preview_demo_data.py
+
+# 调试期临时输出 (渲染结果 / 错误日志 / 解析中间产物)
+_*.py
+_*.js
+admin_rendered.html
+*.err
+apply_version_desc.py
+check_heads.py
+regen_riscv_demo.py
+diag_*.py
+demo_csv_out/
+
+# IDE 工具相关
+.trae/
+trae/
+
+# 部署
+*.pid

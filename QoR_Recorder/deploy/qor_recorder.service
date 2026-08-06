@@ -1,0 +1,70 @@
+[Unit]
+Description=QoR Recorder - Design Compiler QoR 数据管理系统
+Documentation=file:///opt/qor_recorder/docs/user_guide.md
+After=network.target
+# 若使用 MySQL 后端, 取消下一行注释
+# Requires=mysql.service mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qor
+Group=qor
+WorkingDirectory=/opt/qor_recorder
+EnvironmentFile=/opt/qor_recorder/.env
+
+# 启动命令: 使用虚拟环境中的 python
+ExecStart=/opt/qor_recorder/venv/bin/python app.py
+
+# 重启策略: 失败后 5 秒重启, 最多尝试 10 次 (10 秒内)
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=10
+StartLimitIntervalSec=60
+
+# 标准输出/错误均写入 journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qor_recorder
+
+# ===== 安全加固 =====
+# 禁止获取新权限 (防止提权)
+NoNewPrivileges=yes
+# 保护系统: /usr /boot /etc 只读
+ProtectSystem=strict
+# 保护 home: 不可访问 /home /root /run/user
+ProtectHome=true
+# 私有 /tmp
+PrivateTmp=yes
+# 禁止内核指针泄露
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# 限制能力: 仅保留必要的 cap (无网络则可去掉 CAP_NET_BIND_SERVICE)
+CapabilityBoundingSet=
+AmbientCapabilities=
+# 限制设备访问
+PrivateDevices=yes
+# 限制命名空间
+RestrictNamespaces=yes
+# 限制实时调度
+RestrictRealtime=yes
+# 限制 SUID/SGID
+RemoveIPC=yes
+# 限制地址空间复用
+LockPersonality=yes
+
+# 可写目录 (必须与实际部署路径一致)
+ReadWritePaths=/opt/qor_recorder/data \
+               /opt/qor_recorder/uploads \
+               /opt/qor_recorder/backups \
+               /opt/qor_recorder/logs
+
+# 资源限制 (按需调整)
+LimitNOFILE=65536
+LimitNPROC=512
+MemoryMax=1G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

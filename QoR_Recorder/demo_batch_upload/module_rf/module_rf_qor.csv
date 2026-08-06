@@ -1,0 +1,4 @@
+tag,full_dir,comment,reg_count,comb_count,macro_count,total_count,reg_area,comb_area,macro_area,stdcell_area,total_area,no_clock,unconstraint,SYS_CLK_period,SYS_CLK_wns,SYS_CLK_tns,SYS_CLK_path
+run_20260105,/proj/decoder/module_rf/v1,rf baseline,200,800,4,1004,240.0,480.0,100.0,720.0,820.0,0,0,1.5,-0.18,-0.55,4
+run_20260115,/proj/decoder/module_rf/v2,partial run missing area,210,820,4,1034,252.0,492.0,100.0,744.0,844.0,0,0,1.5,-0.12,-0.30,2
+run_20260125,/proj/decoder/module_rf/v3,retimed,210,820,4,1034,252.0,492.0,100.0,744.0,844.0,0,0,1.5,0.05,0.0,0

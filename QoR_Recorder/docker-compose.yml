@@ -1,0 +1,63 @@
+# =========================================================================
+# QoR Recorder - Docker Compose 配置
+#
+# 提供两种部署模式:
+#   1. SQLite 模式 (默认, 零配置, 适合小型团队)
+#   2. MySQL 模式 (高可用, 适合多用户高并发)
+#
+# 使用方法:
+#
+#   # SQLite 模式 (简单)
+#   docker-compose up -d
+#
+#   # MySQL 模式 (生产环境)
+#   docker-compose -f docker-compose.yml -f docker-compose.mysql.yml up -d
+#
+#   # 查看日志
+#   docker-compose logs -f qor_recorder
+#
+#   # 停止服务
+#   docker-compose down
+#
+#   # 备份数据
+#   docker-compose exec qor_recorder cp /app/data/qor_recorder.db /app/backups/
+# =========================================================================
+
+version: '3.8'
+
+services:
+  qor_recorder:
+    build: .
+    image: qor_recorder:latest
+    container_name: qor_recorder
+    ports:
+      - "${PORT:-5000}:5000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=5000
+      - DEBUG=${DEBUG:-0}
+      - SECRET_KEY=${SECRET_KEY:-qor-recorder-dev-key-change-in-prod}
+      - ENABLE_DB_ADMIN=${ENABLE_DB_ADMIN:-0}
+      # SQLite 数据库路径
+      - DATABASE_URL=sqlite:///data/qor_recorder.db
+    volumes:
+      # 持久化数据
+      - qor_data:/app/data
+      # 备份目录
+      - qor_backups:/app/backups
+      # 上传文件
+      - qor_uploads:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  qor_data:
+    driver: local
+  qor_backups:
+    driver: local
+  qor_uploads:
+    driver: local

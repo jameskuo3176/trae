@@ -1,0 +1,131 @@
+{
+  "schema_version": "1.0",
+
+  "upload": {
+    "project_id": 1,
+    "project_name": "ChipA",
+    "version": "v1.0",
+    "module_name": "cpu_top",
+    "mark_released": false,
+    "full_dir": "/scratch/runs/cpu/v1.0",
+    "release_dir": "v1.0/main/cpu",
+    "uploader_note": "baseline before MBFF refactor"
+  },
+
+  "records": [
+    {
+      "module_name": "cpu_top",
+      "version_description": "baseline, no MBFF, compile_ultra",
+      "comment": "baseline",
+
+      "area": {
+        "total": 12345.6,
+        "combinational": 5678.9,
+        "sequential": 3456.7,
+        "black_box": 0.0,
+        "macro": 1110.0
+      },
+      "timing": {
+        "setup": { "wns": -0.123, "tns": -0.456, "nvp": 12 },
+        "hold":  { "wns":  0.012, "tns":  0.034, "nvp":  3 }
+      },
+      "power": {
+        "internal":   5.6,
+        "switching":  3.2,
+        "leakage":    1.1,
+        "total":      9.9
+      },
+      "cells": {
+        "cell_count":            8500,
+        "instance_count":        9000,
+        "net_count":             12000,
+        "sequential_cell_count": 2100
+      },
+      "frequency": {
+        "target":   500.0,
+        "achieved": 476.2
+      },
+      "ratios": {
+        "mbb_ratio":          0.85,
+        "clock_gating_ratio": 0.92,
+        "utilization":        0.75
+      },
+      "congestion": {
+        "h": 0.16,
+        "v": 0.20,
+        "b": 0.20
+      },
+      "clocks": {
+        "SRAMCLK": {
+          "period": 2.50,
+          "wns":   -0.123,
+          "tns":   -0.456,
+          "path":  "/clk_div/SRAMCLK/end_reg"
+        },
+        "CLK_CPU": {
+          "period": 1.00,
+          "wns":   -0.050,
+          "tns":   -0.200,
+          "path":  "/reg/.../cpu_core/reg1"
+        }
+      },
+      "extra": {
+        "density": 0.78,
+        "DRC_violations": 23,
+        "scan_chain_count": 8
+      }
+    }
+  ],
+
+  "violation_paths": [
+    {
+      "module_name":   "cpu_top",
+      "timing_group":  "SRAMCLK",
+      "type":          "setup",
+      "slack":         -0.020,
+      "startpoint":    "a_reg/CK",
+      "endpoint":      "b_refg_0_/D",
+      "depth":         27,
+      "pure_depth":    23,
+      "cell_delay":    500.0,
+      "net_delay":     77.0,
+      "et_slack":      9.0,
+      "st_slack":      -10.0,
+      "st_fanin":  1, "st_fanout": 122,
+      "et_fanin": 122, "et_fanout": 11,
+      "clock_domain": "SRAMCLK",
+      "extra": { "fanout": 3, "cell_type": "NAND2X1" }
+    }
+  ],
+
+  "notes": [
+    {
+      "module_name": "cpu_top",
+      "items": [
+        { "category": "constraint",  "item": "max_transition",    "value": "0.150",       "unit": "ns" },
+        { "category": "flow",        "item": "compile_strategy",  "value": "compile_ultra" },
+        { "category": "result",      "item": "WNS_slack",         "value": "-0.123",       "unit": "ns" },
+        { "category": "modification","item": "关键路径优化",      "description": "retiming + 插入 buffer 解决 hold" }
+      ]
+    }
+  ],
+
+  "metadata": {
+    "tool": {
+      "name":    "Design Compiler",
+      "version": "2026.03-SP4",
+      "host":    "syn-server-01",
+      "user":    "james.kuo"
+    },
+    "git": {
+      "commit": "a1b2c3d4e5f6",
+      "branch": "main",
+      "tag":    "v1.0-rc1"
+    },
+    "runtime": {
+      "wall_clock_seconds": 4523,
+      "peak_memory_mb":    32768
+    },
+    "uploaded_at": "2026-07-30T14:23:11+08:00"
+  }
+}

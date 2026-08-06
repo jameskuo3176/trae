@@ -1,0 +1,2307 @@
+{% extends 'base.html' %}
+{% block title %}数据管理 - QoR Recorder{% endblock %}
+
+{% block content %}
+<h2 style="font-size: 22px; margin-bottom: 16px;">
+    数据管理
+    {% if user.is_admin %}
+    <span class="tag tag-danger">管理员</span>
+    {% elif user.is_viewer %}
+    <span class="tag" style="background:#888;color:#fff;">Viewer</span>
+    {% elif user.is_owner %}
+    <span class="tag" style="background:#3aa655;color:#fff;">Owner</span>
+    {% elif user.is_release %}
+    <span class="tag" style="background:#3aa655;color:#fff;">Release</span>
+    {% endif %}
+</h2>
+
+<!-- 标签切换 -->
+<div style="display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 2px solid var(--color-border);">
+    {% if user.is_admin %}
+    <button class="tab-btn active" onclick="switchTab('upload')" id="tab-upload">上传数据</button>
+    <button class="tab-btn" onclick="switchTab('projects')" id="tab-projects">项目管理</button>
+    <button class="tab-btn" onclick="switchTab('records')" id="tab-records">记录管理</button>
+    <button class="tab-btn" onclick="switchTab('users')" id="tab-users">用户管理</button>
+    {% elif user.is_owner or user.is_release %}
+    {# v5.0 owner: 可上传数据 + 记录管理 (含模块协作) #}
+    <button class="tab-btn active" onclick="switchTab('upload')" id="tab-upload">上传数据</button>
+    <button class="tab-btn" onclick="switchTab('records')" id="tab-records">记录管理</button>
+    {% endif %}
+</div>
+
+<!-- 上传数据 -->
+<div id="panel-upload" class="tab-panel">
+    <div class="card">
+        <div class="card-header">上传 QoR CSV 文件（支持多文件批量导入）</div>
+        <div class="card-body">
+            <form id="uploadForm" enctype="multipart/form-data">
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>选择项目 *</label>
+                        <select id="uploadProject" required style="width: 100%;"></select>
+                    </div>
+                    <div class="form-group">
+                        <label>指定模块 (可选，留空则从 CSV 读取或自动创建)</label>
+                        <select id="uploadModule" style="width: 100%;">
+                            <option value="">自动识别 / 创建</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Tag / 版本标签 (可选，留空则从 CSV tag 列读取)</label>
+                    <input type="text" id="uploadVersion"
+                        placeholder="如: v1.0, commit-hash, 2026-01-15 (留空则用 CSV 中的 tag 列)" style="width: 100%;">
+                </div>
+                <div class="form-group">
+                    <label>数据类型</label>
+                    <select id="uploadDataType" style="width: 100%;">
+                        <option value="qor">QoR 数据（综合结果，新建记录）</option>
+                        <option value="power">功耗数据（合并到已有记录，按 模块+版本 匹配）</option>
+                        <option value="violation">违例路径（关联到已有 QoR 记录，按 模块+版本 匹配）</option>
+                        <option value="notes">Run 备注（2~3 列 item,description[,full_dir]，关联到已有记录）</option>
+                    </select>
+                </div>
+                <div class="form-group" id="uploadFullDirGroup" style="display:none;">
+                    <label>full_dir（Run 目录路径，可选，用于区分同 module+version 下的不同 run）</label>
+                    <input type="text" id="uploadFullDir"
+                        placeholder="如: /scratch/runs/run_20260722_v2 (留空则按 CSV 内 full_dir 列或 module+version 匹配)"
+                        style="width: 100%;">
+                    <div style="margin-top:4px; font-size:12px; color: var(--color-text-secondary);">
+                        Makefile 自动上传时建议传入当前 run 目录的 <code>$(PWD)</code>，便于按目录区分多 corner / 多子目录 run
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>模块名来源（批量上传历史数据时用）</label>
+                    <select id="uploadModuleNameSource" style="width: 100%;">
+                        <option value="csv">从 CSV 列读取（默认）</option>
+                        <option value="filename">从文件名提取（去 _qor 后缀，如 module_a_qor.csv → module_a）</option>
+                        <option value="dirname">从父目录名提取（如 module_a/module_a_qor.csv → module_a）</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>文件名后缀去除规则（仅"从文件名提取"模式生效，逗号分隔）</label>
+                    <input type="text" id="uploadFilenameSuffixes" value="_qor,qor,_qor_report"
+                        placeholder="如: _qor,qor" style="width: 100%;">
+                </div>
+                <div class="form-group" id="uploadReleaseDirGroup">
+                    <label>release_dir（发布目录，可选，用于 release 账号定位对外发布路径）</label>
+                    <input type="text" id="uploadReleaseDir"
+                        placeholder="如: /proj/release/v1.0/cpu_top (留空则发布时以 full_dir 兜底)"
+                        style="width: 100%;">
+                    <div style="margin-top:4px; font-size:12px; color: var(--color-text-secondary);">
+                        若 CSV 本身有 <code>release_dir</code> 列, 该表单值将覆盖 (整批统一); 留空则保留 CSV 列值;
+                        发布后亦可在「记录管理」单独修改 release_dir.
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>CSV 文件 *（可多选，支持整目录上传）</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="file" id="uploadFile" accept=".csv" multiple required style="flex:1;">
+                        <label style="font-size:12px; display:flex; align-items:center; gap:4px;">
+                            <input type="checkbox" id="uploadDirMode"> 整目录上传
+                        </label>
+                        <button type="button" class="btn btn-sm btn-default" onclick="downloadCsvTemplate()"
+                            style="font-size:11px;" title="下载含 <CLOCK>_wns/_tns/_path 列的 CSV 模板, 方便对照正确格式">
+                            下载模板 (含时钟列)
+                        </button>
+                    </div>
+                    <div id="fileList" style="margin-top: 4px; font-size: 12px; color: var(--color-text-secondary);">
+                    </div>
+                    <div id="moduleHint"
+                        style="margin-top: 4px; font-size: 12px; color: var(--color-text-secondary); display:none;">
+                    </div>
+                </div>
+                <div class="form-group"
+                    style="background: var(--color-surface-hover); padding: 8px 12px; border-radius: 4px;">
+                    <label style="display:flex; align-items:center; gap:8px; font-weight:normal; cursor:pointer;">
+                        <input type="checkbox" id="uploadMarkReleased" style="width:auto;">
+                        <span>上传后立即标记为 <strong>已发布</strong>（对 release 账号可见）</span>
+                    </label>
+                    <div style="margin-top:4px; font-size:12px; color: var(--color-text-secondary);">
+                        勾选后本次上传的所有记录将自动对外可见，无需再去「记录管理」手动发布
+                    </div>
+                </div>
+                <button type="submit" class="btn">上传并导入</button>
+                <button type="button" class="btn btn-secondary" id="previewBtn" style="margin-left: 8px;">预览校验
+                    (Dry-Run)</button>
+            </form>
+            <div id="uploadResult" style="margin-top: 12px;"></div>
+
+            <div
+                style="margin-top: 20px; padding: 16px; background: var(--color-surface-hover); border-radius: 4px; font-size: 13px; color: var(--color-text-secondary);">
+                <strong>支持的 CSV 字段说明:</strong><br>
+                解析器自动识别列名（不区分大小写，忽略空格/下划线/连字符差异）。常见列名:<br>
+                <code>tag, full_dir, comment, reg_count, comb_count, macro_count, total_count,
+                reg_area, comb_area, macro_area, stdcell_area, total_area, no_clock,
+                {CLOCK}_period, {CLOCK}_wns, {CLOCK}_tns, {CLOCK}_path</code><br>
+                其中 <code>{CLOCK}</code> 为时钟名（如 SRAMCLK），可同时存在多个时钟列。<br>
+                <code>tag</code> 会作为图表上的标签。<br>
+                多时钟数据中，最负 WNS 会作为整体 WNS，所有 TNS 之和作为整体 TNS。<br>
+                <strong>功耗合并:</strong> 选择"功耗数据"时，系统按 模块+版本 匹配已有记录，仅更新功耗字段，不会覆盖 QoR 数据。<br>
+                <strong>容错能力:</strong> 跳过空行、处理列数不一致、支持科学计数法/千分位/带单位数值、识别多种空值表示(-, N/A, NULL 等)。<br>
+                <strong>批量上传历史数据:</strong> 勾选"整目录上传"选择整个项目目录，模块名来源选"从文件名提取"或"从父目录名提取"。
+                例如目录结构 <code>proj_dir/module_a/module_a_qor.csv</code>，选"从父目录名提取"会自动把 <code>module_a</code> 作为模块名，每个 CSV
+                的多行作为该模块的不同 run 版本（用 tag 列区分）。建议先用"预览校验"确认模块名提取正确。
+            </div>
+        </div>
+    </div>
+
+    <!-- 补充 FlopCount 数据 (block_qor.csv) -->
+    <div class="card">
+        <div class="card-header">补充 FlopCount 数据 (block_qor.csv)</div>
+        <div class="card-body">
+            <p style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 12px;">
+                通过 <code>Fulldir</code> 列匹配已有 QoR 记录，仅补充 <code>FlopCount</code> 和 <code>FlopCount_incr</code> 字段。
+                不新建记录，不覆盖已有 QoR 数据。
+            </p>
+            <form id="blockQorForm">
+                <div class="form-group">
+                    <label>项目 (可选，用于权限校验；留空则跨项目匹配)</label>
+                    <select id="blockQorProject" style="width: 100%;">
+                        <option value="">跨项目全局匹配</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>block_qor.csv 文件 *（可多选，支持整目录上传）</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="file" id="blockQorFile" accept=".csv" multiple required style="flex:1;">
+                        <label style="font-size:12px; display:flex; align-items:center; gap:4px;">
+                            <input type="checkbox" id="blockQorDirMode"> 整目录上传
+                        </label>
+                    </div>
+                    <div id="blockQorFileList"
+                        style="margin-top: 4px; font-size: 12px; color: var(--color-text-secondary);">
+                    </div>
+                </div>
+                <button type="submit" class="btn">补充 FlopCount</button>
+            </form>
+            <div id="blockQorResult" style="margin-top: 12px;"></div>
+            <div
+                style="margin-top: 20px; padding: 16px; background: var(--color-surface-hover); border-radius: 4px; font-size: 13px; color: var(--color-text-secondary);">
+                <strong>说明:</strong><br>
+                - CSV 需包含 <code>Fulldir</code> 列（匹配键，对应已有记录的 <code>full_dir</code>），以及 <code>FlopCount</code> /
+                <code>FlopCount_incr</code> 列。<br>
+                - Header 大小写不敏感，支持别名:
+                <code>Fulldir</code>/<code>full_dir</code>/<code>fuldir</code>、<code>FlopCount</code>/<code>flop_count</code>/<code>flops</code>
+                等。<br>
+                - 匹配规则: <code>Fulldir</code> 唯一匹配已有记录。命中多条则跳过(冲突)，命中 0 条则跳过(未匹配)。<br>
+                - 仅 <code>FlopCount</code> 或 <code>FlopCount_incr</code> 至少有一个非空才会更新。<br>
+                - 幂等: 重复上传相同数据不会重复计数。
+            </div>
+        </div>
+    </div>
+
+    <!-- 批量创建模块 -->
+    <div class="card">
+        <div class="card-header">批量创建模块</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>选择项目 *</label>
+                <select id="batchProject" required style="width: 100%;"></select>
+            </div>
+            <div class="form-group">
+                <label>模块名称列表（每行一个模块名，或用逗号分隔）</label>
+                <textarea id="batchModuleList" rows="8"
+                    placeholder="module_alu&#10;module_ctrl&#10;module_mem_ctrl&#10;module_data_path"
+                    style="width: 100%; font-family: monospace;"></textarea>
+            </div>
+            <button class="btn" onclick="batchCreateModules()">批量创建</button>
+            <div id="batchResult" style="margin-top: 12px;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 项目管理 -->
+<div id="panel-projects" class="tab-panel" style="display:none;">
+    <div class="card">
+        <div class="card-header">
+            <span>项目与模块</span>
+            <button class="btn btn-sm" onclick="showAddProject()">+ 新建项目</button>
+        </div>
+        <div class="card-body">
+            <div id="projectList"></div>
+        </div>
+    </div>
+
+    <!-- 已隐藏项目 (软删除, 数据保留, 可恢复) -->
+    <div class="card" style="margin-top:16px;">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>已隐藏项目 <span class="tag" style="background:var(--color-text-secondary); color:white;">软删除, 数据保留</span></span>
+            <button class="btn btn-default btn-sm" onclick="loadHiddenProjects()">刷新</button>
+        </div>
+        <div class="card-body" style="font-size:13px; color:var(--color-text-secondary); margin-bottom:8px;">
+            隐藏项目从系统列表中消失, 但其模块/记录仍保留在数据库中, 可随时恢复.
+            彻底删除需在已隐藏状态下二次确认.
+        </div>
+        <div class="card-body" style="padding-top:0;">
+            <div id="hiddenProjectList"><div class="empty-state">加载中...</div></div>
+        </div>
+    </div>
+</div>
+
+<!-- 记录管理 -->
+<div id="panel-records" class="tab-panel" style="display:none;">
+    <div class="card">
+        <div class="card-header">
+            <span>QoR 数据记录</span>
+            <button class="btn btn-sm" onclick="loadRecords()">刷新</button>
+        </div>
+        <div class="card-body">
+            {# v5.0 owner: 模块协作者管理 #}
+            {% if user.is_owner or user.is_release %}
+            <details style="margin-bottom: 12px; padding: 10px; background: var(--color-surface, #f8f9fa); border-radius: 6px;">
+                <summary style="cursor:pointer; font-weight: 500; color: var(--color-text);">
+                    <i class="icon-users"></i> 模块协作者管理 (v5.0 team 协作)
+                </summary>
+                <div style="margin-top: 10px; padding-left: 20px;">
+                    <div style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px;">
+                        <div class="form-group" style="margin: 0;">
+                            <label>选择模块</label>
+                            <select id="collabModuleSelect" onchange="loadCollaborators()" style="min-width: 220px;">
+                                <option value="">请选择模块...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="collabInfo" style="font-size: 13px; color: var(--color-text-secondary);">
+                        <div>模块所有者: <span id="collabOwner">-</span></div>
+                        <div style="margin-top:6px;">
+                            协作者列表:
+                            <ul id="collabList" style="margin: 6px 0 0 0; padding-left: 20px;"></ul>
+                        </div>
+                        <div id="collabAddArea" style="margin-top: 10px; display: none;">
+                            <div style="display: flex; gap: 8px; align-items: flex-end;">
+                                <div class="form-group" style="margin: 0;">
+                                    <label>添加 owner 用户为协作者</label>
+                                    <select id="collabNewUser" style="min-width: 200px;">
+                                        <option value="">请选择用户...</option>
+                                    </select>
+                                </div>
+                                <button class="btn btn-sm btn-success" onclick="addCollaborator()">添加</button>
+                            </div>
+                        </div>
+                        <div id="collabHint" style="margin-top: 6px; color: #999; font-size: 12px;"></div>
+                    </div>
+                </div>
+            </details>
+            {% endif %}
+            <div class="filter-bar" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
+                <div class="form-group">
+                    <label>项目筛选</label>
+                    <select id="recordFilterProject" onchange="loadRecords()" style="min-width: 180px;">
+                        <option value="">全部</option>
+                    </select>
+                </div>
+                <div class="form-group" id="recordFilterOwnerGroup" style="display:none;">
+                    <label>Owner (上传者)</label>
+                    <select id="recordFilterOwner" onchange="loadRecords()" style="min-width: 160px;">
+                        <option value="">全部</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label style="visibility:hidden;">_</label>
+                    <button class="btn btn-sm btn-default" onclick="resetRecordFilters()">重置筛选</button>
+                </div>
+                {# v5.0 数据范围开关: owner 用户可切换 "仅自己" / "显示所有" #}
+                {% if user.is_owner and not user.is_admin %}
+                <div class="form-group" style="margin-left:auto;">
+                    <label>数据范围</label>
+                    <div class="scope-toggle" style="display:inline-flex; border:1px solid var(--color-border); border-radius:6px; overflow:hidden; background:var(--color-surface);">
+                        <button type="button" id="scopeBtnMine" class="scope-btn active"
+                            onclick="setRecordScope('mine', this)"
+                            style="padding:6px 14px; font-size:13px; border:none; cursor:pointer; background:var(--color-primary); color:#fff; transition:all 0.15s;">
+                            仅显示我上传的
+                        </button>
+                        <button type="button" id="scopeBtnAll" class="scope-btn"
+                            onclick="setRecordScope('all', this)"
+                            style="padding:6px 14px; font-size:13px; border:none; cursor:pointer; background:var(--color-surface); color:var(--color-text); transition:all 0.15s;">
+                            显示所有上传的
+                        </button>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            <div class="tblx-scroll-wrap"
+                style="overflow-x: auto; overflow-y: auto; max-height: calc(100vh - 320px); min-height: 360px; border: 1px solid var(--color-border); border-radius: 6px;">
+                <table class="table has-sticky-right" id="recordTable">
+                    <thead>
+                        <tr>
+                            <th><input type="checkbox" id="releaseSelectAll" onchange="toggleReleaseSelectAll(this)"
+                                    title="全选/反选"></th>
+                            <th>ID</th>
+                            <th>项目</th>
+                            <th>模块</th>
+                            <th>版本</th>
+                            <th>full_dir (运行目录)</th>
+                            <th>release_dir (发布目录)</th>
+                            <th>版本描述 (owner 可填)</th>
+                            <th>总面积</th>
+                            <th>WNS</th>
+                            <th>TNS</th>
+                            <th>总功耗</th>
+                            <th>单元数</th>
+                            <th>Owner (上传者)</th>
+                            <th>记录时间</th>
+                            <th>Release</th>
+                            <th class="col-sticky-right">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recordTableBody"></tbody>
+                </table>
+            </div>
+            <div
+                style="margin-top: 12px; padding: 10px; background: var(--color-surface, #f8f9fa); border-radius: 6px; display: flex; gap: 10px; align-items: center;">
+                {# v5.0 owner 可批量发布/撤回自己拥有/被授权的模块下记录 (后端二次校验) #}
+                {% if not user.is_release or user.is_owner %}
+                <button class="btn btn-success btn-sm" onclick="batchRelease(true)">批量发布</button>
+                {% endif %}
+                <button class="btn btn-default btn-sm" onclick="batchRelease(false)">批量撤回</button>
+                <span id="releaseSelectionInfo" style="color: var(--color-text-secondary, #666); font-size: 13px;">已选 0
+                    条</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 用户管理 -->
+<div id="panel-users" class="tab-panel" style="display:none;">
+    <div class="card">
+        <div class="card-header">
+            <span>用户列表</span>
+            <div style="display:flex; gap:8px;">
+                <button class="btn btn-default btn-sm" onclick="showBatchAddUser()">批量创建</button>
+                <button class="btn btn-sm" onclick="showAddUser()">+ 添加用户</button>
+            </div>
+        </div>
+        <div class="card-body">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>用户名</th>
+                        <th>角色</th>
+                        <th>显示名</th>
+                        <th>创建时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="userTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 新建项目弹窗 -->
+<div id="addProjectModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 400px;">
+        <div class="card-header">新建项目</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>项目名称 *</label>
+                <input type="text" id="newProjectName" style="width: 100%;">
+            </div>
+            <div class="form-group">
+                <label>描述</label>
+                <textarea id="newProjectDesc" style="width: 100%;"></textarea>
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('addProjectModal')">取消</button>
+                <button class="btn btn-sm" onclick="createProject()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 添加模块弹窗 -->
+<div id="addModuleModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 400px;">
+        <div class="card-header">添加模块</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>所属项目</label>
+                <select id="newModuleProject" style="width: 100%;"></select>
+            </div>
+            <div class="form-group">
+                <label>模块名称 *</label>
+                <input type="text" id="newModuleName" style="width: 100%;">
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('addModuleModal')">取消</button>
+                <button class="btn btn-sm" onclick="createModule()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 添加用户弹窗 -->
+<div id="addUserModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 400px;">
+        <div class="card-header">添加用户</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>用户名 *</label>
+                <input type="text" id="newUsername" style="width: 100%;">
+            </div>
+            <div class="form-group">
+                <label>密码 *</label>
+                <input type="password" id="newPassword" data-pw-toggle style="width: 100%; padding-right: 36px;">
+            </div>
+            <div class="form-group">
+                <label>角色</label>
+                <select id="newUserRole" style="width: 100%;">
+                    <option value="owner">Owner (数据全权)</option>
+                    <option value="admin">管理员</option>
+                    <option value="viewer">Viewer (只读)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>显示名</label>
+                <input type="text" id="newDisplayName" style="width: 100%;">
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('addUserModal')">取消</button>
+                <button class="btn btn-sm" onclick="createUser()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 批量创建用户弹窗 -->
+<div id="batchAddUserModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 480px;">
+        <div class="card-header">批量创建用户</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>用户名列表 *（每行一个，或用逗号/空格分隔）</label>
+                <textarea id="batchUsernames" rows="8" placeholder="alice&#10;bob&#10;charlie&#10;..."
+                    style="width: 100%; font-family: monospace;"></textarea>
+            </div>
+            <div class="form-group">
+                <label>默认密码</label>
+                <input type="text" id="batchDefaultPassword" value="123456" style="width: 100%;">
+                <div style="font-size: 12px; color: var(--color-text-secondary); margin-top: 4px;">
+                    所有用户使用同一默认密码，用户登录后可自行修改。
+                </div>
+            </div>
+            <div class="form-group">
+                <label>角色</label>
+                <select id="batchUserRole" style="width: 100%;">
+                    <option value="owner">Owner (数据全权)</option>
+                    <option value="admin">管理员</option>
+                    <option value="viewer">Viewer (只读)</option>
+                </select>
+            </div>
+            <div id="batchUserResult" style="margin-top: 12px;"></div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('batchAddUserModal')">关闭</button>
+                <button class="btn btn-sm" onclick="batchCreateUsers()">批量创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 重置密码弹窗 -->
+<div id="resetPasswordModal" class="modal-overlay" style="display:none;">
+    <div class="card" style="width: 400px;">
+        <div class="card-header">重置密码</div>
+        <div class="card-body">
+            <div style="margin-bottom: 12px;">
+                用户: <strong id="resetPasswordUsername"></strong>
+                <input type="hidden" id="resetPasswordUserId">
+            </div>
+            <div class="form-group">
+                <label>新密码</label>
+                <input type="text" id="resetPasswordValue" value="123456" style="width: 100%;">
+                <div style="font-size: 12px; color: var(--color-text-secondary); margin-top: 4px;">
+                    默认重置为 123456，用户登录后可自行修改。
+                </div>
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-default btn-sm" onclick="closeModal('resetPasswordModal')">取消</button>
+                <button class="btn btn-sm" onclick="confirmResetPassword()">重置</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .tab-btn {
+        padding: 8px 20px;
+        border: none;
+        background: transparent;
+        cursor: pointer;
+        font-size: 14px;
+        color: var(--color-text-secondary);
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+    }
+
+    .tab-btn.active {
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
+        font-weight: 600;
+    }
+
+    .tab-btn:hover {
+        color: var(--color-primary);
+    }
+
+    .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 2000;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .project-item {
+        padding: 12px;
+        border: 1px solid var(--color-border);
+        border-radius: 4px;
+        margin-bottom: 8px;
+    }
+
+    .project-item-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+
+    .module-item {
+        padding: 6px 12px;
+        margin-left: 16px;
+        font-size: 13px;
+        color: var(--color-text-secondary);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    /* 3级折叠树样式: proj > module > record */
+    .tree-toggle {
+        cursor: pointer;
+        user-select: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .tree-toggle::before {
+        content: '▶';
+        display: inline-block;
+        font-size: 10px;
+        color: var(--color-text-secondary);
+        transition: transform 0.15s;
+        width: 12px;
+    }
+    .tree-toggle.expanded::before {
+        transform: rotate(90deg);
+    }
+    .tree-children {
+        display: none;
+        margin-left: 18px;
+        border-left: 2px dashed var(--color-border);
+        padding-left: 12px;
+        margin-top: 6px;
+    }
+    .tree-children.expanded {
+        display: block;
+    }
+    .record-item {
+        padding: 4px 8px;
+        font-size: 13px;
+        color: var(--color-text);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-radius: 3px;
+        margin: 2px 0;
+    }
+    .record-item:hover {
+        background: var(--color-surface, #f8f9fa);
+    }
+    .record-tag {
+        display: inline-block;
+        padding: 2px 8px;
+        background: var(--color-primary, #1a237e);
+        color: white;
+        border-radius: 10px;
+        font-size: 12px;
+        text-decoration: none;
+        cursor: pointer;
+        transition: opacity 0.15s;
+    }
+    .record-tag:hover {
+        opacity: 0.85;
+        color: white;
+    }
+    .record-tag.unreleased {
+        background: var(--color-text-secondary, #999);
+    }
+</style>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    let allProjects = [];
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        await loadProjects();
+        loadUsers();
+        loadRecords();
+        setupUploadForm();
+        setupBlockQorForm();
+        // 数据类型切换: 仅 notes 显示 full_dir 输入框
+        document.getElementById('uploadDataType').addEventListener('change', function () {
+            const isNotes = (this.value === 'notes');
+            document.getElementById('uploadFullDirGroup').style.display = isNotes ? '' : 'none';
+        });
+        // 支持 URL hash 自动切 tab: /admin#projects / #records / #users
+        const hash = (window.location.hash || '').replace('#', '');
+        const ALLOWED_TABS = window.CURRENT_USER.is_admin
+            ? ['projects', 'records', 'users', 'upload']
+            : ['records', 'upload'];  // v5.0 owner: 上传 + 记录管理
+        if (ALLOWED_TABS.includes(hash)) {
+            switchTab(hash);
+        } else {
+            // 默认: owner -> upload (创建者)
+            if (!window.CURRENT_USER.is_admin) {
+                switchTab('upload');
+            }
+        }
+    });
+
+    function switchTab(tab) {
+        document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        const panel = document.getElementById('panel-' + tab);
+        const btn = document.getElementById('tab-' + tab);
+        if (panel) panel.style.display = 'block';
+        if (btn) btn.classList.add('active');
+        // 切到记录管理时, 加载 owner 筛选下拉 + 拉取数据
+        if (tab === 'records') {
+            loadOwnerFilter();
+            loadRecords();
+        }
+    }
+
+    // ---- 项目管理 ----
+    async function loadProjects() {
+        const resp = await fetch('/api/projects');
+        allProjects = await resp.json();
+
+        // 上传表单
+        const uploadProj = document.getElementById('uploadProject');
+        uploadProj.innerHTML = '<option value="">请选择项目</option>';
+        const batchProj = document.getElementById('batchProject');
+        if (batchProj) {
+            batchProj.innerHTML = '<option value="">请选择项目</option>';
+        }
+        const blockProj = document.getElementById('blockQorProject');
+        if (blockProj) {
+            blockProj.innerHTML = '<option value="">跨项目全局匹配</option>';
+        }
+        const recordFilter = document.getElementById('recordFilterProject');
+        recordFilter.innerHTML = '<option value="">全部</option>';
+
+        allProjects.forEach(p => {
+            uploadProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+            if (batchProj) batchProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+            if (blockProj) blockProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+            recordFilter.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+        });
+
+        uploadProj.onchange = () => updateUploadModules();
+        renderProjectList();
+    }
+
+    function updateUploadModules() {
+        const projId = document.getElementById('uploadProject').value;
+        const modSel = document.getElementById('uploadModule');
+        modSel.innerHTML = '<option value="">自动识别 / 创建</option>';
+        allProjects.forEach(p => {
+            if (p.id == projId) {
+                p.modules.forEach(m => {
+                    modSel.innerHTML += `<option value="${m.id}">${m.name} (${m.record_count})</option>`;
+                });
+            }
+        });
+        // 模块选择变化时刷新提示 (是否仍需要从文件名/目录名提取)
+        const fileList = document.getElementById('fileList');
+        if (fileList.children.length > 0) {
+            // 模拟触发 showFileList (this 绑定问题, 直接用 fileInput)
+            document.getElementById('uploadFile').onchange && document.getElementById('uploadFile').onchange();
+        }
+    }
+
+    function renderProjectList() {
+        const container = document.getElementById('projectList');
+        if (allProjects.length === 0) {
+            container.innerHTML = '<div class="empty-state">暂无项目</div>';
+            return;
+        }
+        container.innerHTML = '';
+        allProjects.forEach(p => {
+            // 3级折叠结构: project > module > record (默认全部折叠)
+            const projId = p.id;
+            const projModulesId = `proj-modules-${projId}`;
+            const projDesc = p.description
+                ? `<span style="color:var(--color-text-secondary); margin-left:8px;">${escapeHtml(p.description)}</span>`
+                : '';
+            const projTag = `<span class="tag">${p.module_count} 个模块</span>`;
+            let modulesHtml = '';
+            if (p.modules.length === 0) {
+                modulesHtml = `<div class="module-item" style="color:var(--color-text-secondary);">无模块</div>`;
+            } else {
+                p.modules.forEach(m => {
+                    const modChildrenId = `mod-records-${projId}-${m.id}`;
+                    modulesHtml += `
+                        <div class="module-item">
+                            <span class="tree-toggle" data-target="${modChildrenId}" onclick="toggleModule(${projId}, ${m.id}, this)">
+                                <strong>${escapeHtml(m.name)}</strong>
+                                <span class="tag" style="margin-left:4px;">${m.record_count} 条记录</span>
+                            </span>
+                            <button class="btn btn-danger btn-sm" onclick="deleteModule(${m.id})">删除模块</button>
+                        </div>
+                        <div class="tree-children" id="${modChildrenId}">
+                            <div class="empty-state" style="padding:6px 12px; font-size:12px;">点击上方模块名加载记录...</div>
+                        </div>
+                    `;
+                });
+            }
+            const html = `
+                <div class="project-item">
+                    <div class="project-item-header">
+                        <div>
+                            <span class="tree-toggle" data-target="${projModulesId}" onclick="toggleProject(${projId}, this)">
+                                <strong>${escapeHtml(p.name)}</strong>
+                            </span>
+                            ${projDesc}${projTag}
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-default btn-sm" onclick="showAddModule(${p.id})">+ 模块</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteProject(${p.id})">删除项目</button>
+                        </div>
+                    </div>
+                    <div class="tree-children" id="${projModulesId}">
+                        ${modulesHtml}
+                    </div>
+                </div>
+            `;
+            container.insertAdjacentHTML('beforeend', html);
+        });
+    }
+
+    // 折叠/展开项目
+    function toggleProject(projectId, toggleEl) {
+        const childId = toggleEl.dataset.target;
+        const child = document.getElementById(childId);
+        if (child) {
+            child.classList.toggle('expanded');
+            toggleEl.classList.toggle('expanded');
+        }
+    }
+
+    // 折叠/展开模块, 并懒加载该模块下的记录
+    let _moduleRecordsCache = {};  // key: "proj-mod" -> records[]
+    async function toggleModule(projectId, moduleId, toggleEl) {
+        const childId = toggleEl.dataset.target;
+        const child = document.getElementById(childId);
+        if (!child) return;
+        const isExpanded = child.classList.toggle('expanded');
+        toggleEl.classList.toggle('expanded');
+        if (isExpanded) {
+            // 懒加载该模块下的记录
+            const cacheKey = `${projectId}-${moduleId}`;
+            if (!_moduleRecordsCache[cacheKey]) {
+                child.innerHTML = '<div class="empty-state" style="padding:6px 12px; font-size:12px;">加载中...</div>';
+                try {
+                    const resp = await fetch(`/api/modules/${projectId}/${moduleId}/records`);
+                    if (!resp.ok) {
+                        child.innerHTML = `<div class="empty-state" style="padding:6px 12px; font-size:12px; color:#c00;">加载失败 (${resp.status})</div>`;
+                        return;
+                    }
+                    const records = await resp.json();
+                    _moduleRecordsCache[cacheKey] = records;
+                } catch (err) {
+                    child.innerHTML = `<div class="empty-state" style="padding:6px 12px; font-size:12px; color:#c00;">加载出错: ${err.message}</div>`;
+                    return;
+                }
+            }
+            renderModuleRecords(projectId, moduleId, child);
+        }
+    }
+
+    function renderModuleRecords(projectId, moduleId, container) {
+        const cacheKey = `${projectId}-${moduleId}`;
+        const records = _moduleRecordsCache[cacheKey] || [];
+        if (records.length === 0) {
+            container.innerHTML = '<div class="empty-state" style="padding:6px 12px; font-size:12px;">无记录</div>';
+            return;
+        }
+        let html = '';
+        records.forEach(r => {
+            // 显示 version+tag (此处 tag 即 version, 显示全路径 full_dir 作为副标题)
+            const tagClass = r.is_released ? 'record-tag' : 'record-tag unreleased';
+            const fullDir = r.full_dir ? `<span style="color:var(--color-text-secondary); font-size:11px; margin-left:8px;">${escapeHtml(r.full_dir)}</span>` : '';
+            // 点击跳转到 dashboard, 并通过 focus_record_id 定位该条记录
+            html += `
+                <div class="record-item">
+                    <span>
+                        <a class="${tagClass}" href="/dashboard?focus_record_id=${r.id}&project_id=${projectId}&module_id=${moduleId}&version=${encodeURIComponent(r.version || '')}" title="点击在 Dashboard 查看 ${escapeHtml(r.version || '')} 的数据">
+                            ${escapeHtml(r.version || 'v1')}
+                        </a>
+                        ${fullDir}
+                    </span>
+                    <span style="font-size:11px; color:var(--color-text-secondary);">
+                        ${r.recorded_at ? new Date(r.recorded_at).toLocaleDateString('zh-CN') : ''}
+                        ${r.is_released ? '' : '<span style="color:#999; margin-left:6px;">未发布</span>'}
+                    </span>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    }
+
+    function showAddProject() {
+        document.getElementById('newProjectName').value = '';
+        document.getElementById('newProjectDesc').value = '';
+        document.getElementById('addProjectModal').style.display = 'flex';
+    }
+
+    async function createProject() {
+        const name = document.getElementById('newProjectName').value.trim();
+        if (!name) { alert('请输入项目名称'); return; }
+        const desc = document.getElementById('newProjectDesc').value.trim();
+        const resp = await fetch('/api/admin/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, description: desc })
+        });
+        if (resp.ok) {
+            closeModal('addProjectModal');
+            await loadProjects();
+        } else {
+            const err = await resp.json();
+            alert(err.error || '创建失败');
+        }
+    }
+
+    async function deleteProject(id) {
+        if (!confirm('确认隐藏此项目?\n\n提示: 隐藏后项目从系统列表消失, 但所有数据(模块/记录)仍保留在数据库中, 可在下方"已隐藏项目"中恢复.\n\n如需彻底删除 (不可恢复), 请先隐藏后进入"已隐藏项目"区域操作.')) return;
+        const btn = event && event.target ? event.target : null;
+        if (btn) { btn.disabled = true; btn.textContent = '隐藏中...'; }
+        try {
+            const resp = await fetch(`/api/admin/projects/${id}`, { method: 'DELETE' });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                alert((data.message || '已隐藏') + '\n\n数据保留, 可在"已隐藏项目"中恢复.');
+                await loadProjects();
+                await loadHiddenProjects();
+            } else {
+                alert('隐藏失败: ' + (data.error || resp.status));
+            }
+        } catch (err) {
+            console.error('deleteProject error:', err);
+            alert('隐藏出错: ' + err.message);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '删除项目'; }
+        }
+    }
+
+    // ---- 已隐藏项目 (软删除) ----
+    async function loadHiddenProjects() {
+        const container = document.getElementById('hiddenProjectList');
+        container.innerHTML = '<div class="empty-state">加载中...</div>';
+        try {
+            const resp = await fetch('/api/admin/projects/hidden');
+            if (!resp.ok) {
+                container.innerHTML = `<div class="empty-state">加载失败 (${resp.status})</div>`;
+                return;
+            }
+            const hidden = await resp.json();
+            if (hidden.length === 0) {
+                container.innerHTML = '<div class="empty-state">无已隐藏项目</div>';
+                return;
+            }
+            container.innerHTML = '';
+            hidden.forEach(p => {
+                const div = document.createElement('div');
+                div.className = 'project-item';
+                div.style.borderLeft = '3px solid var(--color-text-secondary)';
+                div.style.opacity = '0.85';
+                const hiddenDate = p.hidden_at ? new Date(p.hidden_at).toLocaleString('zh-CN') : '-';
+                div.innerHTML = `
+                    <div class="project-item-header">
+                        <div>
+                            <strong>${escapeHtml(p.name)}</strong>
+                            ${p.description ? `<span style="color:var(--color-text-secondary); margin-left:8px;">${escapeHtml(p.description)}</span>` : ''}
+                            <span class="tag">${p.module_count} 模块 / ${p.record_count} 记录</span>
+                        </div>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <span style="font-size:12px; color:var(--color-text-secondary);">
+                                由 <b>${escapeHtml(p.hidden_by_name || '-')}</b> 于 ${hiddenDate} 隐藏
+                            </span>
+                            <button class="btn btn-success btn-sm" onclick="restoreProject(${p.id}, '${escapeAttr(p.name)}')">恢复</button>
+                            <button class="btn btn-danger btn-sm" onclick="hardDeleteProject(${p.id}, '${escapeAttr(p.name)}', ${p.module_count}, ${p.record_count})">彻底删除</button>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        } catch (err) {
+            console.error('loadHiddenProjects error:', err);
+            container.innerHTML = `<div class="empty-state">加载出错: ${err.message}</div>`;
+        }
+    }
+
+    async function restoreProject(id, name) {
+        if (!confirm(`确认恢复项目 "${name}"?\n\n恢复后项目状态变更为 active, 重新出现在项目列表中.`)) return;
+        try {
+            const resp = await fetch(`/api/admin/projects/${id}/restore`, { method: 'POST' });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                alert(data.message || '已恢复');
+                await loadProjects();
+                await loadHiddenProjects();
+            } else {
+                alert('恢复失败: ' + (data.error || resp.status));
+            }
+        } catch (err) {
+            console.error('restoreProject error:', err);
+            alert('恢复出错: ' + err.message);
+        }
+    }
+
+    async function hardDeleteProject(id, name, moduleCount, recordCount) {
+        const msg = `⚠️ 警告: 即将彻底删除项目 "${name}"!\n\n` +
+                    `此操作:\n` +
+                    `  • 删除项目及 ${moduleCount} 个模块\n` +
+                    `  • 删除 ${recordCount} 条 QoR 记录\n` +
+                    `  • 删除所有相关快照/审核/告警\n` +
+                    `  • 不可恢复!\n\n` +
+                    `如需保留数据, 请使用"恢复"按钮.\n\n` +
+                    `确定要继续吗?`;
+        if (!confirm(msg)) return;
+        if (!confirm('再次确认: 真的要彻底删除吗? 此操作无法撤销!')) return;
+
+        try {
+            const resp = await fetch(`/api/admin/projects/${id}/hard_delete?confirm=true`, { method: 'DELETE' });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                alert(data.message || '已彻底删除');
+                await loadHiddenProjects();
+            } else {
+                alert('删除失败: ' + (data.error || resp.status));
+            }
+        } catch (err) {
+            console.error('hardDeleteProject error:', err);
+            alert('删除出错: ' + err.message);
+        }
+    }
+
+    function escapeHtml(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+    function escapeAttr(s) {
+        return escapeHtml(s);
+    }
+
+    function showAddModule(projectId) {
+        const sel = document.getElementById('newModuleProject');
+        sel.innerHTML = '';
+        allProjects.forEach(p => {
+            sel.innerHTML += `<option value="${p.id}" ${p.id == projectId ? 'selected' : ''}>${p.name}</option>`;
+        });
+        document.getElementById('newModuleName').value = '';
+        document.getElementById('addModuleModal').style.display = 'flex';
+    }
+
+    async function createModule() {
+        const projectId = document.getElementById('newModuleProject').value;
+        const name = document.getElementById('newModuleName').value.trim();
+        if (!name) { alert('请输入模块名称'); return; }
+        const resp = await fetch('/api/admin/modules', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_id: parseInt(projectId), name })
+        });
+        if (resp.ok) {
+            closeModal('addModuleModal');
+            await loadProjects();
+        } else {
+            const err = await resp.json();
+            alert(err.error || '创建失败');
+        }
+    }
+
+    async function deleteModule(id) {
+        if (!confirm('确认删除此模块及其所有数据？')) return;
+        const resp = await fetch(`/api/admin/modules/${id}`, { method: 'DELETE' });
+        if (resp.ok) await loadProjects();
+        else alert('删除失败');
+    }
+
+    // ---- 上传 ----
+    // 文件名 -> 模块名 提取 (与后端逻辑保持一致, 用于预览显示)
+    function extractModuleNameFromFile(fname, suffixesStr) {
+        if (!fname) return null;
+        const base = fname.split(/[\\/]/).pop();
+        const name = base.replace(/\.csv$/i, '');
+        const tokens = (suffixesStr || '_qor,qor,_qor_report')
+            .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        let result = name;
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const tok of tokens) {
+                if (result.toLowerCase().endsWith(tok) && result.length > tok.length) {
+                    result = result.slice(0, -tok.length);
+                    changed = true;
+                }
+            }
+        }
+        return result.trim() || null;
+    }
+    function extractModuleNameFromDir(fname) {
+        if (!fname) return null;
+        const parts = fname.split(/[\\/]/).filter(Boolean);
+        if (parts.length >= 2) return parts[parts.length - 2];
+        return null;
+    }
+
+    function setupUploadForm() {
+        const fileInput = document.getElementById('uploadFile');
+        const dirCheckbox = document.getElementById('uploadDirMode');
+
+        // 整目录上传模式切换: 动态切换 webkitdirectory 属性
+        dirCheckbox.onchange = function () {
+            // 重建 input 元素以应用 webkitdirectory (属性不能动态增删)
+            const newInput = document.createElement('input');
+            newInput.type = 'file';
+            newInput.id = 'uploadFile';
+            newInput.accept = '.csv';
+            newInput.multiple = true;
+            newInput.required = true;
+            newInput.style.flex = '1';
+            if (this.checked) {
+                newInput.setAttribute('webkitdirectory', '');
+                newInput.setAttribute('directory', '');
+            }
+            newInput.onchange = fileInput.onchange;
+            fileInput.parentNode.replaceChild(newInput, fileInput);
+        };
+
+        // 显示已选文件列表 + 模块名提取预览
+        function showFileList() {
+            const fileList = document.getElementById('fileList');
+            const hint = document.getElementById('moduleHint');
+            const files = this.files;
+            if (!files || files.length === 0) {
+                fileList.innerHTML = '';
+                hint.style.display = 'none';
+                return;
+            }
+            const src = document.getElementById('uploadModuleNameSource').value;
+            const suffixes = document.getElementById('uploadFilenameSuffixes').value;
+            const modId = document.getElementById('uploadModule').value;
+            // 仅显示 .csv 文件
+            const csvFiles = [];
+            for (let f of files) {
+                if (f.name.toLowerCase().endsWith('.csv')) csvFiles.push(f);
+            }
+            let html = `已选择 ${files.length} 个文件 (其中 ${csvFiles.length} 个 CSV):<ul style="margin:4px 0; padding-left:20px; max-height:240px; overflow-y:auto;">`;
+            const extractedNames = [];
+            for (let f of csvFiles.slice(0, 100)) {
+                let modHint = '';
+                if (src === 'filename') {
+                    const m = extractModuleNameFromFile(f.webkitRelativePath || f.name, suffixes);
+                    modHint = m ? ` → <span style="color:var(--color-primary);">模块: ${m}</span>` : '';
+                    if (m) extractedNames.push(m);
+                } else if (src === 'dirname') {
+                    const path = f.webkitRelativePath || f.name;
+                    const m = extractModuleNameFromDir(path) || extractModuleNameFromFile(path, suffixes);
+                    modHint = m ? ` → <span style="color:var(--color-primary);">模块: ${m}</span>` : '';
+                    if (m) extractedNames.push(m);
+                }
+                html += `<li>${f.webkitRelativePath || f.name} <span style="color:var(--color-text-secondary);">(${(f.size / 1024).toFixed(1)} KB)</span>${modHint}</li>`;
+            }
+            if (csvFiles.length > 100) {
+                html += `<li>... 还有 ${csvFiles.length - 100} 个文件</li>`;
+            }
+            html += '</ul>';
+            fileList.innerHTML = html;
+
+            // 提示模块名来源: csv 模式有自动回退 (dirname/filename), 不会 0 条
+            if (!modId && src === 'csv') {
+                hint.style.display = 'block';
+                hint.style.color = '#1565c0';
+                hint.innerHTML = 'ℹ 当前"模块名来源"为「从 CSV 列读取」。若 CSV 无 module_name 列，' +
+                    '将自动回退到父目录名/文件名提取模块名。建议批量目录上传改选「从父目录名提取」以获得更准确的结果。';
+            } else if (!modId && (src === 'filename' || src === 'dirname') && extractedNames.length === 0) {
+                hint.style.display = 'block';
+                hint.style.color = '#e65100';
+                hint.innerHTML = '⚠ 未能从任何文件提取出模块名，请检查「文件名后缀去除规则」或改用其他来源。';
+            } else {
+                hint.style.display = 'none';
+            }
+        }
+
+        fileInput.onchange = showFileList;
+        // 切换模块名来源时刷新预览
+        document.getElementById('uploadModuleNameSource').onchange = showFileList;
+        document.getElementById('uploadFilenameSuffixes').oninput = showFileList;
+
+        document.getElementById('uploadForm').onsubmit = async (e) => {
+            e.preventDefault();
+            await submitUpload(false);
+        };
+
+        document.getElementById('previewBtn').onclick = async () => {
+            await submitUpload(true);
+        }
+
+        // 下载含 <CLOCK>_wns/_tns/_path 列的 CSV 模板
+        window.downloadCsvTemplate = function() {
+            const header = [
+                'tag', 'full_dir', 'comment',
+                'reg_count', 'comb_count', 'macro_count', 'total_count',
+                'reg_area', 'comb_area', 'macro_area', 'stdcell_area', 'total_area',
+                'no_clock',
+                'SYS_CLK_period', 'SYS_CLK_wns', 'SYS_CLK_tns', 'SYS_CLK_path',
+                'SRAMCLK_period', 'SRAMCLK_wns', 'SRAMCLK_tns', 'SRAMCLK_path',
+                'CLK_CPU_period', 'CLK_CPU_wns', 'CLK_CPU_tns', 'CLK_CPU_path',
+                'I2C_CLK_period', 'I2C_CLK_wns', 'I2C_CLK_tns', 'I2C_CLK_path',
+                'mbb_ratio', 'clock_gating_ratio', 'utilization',
+                'congestion_h', 'congestion_v', 'congestion_b',
+            ];
+            const sampleRow = [
+                'v1.0_baseline', '/proj/demo/work/cpu_core/v1.0', 'cpu_core v1.0 baseline',
+                1234, 5678, 2, 6914, 553.1, 1380.0, 2400.0, 1933.1, 4333.1, 2,
+                '2.000', '-0.150', '-1.230', 30,
+                '2.500', '0.050',  '0.000', 0,
+                '1.250', '-0.080', '-0.460', 12,
+                '10.000','-0.200', '-2.000', 10,
+                '0.150', '0.350', '0.650',
+                '0.120', '0.080', '0.120',
+            ];
+            const csv = header.join(',') + '\n' + sampleRow.join(',') + '\n';
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'qor_template_with_clocks.csv';
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            if (window.AppUI && AppUI.toast) {
+                AppUI.toast('✓ CSV 模板已下载 (含 4 个时钟列示例: SYS_CLK, SRAMCLK, CLK_CPU, I2C_CLK)', 'success');
+            }
+        };
+    };
+
+        async function submitUpload(isPreview) {
+            const fileInput = document.getElementById('uploadFile');
+            const files = fileInput.files;
+            if (files.length === 0) { alert('请选择至少一个 CSV 文件'); return; }
+
+            // 目录上传时, 只挑 .csv 文件 (会带 webkitRelativePath)
+            const csvFiles = [];
+            for (let f of files) {
+                if (f.name.toLowerCase().endsWith('.csv')) csvFiles.push(f);
+            }
+            if (csvFiles.length === 0) { alert('请选择至少一个 CSV 文件'); return; }
+
+            const formData = new FormData();
+            for (let f of csvFiles) {
+                formData.append('files', f);
+                // webkitdirectory 模式下 file.filename 会被 Werkzeug 截为 basename,
+                // 需单独传递相对路径用于 dirname 提取
+                formData.append('file_paths', f.webkitRelativePath || f.name);
+            }
+            formData.append('project_id', document.getElementById('uploadProject').value);
+            formData.append('module_id', document.getElementById('uploadModule').value);
+            formData.append('version', document.getElementById('uploadVersion').value);
+            formData.append('data_type', document.getElementById('uploadDataType').value);
+            formData.append('module_name_source', document.getElementById('uploadModuleNameSource').value);
+            formData.append('filename_suffixes', document.getElementById('uploadFilenameSuffixes').value);
+            // Run 备注: 附带 full_dir (区分同 module+version 下的不同 run 目录)
+            if (document.getElementById('uploadDataType').value === 'notes') {
+                const fd = document.getElementById('uploadFullDir').value.trim();
+                if (fd) formData.append('full_dir', fd);
+            }
+            // 整批统一 release_dir (覆盖 CSV 自带值)
+            const uploadReleaseDirEl = document.getElementById('uploadReleaseDir');
+            if (uploadReleaseDirEl && uploadReleaseDirEl.value.trim()) {
+                formData.append('release_dir', uploadReleaseDirEl.value.trim());
+            }
+            // 上传时是否立即标记为已发布
+            const markReleased = document.getElementById('uploadMarkReleased');
+            if (markReleased && markReleased.checked) {
+                formData.append('mark_released', '1');
+            }
+
+            const result = document.getElementById('uploadResult');
+            const url = isPreview ? '/api/admin/upload_csv_preview' : '/api/admin/upload';
+            result.innerHTML = `<div class="flash-message">${isPreview ? '预览校验中' : '上传中'}，请稍候...</div>`;
+
+            const resp = await fetch(url, { method: 'POST', body: formData });
+            const data = await resp.json();
+
+            if (resp.ok && data.ok) {
+                let html = `<div class="flash-message ${isPreview ? 'flash-success' : 'flash-success'}">${data.message}</div>`;
+                // 预览模式: 显示 would_create / would_update / warnings
+                if (isPreview && data.file_reports) {
+                    html += `<div style="margin-top:12px;"><strong>预览报告:</strong><table class="table" style="margin-top:8px;"><thead><tr>
+                        <th>文件名</th><th>状态</th><th>总行数</th><th>解析成功</th><th>将新增</th><th>将更新</th><th>将跳过</th><th>警告数</th>
+                    </tr></thead><tbody>`;
+                    data.file_reports.forEach(fr => {
+                        const ok = fr.ok ? '<span style="color:#2e7d32;">OK</span>' : '<span style="color:#c62828;">失败</span>';
+                        const err = fr.error ? `<br/><span style="color:#c62828;font-size:11px;">${fr.error}</span>` : '';
+                        html += `<tr>
+                            <td>${fr.filename}${err}</td>
+                            <td>${ok}</td>
+                            <td>${fr.total_rows || '-'}</td>
+                            <td>${fr.parsed || '-'}</td>
+                            <td style="color:#2e7d32;">${fr.would_create || 0}</td>
+                            <td style="color:var(--color-primary);">${fr.would_update || 0}</td>
+                            <td style="color:#c62828;">${fr.would_skip || 0}</td>
+                            <td style="color:${fr.warning_count > 0 ? '#e65100' : '#2e7d32'};">${fr.warning_count || 0}</td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table>';
+                    // 显示警告详情
+                    const allWarnings = data.file_reports.flatMap(fr => (fr.warnings || []).map(w => ({ file: fr.filename, w })));
+                    if (allWarnings.length > 0) {
+                        html += `<div style="margin-top:8px;"><strong>警告详情 (最多20条/文件):</strong><ul style="font-size:12px;color:#e65100;">`;
+                        allWarnings.slice(0, 20).forEach(w => {
+                            html += `<li>[${w.file}] ${w.w}</li>`;
+                        });
+                        if (allWarnings.length > 20) {
+                            html += `<li>... 还有 ${allWarnings.length - 20} 条</li>`;
+                        }
+                        html += '</ul></div>';
+                    }
+                    // 显示样本
+                    const samples = data.file_reports.flatMap(fr => (fr.sample || []).map(s => ({ file: fr.filename, s })));
+                    if (samples.length > 0) {
+                        html += `<div style="margin-top:8px;"><strong>样本数据 (前3条/文件):</strong><table class="table" style="margin-top:4px;font-size:12px;"><thead><tr><th>文件</th><th>模块</th><th>版本</th><th>面积</th><th>WNS</th><th>Cell数</th></tr></thead><tbody>`;
+                        samples.forEach(s => {
+                            html += `<tr><td>${s.file}</td><td>${s.s.module_name || '-'}</td><td>${s.s.version || '-'}</td><td>${s.s.area_total ?? '-'}</td><td>${s.s.wns_setup ?? '-'}</td><td>${s.s.cell_count ?? '-'}</td></tr>`;
+                        });
+                        html += '</tbody></table></div>';
+                    }
+                    html += `<div style="margin-top:12px;color:var(--color-text-secondary);font-size:12px;">确认无误后，点击"上传并导入"正式写入数据库。</div>`;
+                } else if (data.file_results && data.file_results.length > 0) {
+                    const isPower = data.data_type === 'power';
+                    const headerCols = isPower
+                        ? '<th>文件名</th><th>状态</th><th>合并</th><th>新建</th><th>总行数</th><th>空行</th><th>无数据行</th><th>错误</th>'
+                        : '<th>文件名</th><th>状态</th><th>导入</th><th>更新</th><th>跳过</th><th>总行数</th><th>空行</th><th>无数据行</th><th>错误</th>';
+                    html += `<div style="margin-top:12px;"><strong>文件解析详情:</strong><table class="table" style="margin-top:8px;"><thead><tr>${headerCols}</tr></thead><tbody>`;
+                    data.file_results.forEach(fr => {
+                        const stats = fr.stats || {};
+                        html += `<tr>
+                            <td>${fr.filename}</td>
+                            <td>${fr.ok ? '<span class="tag tag-success">成功</span>' : '<span class="tag tag-danger">失败</span>'}</td>
+                            <td>${isPower ? (fr.merged || 0) : (fr.saved || 0)}</td>
+                            ${isPower ? `<td>${fr.saved || 0}</td>` : `<td>${fr.updated || 0}</td><td>${fr.skipped || 0}</td>`}
+                            <td>${stats.total_rows || 0}</td>
+                            <td>${stats.skipped_empty || 0}</td>
+                            <td>${stats.skipped_no_data || 0}</td>
+                            <td>${stats.errors || 0}</td>
+                        </tr>`;
+                        if (fr.error) {
+                            html += `<tr><td colspan="8" style="color:#d32f2f;">错误: ${fr.error}</td></tr>`;
+                        }
+                    });
+                    html += '</tbody></table></div>';
+                }
+                result.innerHTML = html;
+                await loadProjects();
+                loadRecords();
+            } else {
+                result.innerHTML = `<div class="flash-message flash-error">${data.error || '上传失败'}</div>`;
+            }
+        }
+
+    // ---- 批量创建模块 ----
+    async function batchCreateModules() {
+        const projectId = document.getElementById('batchProject').value;
+        const moduleListText = document.getElementById('batchModuleList').value.trim();
+
+        if (!projectId) { alert('请选择项目'); return; }
+        if (!moduleListText) { alert('请输入模块名称列表'); return; }
+
+        const result = document.getElementById('batchResult');
+        const btn = event && event.target ? event.target : null;
+        if (btn) { btn.disabled = true; btn.textContent = '创建中...'; }
+        result.innerHTML = '<div class="flash-message">创建中...</div>';
+
+        try {
+            const resp = await fetch('/api/admin/modules/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `project_id=${projectId}&module_list=${encodeURIComponent(moduleListText)}`
+            });
+            const data = await resp.json().catch(() => ({}));
+
+            if (resp.ok && data.ok) {
+                let html = `<div class="flash-message flash-success">${data.message}</div>`;
+                if (data.created && data.created.length > 0) {
+                    html += `<div style="margin-top:8px; font-size:13px;"><strong>已创建:</strong> ${data.created.join(', ')}</div>`;
+                }
+                if (data.skipped && data.skipped.length > 0) {
+                    html += `<div style="margin-top:4px; font-size:13px; color:var(--color-text-secondary);"><strong>已跳过(已存在):</strong> ${data.skipped.join(', ')}</div>`;
+                }
+                result.innerHTML = html;
+                document.getElementById('batchModuleList').value = '';
+                await loadProjects();
+            } else {
+                result.innerHTML = `<div class="flash-message flash-error">${data.error || '创建失败'}</div>`;
+            }
+        } catch (err) {
+            console.error('batchCreateModules error:', err);
+            result.innerHTML = `<div class="flash-message flash-error">请求出错: ${err.message}</div>`;
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '批量创建'; }
+        }
+    }
+
+    // ---- 补充 FlopCount (block_qor.csv) ----
+    function setupBlockQorForm() {
+        const fileInput = document.getElementById('blockQorFile');
+        const dirCheckbox = document.getElementById('blockQorDirMode');
+        const fileListDiv = document.getElementById('blockQorFileList');
+
+        // 整目录上传切换
+        dirCheckbox.onchange = function () {
+            const newInput = document.createElement('input');
+            newInput.type = 'file';
+            newInput.id = 'blockQorFile';
+            newInput.accept = '.csv';
+            newInput.multiple = true;
+            newInput.required = true;
+            newInput.style.flex = '1';
+            if (this.checked) {
+                newInput.setAttribute('webkitdirectory', '');
+                newInput.setAttribute('directory', '');
+            }
+            newInput.onchange = fileInput.onchange;
+            fileInput.parentNode.replaceChild(newInput, fileInput);
+        };
+
+        // 文件列表显示
+        fileInput.onchange = function () {
+            const files = this.files;
+            if (!files || files.length === 0) {
+                fileListDiv.innerHTML = '';
+                return;
+            }
+            const csvFiles = [];
+            for (let f of files) {
+                if (f.name.toLowerCase().endsWith('.csv')) csvFiles.push(f);
+            }
+            let html = `已选择 ${files.length} 个文件 (其中 ${csvFiles.length} 个 CSV):<ul style="margin:4px 0; padding-left:20px; max-height:180px; overflow-y:auto;">`;
+            for (let f of csvFiles.slice(0, 50)) {
+                html += `<li>${f.webkitRelativePath || f.name} <span style="color:var(--color-text-secondary);">(${(f.size / 1024).toFixed(1)} KB)</span></li>`;
+            }
+            if (csvFiles.length > 50) {
+                html += `<li>... 还有 ${csvFiles.length - 50} 个文件</li>`;
+            }
+            html += '</ul>';
+            fileListDiv.innerHTML = html;
+        };
+
+        // 表单提交
+        document.getElementById('blockQorForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const result = document.getElementById('blockQorResult');
+            const activeInput = document.getElementById('blockQorFile');
+            const projId = document.getElementById('blockQorProject').value;
+
+            const files = activeInput.files;
+            if (!files || files.length === 0) {
+                result.innerHTML = '<div class="flash-message flash-error">请选择 CSV 文件</div>';
+                return;
+            }
+
+            const formData = new FormData();
+            let csvCount = 0;
+            const filePaths = [];
+            for (let f of files) {
+                if (f.name.toLowerCase().endsWith('.csv')) {
+                    formData.append('files', f);
+                    filePaths.push(f.webkitRelativePath || f.name);
+                    csvCount++;
+                }
+            }
+            if (csvCount === 0) {
+                result.innerHTML = '<div class="flash-message flash-error">未选择 CSV 文件</div>';
+                return;
+            }
+            filePaths.forEach(p => formData.append('file_paths', p));
+            if (projId) formData.append('project_id', projId);
+
+            result.innerHTML = '<div class="flash-message">补充中，请稍候...</div>';
+            try {
+                const resp = await fetch('/api/admin/upload_block_qor', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const data = await resp.json();
+                if (resp.ok && data.ok) {
+                    let html = `<div class="flash-message flash-success">${data.message}</div>`;
+                    html += `<div style="margin-top:8px; font-size:13px;">`;
+                    html += `文件数: ${data.file_count}，更新: ${data.updated_count}，未匹配: ${data.missed_count}，冲突: ${data.conflict_count}`;
+                    html += `</div>`;
+                    // 每个文件的详情
+                    for (let fr of (data.file_results || [])) {
+                        html += `<div style="margin-top:8px; padding:8px; background:var(--color-surface-hover); border-radius:4px; font-size:12px;">`;
+                        html += `<strong>${fr.filename}</strong>`;
+                        if (!fr.ok) {
+                            html += ` <span style="color:#c62828;">错误: ${fr.error}</span>`;
+                        } else {
+                            html += ` 更新:${fr.updated} 未匹配:${fr.missed} 冲突:${fr.conflict} 跳过(无Flop):${fr.skipped_no_flop} 总行:${fr.total_rows}`;
+                            if (fr.missed_samples && fr.missed_samples.length > 0) {
+                                html += `<br><span style="color:var(--color-text-secondary);">未匹配示例: ${fr.missed_samples.join(', ')}</span>`;
+                            }
+                            if (fr.conflict_samples && fr.conflict_samples.length > 0) {
+                                html += `<br><span style="color:#e65100;">冲突示例(同 full_dir 多条): ${fr.conflict_samples.join(', ')}</span>`;
+                            }
+                        }
+                        html += `</div>`;
+                    }
+                    result.innerHTML = html;
+                } else {
+                    result.innerHTML = `<div class="flash-message flash-error">${data.error || '补充失败'}</div>`;
+                }
+            } catch (err) {
+                result.innerHTML = `<div class="flash-message flash-error">请求失败: ${err.message}</div>`;
+            }
+        };
+    }
+
+    // ---- 记录管理 ----
+    // 记录管理需要知道当前用户身份, 用来:
+    //   1. 默认仅显示自己上传的记录 (非 admin 用户的"我的记录"视图)
+    //   2. 控制删除按钮可见性 (owner / admin 可见)
+    //   3. 显示 owner 提示
+    // 全局 CURRENT_USER 来自 base.html (user 注入)
+    const CURRENT_USER_ID = (window.CURRENT_USER && window.CURRENT_USER.id) || null;
+    const CURRENT_USER_NAME = (window.CURRENT_USER && window.CURRENT_USER.username) || '';
+    const IS_ADMIN = (window.CURRENT_USER && window.CURRENT_USER.is_admin) || false;
+
+    async function loadOwnerFilter() {
+        // 仅 admin 才有 "全部 owner" 视角, 普通用户默认只看自己
+        const sel = document.getElementById('recordFilterOwner');
+        const grp = document.getElementById('recordFilterOwnerGroup');
+        if (!sel || !grp) return;
+        if (!IS_ADMIN) {
+            grp.style.display = 'none';
+            // 强制只看自己
+            sel.value = CURRENT_USER_NAME;
+            return;
+        }
+        grp.style.display = '';
+        // 保留当前选择
+        const prev = sel.value;
+        sel.innerHTML = '<option value="">全部</option>';
+        try {
+            const resp = await fetch('/api/admin/records/owners');
+            if (!resp.ok) {
+                sel.innerHTML = '<option value="">加载失败</option>';
+                return;
+            }
+            const owners = await resp.json();
+            for (const o of owners) {
+                const opt = document.createElement('option');
+                opt.value = o.username;
+                opt.textContent = o.display_name + ' (' + o.username + ')';
+                sel.appendChild(opt);
+            }
+            if (prev) sel.value = prev;
+        } catch (e) {
+            sel.innerHTML = '<option value="">加载失败</option>';
+        }
+    }
+
+    function resetRecordFilters() {
+        const projSel = document.getElementById('recordFilterProject');
+        if (projSel) projSel.value = '';
+        const ownerSel = document.getElementById('recordFilterOwner');
+        if (ownerSel && IS_ADMIN) ownerSel.value = '';
+        else if (ownerSel) ownerSel.value = CURRENT_USER_NAME;
+        // 重置 scope toggle (owner 用户)
+        if (!IS_ADMIN && window.CURRENT_USER && window.CURRENT_USER.is_owner) {
+            setRecordScope('mine', document.getElementById('scopeBtnMine'));
+        }
+        loadRecords();
+    }
+
+    // v5.0 数据范围切换: owner 用户在 "仅自己" / "显示所有" 之间切换
+    // - admin: 不显示此开关, 始终看所有
+    // - owner: 切换后写入 window._recordScope, loadRecords 读取
+    // - viewer: 已被后端限制 (只看已发布)
+    function setRecordScope(scope, btn) {
+        window._recordScope = scope;
+        // 更新按钮样式
+        const btns = document.querySelectorAll('.scope-btn');
+        btns.forEach(b => {
+            b.classList.remove('active');
+            b.style.background = 'var(--color-surface)';
+            b.style.color = 'var(--color-text)';
+        });
+        if (btn) {
+            btn.classList.add('active');
+            btn.style.background = 'var(--color-primary)';
+            btn.style.color = '#fff';
+        }
+        loadRecords();
+    }
+
+    function updateRecordFilterHint() {
+        // 兼容老逻辑, hint 由 scope 按钮自身展示
+    }
+
+    async function loadRecords() {
+        const projId = document.getElementById('recordFilterProject').value;
+        const ownerSel = document.getElementById('recordFilterOwner');
+        let ownerVal = ownerSel ? ownerSel.value : '';
+        // v5.0 数据范围: owner 用户可主动选择 "仅自己" / "所有"
+        // - admin: 始终看所有
+        // - owner: 默认 'mine', 可切到 'all'
+        // - viewer: 已被后端限制
+        const scope = (window._recordScope === 'all') ? 'all' : 'mine';
+        if (!IS_ADMIN && scope === 'mine' && !ownerVal) {
+            ownerVal = CURRENT_USER_NAME;  // 仅显示自己上传的
+        }
+
+        let url = '/api/qor_data?';
+        if (projId) url += `project_ids=${projId}&`;
+        if (ownerVal) url += `owner_username=${encodeURIComponent(ownerVal)}&`;
+
+        const resp = await fetch(url);
+        if (!resp.ok) {
+            const tbody = document.getElementById('recordTableBody');
+            tbody.innerHTML = `<tr><td colspan="15" class="empty-state">加载失败 (${resp.status})</td></tr>`;
+            updateReleaseSelectionInfo();
+            return;
+        }
+        const records = await resp.json();
+        const tbody = document.getElementById('recordTableBody');
+
+        if (records.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="15" class="empty-state">暂无数据</td></tr>';
+            updateReleaseSelectionInfo();
+            return;
+        }
+
+        tbody.innerHTML = records.map(r => {
+            // v5.0 删除权限: admin 全权; owner/viewer 不可删; release 不可删
+            // (前端仅做 UI 提示, 后端再次校验)
+            const canDelete = !window.CURRENT_USER.is_viewer
+                && (IS_ADMIN || (r.owner_id && r.owner_id === CURRENT_USER_ID));
+            // v5.0 发布/撤回权限:
+            //   - admin:  全权
+            //   - owner:  自己上传/拥有/被授权的模块下记录
+            //   - viewer: 无
+            // 前端简化判断: admin / 本人上传的 record 即可 (后端会校验模块 owner/协作者)
+            const IS_VIEWER = window.CURRENT_USER.is_viewer;
+            const IS_OWNER = window.CURRENT_USER.is_owner;
+            const canRelease = !IS_VIEWER;  // 默认: admin/owner 可发布/撤回
+            const canRecall  = !IS_VIEWER;  // v5.0: owner 也能撤回
+            const ownerLabel = r.owner_username
+                ? `<span style="color:${(r.owner_id === CURRENT_USER_ID) ? 'var(--color-primary)' : 'var(--color-text)'}; font-weight:${(r.owner_id === CURRENT_USER_ID) ? '600' : '400'};">${escapeHtml(r.owner_display_name || r.owner_username)}</span>`
+                : '<span style="color:#999;">-</span>';
+            const ownerTag = (r.owner_id === CURRENT_USER_ID) ? ' <span style="font-size:10px; padding:1px 5px; background:var(--color-primary); color:#fff; border-radius:3px;">我</span>' : '';
+            return `
+        <tr class="record-row" data-record-id="${r.id}" style="cursor:pointer;"
+            onclick="if(!event.target.closest('button,input,a'))openRecordDetail(${r.id})">
+            <td onclick="event.stopPropagation()"><input type="checkbox" class="release-checkbox" value="${r.id}" onchange="updateReleaseSelectionInfo()"></td>
+            <td><a href="/qor_record/${r.id}" onclick="event.stopPropagation()" style="font-weight:500;">#${r.id}</a></td>
+            <td>${r.project_name || '-'}</td>
+            <td>${r.module_name || '-'}</td>
+            <td>${r.version || '-'}</td>
+            <td title="${escapeHtml(r.full_dir || '')}" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:12px; color:#1976d2;">
+                ${r.full_dir || '<span style="color:#999;">-</span>'}
+            </td>
+            <td title="${escapeHtml(r.release_dir_effective || '')}" style="max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:12px; ${r.is_released && r.release_dir ? 'color:#2e7d32;' : 'color:#e65100;'}">
+                ${r.is_released
+                    ? (r.release_dir
+                        ? escapeHtml(r.release_dir)
+                        : '<span title="未提供 release_dir, 当前以 full_dir 兜底" style="cursor:help;">⚠ ' + escapeHtml(r.release_dir_effective || r.full_dir || '-') + ' <span style="color:#999;font-size:10px;">(兜底)</span></span>')
+                    : (r.release_dir
+                        ? escapeHtml(r.release_dir)
+                        : '<span style="color:#999;">-</span>')}
+                <button class="btn btn-sm btn-default" style="margin-left:4px; padding:0 6px; font-size:11px;"
+                    onclick="event.stopPropagation(); editRecordReleaseDir(${r.id})"
+                    title="编辑 release_dir (留空则使用 full_dir 兜底)">✏️</button>
+            </td>
+            <td style="max-width:260px; font-size:12px; color:var(--color-text-secondary);">
+                <span id="desc_${r.id}" style="display:inline-block; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:help;"
+                    title="${escapeHtml(r.version_description || '点击右侧编辑按钮添加版本描述')}">
+                    ${r.version_description
+                        ? escapeHtml(r.version_description)
+                        : '<span style="color:#999;">-</span>'}
+                </span>
+                <button class="btn btn-sm btn-default" style="margin-left:4px; padding:0 6px; font-size:11px;"
+                    onclick="event.stopPropagation(); editRecordDescription(${r.id})"
+                    title="编辑版本描述 (owner 可填, viewer 只读)">✏️</button>
+            </td>
+            <td>${r.area_total != null ? r.area_total.toFixed(2) : '-'}</td>
+            <td>${r.wns_setup != null ? r.wns_setup.toFixed(3) : '-'}</td>
+            <td>${r.tns_setup != null ? r.tns_setup.toFixed(3) : '-'}</td>
+            <td>${r.power_total != null ? r.power_total.toFixed(3) : '-'}</td>
+            <td>${r.cell_count || '-'}</td>
+            <td>${ownerLabel}${ownerTag}</td>
+            <td>${r.recorded_at ? new Date(r.recorded_at).toLocaleString('zh-CN') : '-'}</td>
+            <td>
+                ${r.is_released
+                    ? '<span class="tag tag-success">已发布</span>'
+                    : '<span class="tag" style="background:#999;color:#fff;">未发布</span>'}
+            </td>
+            <td onclick="event.stopPropagation()" class="col-sticky-right" style="white-space:nowrap; background: var(--color-surface, #ffffff);">
+                <button class="btn btn-primary btn-sm" onclick="openRecordDetail(${r.id})" title="查看该记录详情 + 同 module+version 横向对比">详情</button>
+                <button class="btn btn-default btn-sm" onclick="openRecordDashboard(${r.id})" title="跳转到 Dashboard 并聚焦此记录">Dashboard</button>
+                ${(r.is_released ? canRecall : canRelease)
+                    ? `<button class="btn ${r.is_released ? 'btn-default' : 'btn-success'} btn-sm" onclick="toggleRelease(${r.id})">${r.is_released ? '撤回' : '发布'}</button>`
+                    : `<button class="btn btn-default btn-sm" disabled style="opacity:0.4; cursor:not-allowed;" title="${IS_VIEWER ? 'viewer 角色无发布权限' : '无权限'}">${r.is_released ? '撤回' : '发布'}</button>`}
+                ${canDelete
+                    ? `<button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">删除</button>`
+                    : `<button class="btn btn-danger btn-sm" disabled title="仅 owner / 管理员可删除" style="opacity:0.4; cursor:not-allowed;">删除</button>`}
+            </td>
+        </tr>
+    `;
+        }).join('');
+        updateReleaseSelectionInfo();
+    }
+
+    function escapeHtml(s) {
+        if (s == null) return '';
+        return String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    function openRecordDetail(id) {
+        window.open('/qor_record/' + id, '_blank');
+    }
+
+    async function openRecordDashboard(id) {
+        try {
+            // 先拉详情拿到 module_id 和 full_dir
+            const r = await fetch('/api/qor/record/' + id);
+            if (!r.ok) { alert('记录不存在或无权限'); return; }
+            const d = await r.json();
+            const rec = d.record;
+            // 优先按 record_id 精确定位
+            const params = new URLSearchParams({ focus_record_id: String(id) });
+            if (rec.module && rec.module.project_id) params.set('project_id', rec.module.project_id);
+            params.set('module_id', rec.module_id);
+            params.set('version', rec.version || '');
+            if (rec.full_dir) params.set('full_dir', rec.full_dir);
+            window.open('/dashboard?' + params.toString(), '_blank');
+        } catch (e) {
+            alert('跳转失败: ' + e.message);
+        }
+    }
+
+    // 表格数据重渲染后, 刷新搜索过滤的行数统计 (不重复添加工具条)
+    (function () {
+        document.addEventListener('DOMContentLoaded', () => {
+            const t = document.getElementById('recordTable');
+            if (!t || !window.TBLX) return;
+            window.TBLX.enhance(t);
+            const tb = t.tBodies[0] || t;
+            new MutationObserver(() => window.TBLX.refresh(t)).observe(tb, { childList: true });
+        });
+    })();
+
+    async function deleteRecord(id) {
+        if (!confirm('确认删除此记录？')) return;
+        try {
+            const resp = await fetch(`/api/admin/records/${id}`, { method: 'DELETE' });
+            if (resp.ok) {
+                await loadRecords();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                alert('删除失败: ' + (err.error || resp.status));
+            }
+        } catch (err) {
+            console.error('deleteRecord error:', err);
+            alert('删除出错: ' + err.message);
+        }
+    }
+
+    // ---- Release 管理 ----
+
+    // release_dir 一次性提示标志 (AppUI.onceSeen / AppUI.markSeen 已在 base.html 定义)
+    const RELEASE_DIR_PROMPT_KEY = 'release_dir_prompted';
+    const hasShownReleaseDirPrompt = () => AppUI.onceSeen(RELEASE_DIR_PROMPT_KEY);
+    const markReleaseDirPromptShown = () => AppUI.markSeen(RELEASE_DIR_PROMPT_KEY);
+
+    // 单条发布: 弹出 release_dir 输入 + 一次性提示
+    async function toggleRelease(id) {
+        // 先拉取当前记录的 release_dir (若已有则跳过输入)
+        let currentRecord = null;
+        try {
+            const r = await fetch(`/api/qor/record/${id}`);
+            if (r.ok) {
+                const d = await r.json();
+                currentRecord = d.record || null;
+            }
+        } catch (e) { /* ignore */ }
+
+        const willRelease = !(currentRecord && currentRecord.is_released);
+        let releaseDir = '';
+        if (willRelease) {
+            // 发布时: 若已有 release_dir, 直接用; 否则让用户输入 (可跳过)
+            if (currentRecord && currentRecord.release_dir) {
+                releaseDir = currentRecord.release_dir;
+            } else {
+                // 一次性提示: 仅当用户尚未确认时弹窗 (避免循环点击)
+                if (!hasShownReleaseDirPrompt()) {
+                    alert(
+                        '提示: 发布记录时建议提供 release_dir (对外发布路径).\n' +
+                        '\n' +
+                        '  · 若留空, 将以 full_dir 兜底, 对外可见的目录可能仍是运行时路径.\n' +
+                        '  · 您可在此弹窗的输入框填入, 也可发布后在「记录管理」中单独修改.\n' +
+                        '\n' +
+                        '(本提示在本次会话中仅显示一次)'
+                    );
+                    markReleaseDirPromptShown();
+                }
+                const def = currentRecord && currentRecord.full_dir ? currentRecord.full_dir : '';
+                const input = prompt(
+                    '请输入 release_dir (留空将使用 full_dir 兜底):',
+                    def
+                );
+                if (input === null) {
+                    // 用户取消 -> 不执行发布
+                    return;
+                }
+                releaseDir = input.trim();
+            }
+        }
+
+        try {
+            const resp = await fetch(`/api/admin/qor/${id}/release`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ release_dir: releaseDir })
+            });
+            if (resp.ok) {
+                await loadRecords();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                const msg = err.error || `HTTP ${resp.status}`;
+                alert('操作失败: ' + msg + (err.must_change_password
+                    ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
+            }
+        } catch (err) {
+            console.error('toggleRelease error:', err);
+            alert('操作出错: ' + err.message + '\n(请检查网络/服务是否正常)');
+        }
+    }
+
+    // 单条: 单独编辑 release_dir (不切换 is_released)
+    async function editRecordReleaseDir(id) {
+        // 拉取当前记录详情, 弹出 prompt 编辑
+        let currentRecord = null;
+        try {
+            const r = await fetch(`/api/qor/record/${id}`);
+            if (r.ok) {
+                const d = await r.json();
+                currentRecord = d.record || null;
+            }
+        } catch (e) { /* ignore */ }
+        const current = currentRecord && currentRecord.release_dir || '';
+        const input = prompt(
+            '请输入 release_dir (对外发布目录):\n  · 留空字符串将清空 (后续以 full_dir 兜底)\n  · 当前值: ' + (current || '(未设置)'),
+            current
+        );
+        if (input === null) return; // 取消
+        const newVal = input.trim();
+        try {
+            const resp = await fetch(`/api/admin/qor/${id}/release_dir`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ release_dir: newVal })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                const msg = err.error || `HTTP ${resp.status}`;
+                alert('修改失败: ' + msg + (err.must_change_password
+                    ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
+                return;
+            }
+            const r = await resp.json();
+            alert('✓ release_dir 已更新\n  新值: ' + (r.release_dir || '(空, fallback 到 full_dir)'));
+            await loadRecords();
+        } catch (e) {
+            console.error('editRecordReleaseDir error:', e);
+            alert('修改出错: ' + e.message + '\n(请检查网络/服务是否正常)');
+        }
+    }
+
+    function toggleReleaseSelectAll(checkbox) {
+        document.querySelectorAll('.release-checkbox').forEach(cb => cb.checked = checkbox.checked);
+        updateReleaseSelectionInfo();
+    }
+
+    // 单条: 编辑版本描述 (owner 可填, viewer 只读, 数据结构无法统一, 专门为此场景而设)
+    async function editRecordDescription(id) {
+        let currentRecord = null;
+        try {
+            const r = await fetch(`/api/qor/record/${id}`);
+            if (r.ok) {
+                const d = await r.json();
+                currentRecord = d.record || null;
+            }
+        } catch (e) { /* ignore */ }
+        const current = (currentRecord && currentRecord.version_description) || '';
+        // 多行: 支持 textarea 换行 (Ctrl+Enter 提交, Esc 取消)
+        AppUI.inputDialog({
+            title: '编辑版本描述',
+            label: '请输入版本描述 (特点/改动/注意事项), 支持多行:',
+            defaultValue: current,
+            placeholder: '例如:\n  · 修复 hold 违例\n  · 优化 IR drop\n  · 新增模块 X',
+            multiline: true,
+            rows: 8,
+            submitLabel: '保存',
+            onSubmit: async function (input) {
+                if (input === undefined) return; // 取消
+                const newVal = input.replace(/\r\n/g, '\n').trim();
+                try {
+                    const resp = await fetch(`/api/admin/qor/${id}/description`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ description: newVal })
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        const msg = err.error || `HTTP ${resp.status}`;
+                        alert('修改失败: ' + msg + (err.must_change_password
+                            ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
+                        return;
+                    }
+                    const r = await resp.json();
+                    // 即时刷新行内显示, 不重新拉取
+                    const span = document.getElementById(`desc_${id}`);
+                    if (span) {
+                        span.textContent = r.version_description || '-';
+                        span.title = r.version_description || '点击右侧编辑按钮添加版本描述';
+                        if (!r.version_description) span.innerHTML = '<span style="color:#999;">-</span>';
+                    }
+                    AppUI.toast('✓ 版本描述已更新', 'success');
+                } catch (e) {
+                    console.error('editRecordDescription error:', e);
+                    alert('修改出错: ' + e.message + '\n(请检查网络/服务是否正常)');
+                }
+            }
+        });
+    }
+
+    function getSelectedRecordIds() {
+        return Array.from(document.querySelectorAll('.release-checkbox:checked'))
+            .map(cb => parseInt(cb.value));
+    }
+
+    function updateReleaseSelectionInfo() {
+        const n = getSelectedRecordIds().length;
+        const el = document.getElementById('releaseSelectionInfo');
+        if (el) el.textContent = `已选 ${n} 条`;
+    }
+
+    async function batchRelease(released) {
+        const ids = getSelectedRecordIds();
+        if (ids.length === 0) {
+            alert('请先勾选要' + (released ? '发布' : '撤回') + '的记录');
+            return;
+        }
+
+        // 批量发布时: 询问是否统一设置 release_dir (一次性提示)
+        let batchReleaseDir = undefined; // undefined = 不修改, 由后端保留原值
+        if (released) {
+            if (!hasShownReleaseDirPrompt()) {
+                alert(
+                    `即将批量发布 ${ids.length} 条记录.\n` +
+                    '\n' +
+                    '提示: 发布时建议提供 release_dir (对外发布路径).\n' +
+                    '  · 留空则每条记录以其 full_dir 兜底, 对外可能仍是运行时路径.\n' +
+                    '  · 统一设置: 下方会询问, 输入的目录会应用到所有选中记录.\n' +
+                    '  · 单独设置: 留空后可在记录列表逐条修改.\n' +
+                    '\n' +
+                    '(本提示在本次会话中仅显示一次)'
+                );
+                markReleaseDirPromptShown();
+            }
+            const wantSet = confirm('是否统一为这批记录设置 release_dir?\n  · "确定" = 输入一个统一值, 覆盖所有记录\n  · "取消" = 留空 (各记录以其 full_dir 兜底, 或保留原 release_dir)');
+            if (wantSet) {
+                const input = prompt('请输入统一的 release_dir (留空字符串可清空所有选中记录的 release_dir):', '');
+                if (input === null) {
+                    // 用户取消输入 -> 中止
+                    return;
+                }
+                batchReleaseDir = input.trim();
+            }
+        }
+
+        if (!confirm(`确认${released ? '发布' : '撤回'}选中的 ${ids.length} 条记录？`)) return;
+
+        // 锁定按钮 + 显示进度, 防止重复点击导致卡死
+        const btns = document.querySelectorAll('button[onclick^="batchRelease"]');
+        const origLabels = [];
+        btns.forEach((b, i) => {
+            origLabels[i] = b.textContent;
+            b.disabled = true;
+            b.textContent = (released ? '发布中...' : '撤回中...');
+        });
+        const selInfo = document.getElementById('releaseSelectionInfo');
+        const origSelInfo = selInfo ? selInfo.textContent : '';
+        if (selInfo) selInfo.textContent = '处理中, 请稍候...';
+
+        try {
+            const body = { record_ids: ids, released: released };
+            if (released && batchReleaseDir !== undefined) {
+                body.release_dir = batchReleaseDir;
+            }
+            const resp = await fetch('/api/admin/qor/batch_release', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const r = await resp.json().catch(() => ({}));
+
+            if (!resp.ok) {
+                alert('批量操作失败: ' + (r.error || resp.status));
+                return;
+            }
+
+            // 成功: 显示详细反馈
+            const updated = r.updated || 0;
+            const skipped = r.skipped || 0;
+            const failed = r.failed || [];
+            let msg = `成功${released ? '发布' : '撤回'} ${updated} 条`;
+            if (skipped > 0) msg += `, 跳过 ${skipped} 条`;
+            if (failed.length > 0) {
+                msg += `\n\n失败明细 (前 10 条):`;
+                failed.slice(0, 10).forEach(f => {
+                    msg += `\n  #${f.id}: ${f.reason}`;
+                });
+                if (failed.length > 10) msg += `\n  ... 还有 ${failed.length - 10} 条`;
+            }
+            alert(msg);
+
+            // 重置选择 + 刷新
+            const selectAll = document.getElementById('releaseSelectAll');
+            if (selectAll) selectAll.checked = false;
+            await loadRecords();
+        } catch (err) {
+            console.error('batchRelease error:', err);
+            alert('批量操作出错: ' + err.message + '\n请检查网络后重试');
+        } finally {
+            // 恢复按钮
+            btns.forEach((b, i) => {
+                b.disabled = false;
+                b.textContent = origLabels[i] || (released ? '批量发布' : '批量撤回');
+            });
+            if (selInfo) selInfo.textContent = origSelInfo;
+        }
+    }
+
+    // ---- v5.0 模块协作者管理 ----
+    async function loadCollabModuleSelect() {
+        const sel = document.getElementById('collabModuleSelect');
+        if (!sel) return;
+        // 复用现有的项目下拉数据 (loadProjects 已加载)
+        const proj = document.getElementById('recordFilterProject');
+        const projId = proj ? proj.value : '';
+        sel.innerHTML = '<option value="">请选择模块...</option>';
+        if (!projId) return;
+        try {
+            const resp = await fetch(`/api/modules/${projId}`);
+            const mods = await resp.json();
+            mods.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.name;
+                sel.appendChild(opt);
+            });
+        } catch (e) {
+            console.error('loadCollabModuleSelect:', e);
+        }
+    }
+
+    async function loadCollabUserOptions() {
+        const sel = document.getElementById('collabNewUser');
+        if (!sel) return;
+        try {
+            const resp = await fetch('/api/admin/owner_users');
+            const users = await resp.json();
+            sel.innerHTML = '<option value="">请选择用户...</option>';
+            users.forEach(u => {
+                if (u.id === CURRENT_USER_ID) return;  // 不能授权给自己
+                const opt = document.createElement('option');
+                opt.value = u.id;
+                opt.textContent = `${u.username} (${u.display_name || u.username})`;
+                sel.appendChild(opt);
+            });
+        } catch (e) {
+            console.error('loadCollabUserOptions:', e);
+        }
+    }
+
+    async function loadCollaborators() {
+        const sel = document.getElementById('collabModuleSelect');
+        const ownerSpan = document.getElementById('collabOwner');
+        const listUl = document.getElementById('collabList');
+        const addArea = document.getElementById('collabAddArea');
+        const hint = document.getElementById('collabHint');
+        if (!sel || !sel.value) {
+            ownerSpan.textContent = '-';
+            listUl.innerHTML = '<li style="color:#999;">请先选择模块</li>';
+            addArea.style.display = 'none';
+            return;
+        }
+        try {
+            const resp = await fetch(`/api/admin/modules/${sel.value}/collaborators`);
+            if (resp.status === 403) {
+                ownerSpan.textContent = '-';
+                listUl.innerHTML = '<li style="color:#c00;">无权限查看</li>';
+                addArea.style.display = 'none';
+                return;
+            }
+            const data = await resp.json();
+            ownerSpan.textContent = data.owner
+                ? `${data.owner.username} (${data.owner.display_name || data.owner.username})`
+                : '<span style="color:#999;">无</span>';
+            listUl.innerHTML = '';
+            if (data.collaborators.length === 0) {
+                listUl.innerHTML = '<li style="color:#999;">暂无协作者</li>';
+            } else {
+                data.collaborators.forEach(c => {
+                    const li = document.createElement('li');
+                    li.style.display = 'flex';
+                    li.style.alignItems = 'center';
+                    li.style.gap = '8px';
+                    li.style.margin = '3px 0';
+                    li.innerHTML = `
+                        <span>${escapeHtml(c.username)} (${escapeHtml(c.display_name || c.username)})</span>
+                        <button class="btn btn-xs btn-danger" onclick="removeCollaborator(${data.module_id}, ${c.id})">移除</button>
+                    `;
+                    listUl.appendChild(li);
+                });
+            }
+            // 仅模块创建者可添加/删除
+            const isOwner = data.owner && data.owner.id === CURRENT_USER_ID;
+            const isAdmin = window.CURRENT_USER.is_admin;
+            addArea.style.display = (isOwner || isAdmin) ? '' : 'none';
+            hint.textContent = isOwner
+                ? '您是此模块创建者, 可添加/移除协作者 (授权后, 该用户可管理此模块下所有数据)'
+                : (isAdmin ? '您是管理员, 可管理所有模块的协作者' : '您不是此模块的创建者, 只读查看');
+        } catch (e) {
+            console.error('loadCollaborators:', e);
+        }
+    }
+
+    async function addCollaborator() {
+        const sel = document.getElementById('collabModuleSelect');
+        const userSel = document.getElementById('collabNewUser');
+        if (!sel.value || !userSel.value) {
+            alert('请先选择模块和用户');
+            return;
+        }
+        const csrf = getCsrfToken();
+        try {
+            const resp = await fetch(`/api/admin/modules/${sel.value}/collaborators`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                body: JSON.stringify({ user_id: parseInt(userSel.value) }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                alert('添加失败: ' + (data.error || resp.status));
+                return;
+            }
+            await loadCollaborators();
+        } catch (e) {
+            alert('添加失败: ' + e.message);
+        }
+    }
+
+    async function removeCollaborator(moduleId, userId) {
+        if (!confirm('确定要移除此协作者吗?')) return;
+        const csrf = getCsrfToken();
+        try {
+            const resp = await fetch(`/api/admin/modules/${moduleId}/collaborators/${userId}`, {
+                method: 'DELETE',
+                headers: { 'X-CSRF-Token': csrf },
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                alert('移除失败: ' + (data.error || resp.status));
+                return;
+            }
+            await loadCollaborators();
+        } catch (e) {
+            alert('移除失败: ' + e.message);
+        }
+    }
+
+    // 项目筛选变化时刷新协作者模块下拉
+    document.addEventListener('DOMContentLoaded', function() {
+        const projSel = document.getElementById('recordFilterProject');
+        if (projSel) {
+            projSel.addEventListener('change', loadCollabModuleSelect);
+        }
+        // 初始化协作者管理
+        loadCollabUserOptions();
+    });
+
+    // ---- 用户管理 ----
+    async function loadUsers() {
+        const resp = await fetch('/api/admin/users');
+        const users = await resp.json();
+        const tbody = document.getElementById('userTableBody');
+        tbody.innerHTML = users.map(u => `
+        <tr>
+            <td>${u.id}</td>
+            <td>${u.username}</td>
+            <td>${u.role === 'admin' ? '<span class="tag tag-danger">管理员</span>' : (u.role === 'release' ? '<span class="tag" style="background:#3aa655;color:#fff;">Release</span>' : '<span class="tag tag-success">普通用户</span>')}</td>
+            <td>${u.display_name || '-'}</td>
+            <td>${u.created_at}</td>
+            <td>
+                <button class="btn btn-default btn-sm" onclick="showResetPassword(${u.id}, '${u.username.replace(/'/g, "\\'")}')">重置密码</button>
+            </td>
+        </tr>
+    `).join('');
+    }
+
+    function showAddUser() {
+        document.getElementById('newUsername').value = '';
+        document.getElementById('newPassword').value = '';
+        document.getElementById('newDisplayName').value = '';
+        document.getElementById('addUserModal').style.display = 'flex';
+        // 弹窗内密码输入框首次可见, 绑定明文切换按钮
+        if (window.AppUI && AppUI.attachPasswordToggle) {
+            AppUI.attachPasswordToggle('#addUserModal input[data-pw-toggle]');
+        }
+    }
+
+    async function createUser() {
+        const username = document.getElementById('newUsername').value.trim();
+        const password = document.getElementById('newPassword').value;
+        const role = document.getElementById('newUserRole').value;
+        const display_name = document.getElementById('newDisplayName').value.trim();
+        if (!username || !password) { alert('用户名和密码不能为空'); return; }
+
+        const resp = await fetch('/api/admin/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, role, display_name })
+        });
+        if (resp.ok) {
+            closeModal('addUserModal');
+            loadUsers();
+        } else {
+            const err = await resp.json();
+            alert(err.error || '创建失败');
+        }
+    }
+
+    // ===================== 批量创建用户 =====================
+    function showBatchAddUser() {
+        document.getElementById('batchUsernames').value = '';
+        document.getElementById('batchDefaultPassword').value = '123456';
+        document.getElementById('batchUserResult').innerHTML = '';
+        document.getElementById('batchAddUserModal').style.display = 'flex';
+    }
+
+    async function batchCreateUsers() {
+        const usernames = document.getElementById('batchUsernames').value;
+        const password = document.getElementById('batchDefaultPassword').value;
+        const role = document.getElementById('batchUserRole').value;
+        if (!usernames.trim()) { alert('请输入用户名列表'); return; }
+
+        const resultDiv = document.getElementById('batchUserResult');
+        const btn = event && event.target ? event.target : null;
+        if (btn) { btn.disabled = true; btn.textContent = '创建中...'; }
+        resultDiv.innerHTML = '<span style="color:var(--color-text-secondary);">创建中...</span>';
+
+        try {
+            const resp = await fetch('/api/admin/users/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ usernames, password, role })
+            });
+            const data = await resp.json().catch(() => ({}));
+
+            if (!resp.ok) {
+                resultDiv.innerHTML = `<div style="color:#c62828;">${data.error || '创建失败'}</div>`;
+                return;
+            }
+
+            const created = data.created || [];
+            const skipped = data.skipped || [];
+            let html = `<div style="padding:8px 12px;background:var(--color-surface-hover);border-radius:4px;font-size:13px;">
+                <b>完成:</b> 共 ${data.total} 个, 成功 ${created.length} 个, 跳过 ${skipped.length} 个, 默认密码: <code>${data.default_password}</code>
+            </div>`;
+            if (created.length > 0) {
+                html += `<div style="margin-top:6px;font-size:12px;color:var(--color-text-secondary);">已创建: ${created.map(u => u.username).join(', ')}</div>`;
+            }
+            if (skipped.length > 0) {
+                html += `<div style="margin-top:4px;font-size:12px;color:#c62828;">已跳过: ${skipped.map(s => `${s.username}(${s.reason})`).join(', ')}</div>`;
+            }
+            resultDiv.innerHTML = html;
+            loadUsers();
+        } catch (err) {
+            console.error('batchCreateUsers error:', err);
+            resultDiv.innerHTML = `<div style="color:#c62828;">请求出错: ${err.message}</div>`;
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '批量创建'; }
+        }
+    }
+
+    // ===================== 管理员重置用户密码 =====================
+    function showResetPassword(userId, username) {
+        document.getElementById('resetPasswordUserId').value = userId;
+        document.getElementById('resetPasswordUsername').textContent = username;
+        document.getElementById('resetPasswordValue').value = '123456';
+        document.getElementById('resetPasswordModal').style.display = 'flex';
+    }
+
+    async function confirmResetPassword() {
+        const userId = document.getElementById('resetPasswordUserId').value;
+        const password = document.getElementById('resetPasswordValue').value;
+        if (!password) { alert('密码不能为空'); return; }
+        if (!confirm('确定重置该用户密码?')) return;
+
+        const resp = await fetch(`/api/admin/users/${userId}/reset-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.ok) {
+            closeModal('resetPasswordModal');
+            alert(`已重置 ${data.username} 的密码为: ${data.reset_to}`);
+        } else {
+            alert(data.error || '重置失败');
+        }
+    }
+
+    function closeModal(id) {
+        document.getElementById(id).style.display = 'none';
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,888 @@
+{% extends "base.html" %}
+{% block title %}QoR 记录详情 #{{ record_id }} - QoR Recorder{% endblock %}
+
+{% block content %}
+<div class="container-fluid" style="max-width: 1400px; margin: 0 auto; padding: 20px;">
+    <!-- 顶部: 标题 + 操作按钮 -->
+    <div
+        style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
+        <div>
+            <h2 style="margin:0; font-size:22px;">📊 QoR 记录详情</h2>
+            <div id="recordHeadline" style="font-size:13px; color:var(--color-text-secondary); margin-top:4px;">加载中…
+            </div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-default" onclick="goBack()">← 返回记录管理</button>
+            <button class="btn btn-primary" id="goDashboardBtn" onclick="goDashboard()">📈 查看 Dashboard</button>
+            <button class="btn btn-success" id="goAggregateBtn" onclick="goAggregate()">📁 目录聚合</button>
+        </div>
+    </div>
+
+    <!-- full_dir 路径解析条 -->
+    <div id="pathBar" class="card"
+        style="padding:12px 16px; margin-bottom:12px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:13px;">
+        <span style="color:var(--color-text-secondary);">📂 full_dir:</span>
+        <code id="pathFullDir"
+            style="background:var(--color-surface-hover); padding:4px 8px; border-radius:4px;">-</code>
+        <span id="pathBaseDir" class="tag" style="background:#e3f2fd; color:#1976d2;">base_dir: -</span>
+        <span id="pathSubPath" class="tag" style="background:#f3e5f5; color:#7b1fa2;">sub_path: -</span>
+        <span id="pathRunName" class="tag" style="background:#e8f5e9; color:#2e7d32;">run_name: -</span>
+    </div>
+
+    <!-- Release 目录: 优先取 release_dir, 缺省 fallback 到 full_dir -->
+    <div class="card" style="margin-top:8px; padding:10px 14px;">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <span style="font-size:12px; color:var(--color-text-secondary); font-weight:500;">🚀 Release 目录</span>
+            <code id="pathReleaseDir"
+                style="background:var(--color-surface-hover); padding:4px 8px; border-radius:4px; font-size:12px; flex:1; min-width:200px; word-break:break-all;">-</code>
+            <span id="releaseDirStatus" class="tag" style="background:#e0e0e0; color:#666;">未发布</span>
+            {% if not user.is_viewer %}
+            <button class="btn btn-sm btn-default" id="btnEditReleaseDir"
+                onclick="editReleaseDir()"
+                title="修改 release_dir (留空则使用 full_dir)">✏️ 编辑</button>
+            {% endif %}
+        </div>
+        <div style="margin-top:6px; font-size:11px; color:var(--color-text-secondary);" id="releaseDirHint">
+            发布时若未提供 release_dir, 将以 full_dir 兜底. 留空字符串可清空.
+        </div>
+    </div>
+
+    <!-- 版本描述: owner 可填, viewer 只读 -->
+    <div class="card" style="margin-top:8px; padding:10px 14px;">
+        <div style="display:flex; align-items:flex-start; gap:10px;">
+            <span style="font-size:12px; color:var(--color-text-secondary); font-weight:500; flex-shrink:0; padding-top:2px;">📝 版本描述</span>
+            <div id="versionDescriptionContent"
+                style="flex:1; min-height:24px; font-size:13px; line-height:1.5; color:var(--color-text); white-space:pre-wrap; word-break:break-word;">-</div>
+            {% if not user.is_viewer %}
+            <button class="btn btn-sm btn-default" onclick="editVersionDescription()"
+                style="flex-shrink:0;"
+                title="编辑版本描述 (owner 可填, viewer 只读)">✏️ 编辑</button>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- 关键指标卡片 (6 个) -->
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-bottom:16px;"
+        id="metricCards">
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">总面积 (um²)</div>
+            <div id="m-area" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">WNS Setup (ns)</div>
+            <div id="m-wns" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">NVP Setup</div>
+            <div id="m-nvp" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">总功耗 (mW)</div>
+            <div id="m-power" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">Cell 数</div>
+            <div id="m-cell" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+        <div class="card" style="padding:14px; text-align:center;">
+            <div style="color:var(--color-text-secondary); font-size:12px;">MBB / CG (%)</div>
+            <div id="m-mbb-cg" style="font-size:22px; font-weight:600; margin-top:4px;">-</div>
+        </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <!-- 全部指标详情表 -->
+        <div class="card">
+            <div class="card-header">📋 全部指标</div>
+            <div class="card-body" style="padding:0; max-height: 60vh; overflow:auto;">
+                <table class="chart-table" id="allMetricsTable">
+                    <thead>
+                        <tr>
+                            <th>指标</th>
+                            <th style="text-align:right;">值</th>
+                            <th>状态</th>
+                        </tr>
+                    </thead>
+                    <tbody id="allMetricsBody">
+                        <tr>
+                            <td colspan="3" class="empty-state">加载中…</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 同 module+version 横向对比 -->
+        <div class="card">
+            <div class="card-header">🔍 同 Module+Version 横向对比 <span id="siblingHint"
+                    style="font-size:11px; color:var(--color-text-secondary); margin-left:6px;"></span></div>
+            <div class="card-body" style="padding:0; max-height: 60vh; overflow:auto;">
+                <table class="chart-table" id="siblingsTable">
+                    <thead>
+                        <tr>
+                            <th>Run (full_dir)</th>
+                            <th style="text-align:right;">Area</th>
+                            <th style="text-align:right;">WNS</th>
+                            <th style="text-align:right;">NVP</th>
+                            <th style="text-align:right;">Cell</th>
+                        </tr>
+                    </thead>
+                    <tbody id="siblingsBody">
+                        <tr>
+                            <td colspan="5" class="empty-state">加载中…</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 原始 CSV 数据: extra_fields (未映射到标准列的 CSV 原始列) -->
+    <div class="card" style="margin-top:12px;">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>📑 原始 CSV 数据 <span id="csvOriginalHint"
+                    style="font-size:11px; color:var(--color-text-secondary); margin-left:6px; font-weight:normal;"></span></span>
+            <div style="display:flex; gap:6px;">
+                <button class="btn btn-sm btn-default" onclick="copyOriginalCsv()"
+                    title="将原始 CSV 字段复制为 JSON">📋 复制 JSON</button>
+                <button class="btn btn-sm btn-default" onclick="downloadOriginalCsv()"
+                    title="下载完整记录为 JSON 文件">⬇ 下载 JSON</button>
+            </div>
+        </div>
+        <div class="card-body" style="padding:0; max-height: 50vh; overflow:auto;">
+            <table class="chart-table" id="originalCsvTable">
+                <thead>
+                    <tr>
+                        <th style="width:30%;">CSV 字段名 (列名)</th>
+                        <th>值 (原始字符串)</th>
+                    </tr>
+                </thead>
+                <tbody id="originalCsvBody">
+                    <tr>
+                        <td colspan="2" class="empty-state">加载中…</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 完整原始 CSV 行 (含所有列: 标准字段 + extra + 多时钟) -->
+    <!-- 上传时的 CSV 整行真实数据, 列名为原始 CSV 表头, 值为原始字符串 -->
+    <div class="card" style="margin-top:12px;">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>📄 完整原始 CSV 行 <span id="rawRowHint"
+                    style="font-size:11px; color:var(--color-text-secondary); margin-left:6px; font-weight:normal;"></span></span>
+            <div style="display:flex; gap:6px;">
+                <button class="btn btn-sm btn-default" onclick="copyRawCsvRow()"
+                    title="复制为 CSV 行 (逗号分隔)">📋 复制 CSV</button>
+                <button class="btn btn-sm btn-default" onclick="downloadRawCsvRow()"
+                    title="下载为 CSV 文件">⬇ 下载 CSV</button>
+            </div>
+        </div>
+        <div class="card-body" style="padding:0;">
+            <!-- Tab 切换: 表格视图 / CSV 文本视图 -->
+            <div style="display:flex; border-bottom:1px solid var(--color-border); background:var(--color-surface-hover);">
+                <button type="button" id="rawRowTabTable" class="raw-row-tab active"
+                    onclick="switchRawRowTab('table')"
+                    style="padding:8px 16px; border:none; cursor:pointer; font-size:13px; background:var(--color-surface); color:var(--color-text); border-bottom:2px solid var(--color-primary); font-weight:600;">
+                    📊 表格视图
+                </button>
+                <button type="button" id="rawRowTabCsv" class="raw-row-tab"
+                    onclick="switchRawRowTab('csv')"
+                    style="padding:8px 16px; border:none; cursor:pointer; font-size:13px; background:transparent; color:var(--color-text-secondary);">
+                    📝 CSV 文本视图
+                </button>
+            </div>
+            <!-- 表格视图 -->
+            <div id="rawRowTableView" style="max-height: 50vh; overflow:auto;">
+                <table class="chart-table" id="rawRowTable">
+                    <thead>
+                        <tr>
+                            <th style="width:40%;">原始列名 (CSV Header)</th>
+                            <th>值 (原始字符串)</th>
+                            <th style="width:18%;">映射到</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rawRowBody">
+                        <tr>
+                            <td colspan="3" class="empty-state">加载中…</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <!-- CSV 文本视图 -->
+            <div id="rawRowCsvView" style="display:none; max-height: 50vh; overflow:auto;">
+                <pre id="rawRowCsvText"
+                    style="margin:0; padding:12px; background:var(--color-surface-hover);
+                           font-size:12px; line-height:1.6; font-family:'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+                           white-space:pre; overflow:auto; min-height:40px;"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 完整原始 JSON (含所有标准字段 + extra_fields) - 可折叠 -->
+    <div class="card" style="margin-top:12px;">
+        <details>
+            <summary class="card-header" style="cursor:pointer; user-select:none;">
+                <span>🔧 完整原始数据 (JSON 格式, 含全部字段)</span>
+            </summary>
+            <div class="card-body">
+                <pre id="rawJsonBlock"
+                    style="background:var(--color-surface-hover); padding:12px; border-radius:6px;
+                           font-size:12px; line-height:1.5; max-height:60vh; overflow:auto;
+                           font-family:'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+                           white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
+            </div>
+        </details>
+    </div>
+
+    <!-- 元数据 -->
+    <div class="card" style="margin-top:12px;">
+        <div class="card-header">ℹ️ 元数据</div>
+        <div class="card-body" id="metaBody" style="padding:14px; font-size:13px;">
+            <div style="color:var(--color-text-secondary);">加载中…</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const RECORD_ID = {{ record_id }};
+
+    const METRIC_LABEL = {
+        'area_total': '总面积', 'area_combinational': '组合面积', 'area_sequential': '时序面积',
+        'area_black_box': '黑盒面积', 'area_macro': '宏面积',
+        'cell_count': 'Cell 数', 'instance_count': 'Instance 数', 'net_count': 'Net 数', 'sequential_cell_count': '时序 Cell',
+        // wns_setup / tns_setup / nvp_setup 是从 clocks 派生的 (原始 CSV 应为 <CLK>_wns/_tns/_path)
+        'wns_setup': 'WNS Setup (派生)', 'tns_setup': 'TNS Setup (派生)', 'nvp_setup': 'NVP Setup (派生)',
+        // wns_hold / tns_hold / nvp_hold 原始 CSV 不带, 留空; 仅当 CSV 显式传列时才有值
+        'wns_hold': 'WNS Hold', 'tns_hold': 'TNS Hold', 'nvp_hold': 'NVP Hold',
+        'power_total': '总功耗', 'power_internal': '内部功耗', 'power_switching': '开关功耗', 'power_leakage': '漏电功耗',
+        'mbb_ratio': 'MBB 合并率', 'clock_gating_ratio': 'CG 覆盖率', 'utilization': '利用率',
+        'congestion': '拥塞', 'congestion_h': '拥塞 H', 'congestion_v': '拥塞 V', 'congestion_b': '拥塞 B',
+        'target_frequency': '目标频率', 'achieved_frequency': '达成频率',
+    };
+
+    function fmt(v, digits) {
+        if (v == null || isNaN(v)) return '-';
+        if (Math.abs(v) >= 100) return v.toFixed(0);
+        if (Math.abs(v) >= 1) return v.toFixed(digits || 2);
+        return v.toFixed(digits || 3);
+    }
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    function goBack() {
+        if (document.referrer) location.href = document.referrer;
+        else location.href = '/admin#records';
+    }
+    function goDashboard() {
+        // 跳转到 dashboard 并预选 module+version, 自动聚焦该 record
+        const r = window._record;
+        if (!r) return;
+        const params = new URLSearchParams({
+            project_id: r.module?.project_id || '',
+            module_id: r.module_id || '',
+            version: r.version || '',
+        });
+        if (r.full_dir) params.set('full_dir', r.full_dir);
+        if (r.id) params.set('focus_record_id', r.id);
+        location.href = '/dashboard?' + params.toString();
+    }
+    function goAggregate() {
+        const r = window._record;
+        if (!r) return;
+        location.href = '/dashboard?dir_agg=run#dirAggregate';
+    }
+
+    async function loadDetail() {
+        const r = await fetch(`/api/qor/record/${RECORD_ID}`);
+        if (!r.ok) {
+            document.querySelector('.container-fluid').innerHTML =
+                `<div class="card" style="padding:30px; text-align:center;">
+                <h3>❌ 加载失败</h3>
+                <p style="color:#999;">HTTP ${r.status}: ${(await r.json().catch(() => ({ error: r.statusText }))).error || ''}</p>
+                <button class="btn btn-default" onclick="goBack()">返回</button>
+            </div>`;
+            return;
+        }
+        const data = await r.json();
+        window._record = data.record;
+        render(data);
+    }
+
+    function render(data) {
+        const rec = data.record;
+        const mod = rec.module_name || '-';
+        const proj = rec.project_name || '-';
+        const ver = rec.version || '-';
+        document.getElementById('recordHeadline').innerHTML =
+            `项目: <b>${escapeHtml(proj)}</b> / 模块: <b>${escapeHtml(mod)}</b> / version: <b>${escapeHtml(ver)}</b> / record #${rec.id}`;
+
+        // 路径解析条
+        document.getElementById('pathFullDir').textContent = rec.full_dir || '(无 full_dir)';
+        if (rec.full_dir) {
+            const parts = rec.full_dir.replace(/\\/g, '/').split('/').filter(s => s);
+            const base = parts[0] || '-';
+            const sub = parts.length > 2 ? parts.slice(1, -1).join('/') : (parts.length === 2 ? '' : '-');
+            const run = parts.length > 1 ? parts[parts.length - 1] : '-';
+            document.getElementById('pathBaseDir').textContent = 'base_dir: ' + base;
+            document.getElementById('pathSubPath').textContent = 'sub_path: ' + (sub || '∅');
+            document.getElementById('pathRunName').textContent = 'run_name: ' + run;
+        } else {
+            document.getElementById('pathBaseDir').textContent = 'base_dir: -';
+            document.getElementById('pathSubPath').textContent = 'sub_path: -';
+            document.getElementById('pathRunName').textContent = 'run_name: -';
+        }
+
+        // Release 目录展示
+        renderReleaseDir(rec);
+
+        // 版本描述展示
+        renderVersionDescription(rec);
+
+        // 关键指标卡片
+        const setM = (id, v, good) => {
+            const el = document.getElementById(id);
+            el.textContent = fmt(v, 3);
+            el.style.color = good === true ? '#2e7d32' : good === false ? '#c62828' : 'var(--color-text)';
+        };
+        setM('m-area', rec.area_total);
+        setM('m-wns', rec.wns_setup, rec.wns_setup == null ? null : rec.wns_setup >= 0);
+        setM('m-nvp', rec.nvp_setup, rec.nvp_setup == null ? null : rec.nvp_setup === 0);
+        setM('m-power', rec.power_total);
+        setM('m-cell', rec.cell_count);
+        document.getElementById('m-mbb-cg').innerHTML =
+            `${fmt(rec.mbb_ratio, 1)} / ${fmt(rec.clock_gating_ratio, 1)}`;
+
+        // 全部指标表
+        const tbody = document.getElementById('allMetricsBody');
+        const rows = Object.keys(METRIC_LABEL).map(k => {
+            const v = rec[k];
+            let status = '<span style="color:#999;">-</span>';
+            if (v != null && !isNaN(v)) {
+                if (k === 'wns_setup' || k === 'wns_hold') {
+                    if (v >= 0) status = '<span class="tag tag-success">✓ 满足</span>';
+                    else if (v >= -0.2) status = '<span class="tag" style="background:#fff3e0;color:#e65100;">⚠ 边缘</span>';
+                    else status = '<span class="tag tag-danger">✗ 违例</span>';
+                } else if (k === 'tns_setup' || k === 'tns_hold') {
+                    if (v >= 0) status = '<span class="tag tag-success">✓ 满足</span>';
+                    else status = '<span class="tag tag-danger">✗ 违例</span>';
+                } else if (k === 'nvp_setup' || k === 'nvp_hold') {
+                    if (v === 0) status = '<span class="tag tag-success">✓ 满足</span>';
+                    else status = '<span class="tag tag-danger">✗ 违例 ' + v + '</span>';
+                }
+            }
+            return `<tr>
+            <td>${escapeHtml(METRIC_LABEL[k])} <span style="color:#999;font-size:11px;">(${k})</span></td>
+            <td style="text-align:right; font-family:monospace;">${fmt(v, 3)}</td>
+            <td>${status}</td>
+        </tr>`;
+        }).join('');
+        tbody.innerHTML = rows;
+        // 增强: 列宽拖拽 + 列隐藏 + 行搜索
+        if (window.TBLX) {
+            const t = document.getElementById('allMetricsTable');
+            if (t) { t.dataset.tblx = 'qor_allMetrics'; window.TBLX.enhance(t); }
+        }
+
+        // 横向对比
+        const siblings = data.siblings || [];
+        document.getElementById('siblingHint').textContent =
+            `共 ${siblings.length} 个 run`;
+        const sibBody = document.getElementById('siblingsBody');
+        if (!siblings.length) {
+            sibBody.innerHTML = '<tr><td colspan="5" class="empty-state">无对比数据</td></tr>';
+        } else {
+            // 找最佳 (area 最小, wns 最大且非负, nvp 最少, cell 最少)
+            const minArea = Math.min(...siblings.map(s => s.area_total || Infinity));
+            const maxWns = Math.max(...siblings.map(s => s.wns_setup == null ? -Infinity : s.wns_setup));
+            const minNvp = Math.min(...siblings.map(s => s.nvp_setup == null ? Infinity : s.nvp_setup));
+            const minCell = Math.min(...siblings.map(s => s.cell_count || Infinity));
+            sibBody.innerHTML = siblings.map(s => {
+                const isCurrent = s.id === rec.id;
+                const tr = document.createElement('tr');
+                const tag = (v, best) => {
+                    if (v == null) return '<span style="color:#999;">-</span>';
+                    if (v === best) return `<b style="color:#2e7d32;">${fmt(v)} ✓</b>`;
+                    return fmt(v);
+                };
+                return `<tr style="${isCurrent ? 'background:#fff3e0;' : ''}">
+                <td>
+                    <a href="/qor_record/${s.id}" style="${isCurrent ? 'font-weight:600;color:#e65100;' : ''}">
+                        ${escapeHtml(s.full_dir || s.version || '#' + s.id)}
+                    </a>
+                    ${isCurrent ? '<span class="tag" style="background:#e65100;color:#fff;font-size:10px;margin-left:4px;">当前</span>' : ''}
+                </td>
+                <td style="text-align:right;font-family:monospace;">${tag(s.area_total, minArea)}</td>
+                <td style="text-align:right;font-family:monospace;">${tag(s.wns_setup, maxWns)}</td>
+                <td style="text-align:right;font-family:monospace;">${tag(s.nvp_setup, minNvp)}</td>
+                <td style="text-align:right;font-family:monospace;">${tag(s.cell_count, minCell)}</td>
+            </tr>`;
+            }).join('');
+            // 增强: 列宽拖拽 + 列隐藏 + 行搜索
+            if (window.TBLX) {
+                const t = document.getElementById('siblingsTable');
+                if (t) { t.dataset.tblx = 'qor_siblings'; window.TBLX.enhance(t); }
+            }
+        }
+
+        // 元数据
+        const meta = document.getElementById('metaBody');
+        meta.innerHTML = `
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:8px 16px;">
+            <div><b>Record ID:</b> #${rec.id}</div>
+            <div><b>Project:</b> ${escapeHtml(proj)}</div>
+            <div><b>Module:</b> ${escapeHtml(mod)}</div>
+            <div><b>Version:</b> ${escapeHtml(ver)}</div>
+            <div><b>full_dir:</b> <code>${escapeHtml(rec.full_dir || '-')}</code></div>
+            <div><b>Recorded:</b> ${rec.recorded_at ? new Date(rec.recorded_at).toLocaleString('zh-CN') : '-'}</div>
+            <div><b>Source File:</b> ${escapeHtml(rec.source_file || '-')}</div>
+            <div><b>Released:</b> ${rec.is_released ? '<span class="tag tag-success">已发布</span>' : '<span class="tag" style="background:#999;color:#fff;">未发布</span>'}</div>
+        </div>
+    `;
+
+        // ========== 原始 CSV 数据渲染 ==========
+        // extra_fields 是 CSV 中未映射到标准列的所有原始字段 (含 clocks 多时钟数据等)
+        const csvBody = document.getElementById('originalCsvBody');
+        const csvHint = document.getElementById('csvOriginalHint');
+        const extra = (rec.extra_fields && typeof rec.extra_fields === 'object') ? rec.extra_fields : {};
+        const csvEntries = Object.entries(extra);
+        document.getElementById('csvOriginalHint').textContent =
+            csvEntries.length === 0
+                ? '(无额外字段, CSV 全部列均为标准字段)'
+                : `(共 ${csvEntries.length} 个原始字段)`;
+        if (csvEntries.length === 0) {
+            csvBody.innerHTML = '<tr><td colspan="2" class="empty-state">无</td></tr>';
+        } else {
+            // 智能排序: clocks 放最后, 其它按列名字母序
+            csvEntries.sort((a, b) => {
+                if (a[0] === 'clocks') return 1;
+                if (b[0] === 'clocks') return -1;
+                return a[0].localeCompare(b[0]);
+            });
+            csvBody.innerHTML = csvEntries.map(([k, v]) => {
+                // 嵌套对象 (如 clocks) -> 折叠显示
+                let displayValue;
+                let isMulti = false;
+                if (v && typeof v === 'object' && !Array.isArray(v)) {
+                    // 多时钟数据: {clk1: {wns, tns, period}, clk2: {...}}
+                    isMulti = true;
+                    displayValue = '<div style="display:flex; flex-direction:column; gap:2px;">' +
+                        Object.entries(v).map(([clk, fields]) => {
+                            if (fields && typeof fields === 'object') {
+                                const inner = Object.entries(fields).map(([f, n]) =>
+                                    `<span style="display:inline-block; margin-right:8px;"><b>${escapeHtml(f)}</b> = ${escapeHtml(String(n))}</span>`
+                                ).join('');
+                                return `<div style="padding:2px 0;"><span class="tag" style="background:#e3f2fd;color:#1976d2;">${escapeHtml(clk)}</span> ${inner}</div>`;
+                            }
+                            return `<div><span class="tag" style="background:#e3f2fd;color:#1976d2;">${escapeHtml(clk)}</span> = ${escapeHtml(String(fields))}</div>`;
+                        }).join('') + '</div>';
+                } else if (Array.isArray(v)) {
+                    displayValue = '[' + v.map(x => escapeHtml(String(x))).join(', ') + ']';
+                } else {
+                    displayValue = escapeHtml(String(v));
+                }
+                const tagStyle = isMulti
+                    ? 'background:#fff3e0;color:#e65100;'
+                    : 'background:#f5f5f5;color:#555;';
+                return `<tr>
+                    <td>
+                        <span class="tag" style="${tagStyle} font-family:monospace;">${escapeHtml(k)}</span>
+                    </td>
+                    <td style="font-family:monospace; font-size:12px; word-break:break-all;">${displayValue}</td>
+                </tr>`;
+            }).join('');
+            // 增强: 列宽拖拽 + 列隐藏 + 行搜索
+            if (window.TBLX) {
+                const t = document.getElementById('originalCsvTable');
+                if (t) { t.dataset.tblx = 'qor_originalCsv'; window.TBLX.enhance(t); }
+            }
+        }
+
+        // ========== 完整 JSON 原始数据 ==========
+        const rawJson = document.getElementById('rawJsonBlock');
+        try {
+            rawJson.textContent = JSON.stringify(rec, null, 2);
+        } catch (e) {
+            rawJson.textContent = '[无法序列化] ' + e.message;
+        }
+
+        // ========== 完整原始 CSV 行 (含所有列) ==========
+        renderRawCsvRow(rec);
+    }
+
+    // 标准字段标签 (供"映射到"列展示)
+    const FIELD_DISPLAY = {};
+    Object.keys(METRIC_LABEL).forEach(k => { FIELD_DISPLAY[k] = METRIC_LABEL[k] + ' (' + k + ')'; });
+    FIELD_DISPLAY['version'] = 'version (版本)';
+    FIELD_DISPLAY['module_name'] = 'module (模块)';
+    FIELD_DISPLAY['project_name'] = 'project (项目)';
+
+    // 渲染完整原始 CSV 行
+    function renderRawCsvRow(rec) {
+        const extra = (rec.extra_fields && typeof rec.extra_fields === 'object') ? rec.extra_fields : {};
+        const rawCsv = extra._raw_csv || {};
+        const colMapping = extra._col_mapping || {};
+        const clockData = extra.clocks || {};
+        const entries = Object.entries(rawCsv);
+
+        const hint = document.getElementById('rawRowHint');
+        const tbody = document.getElementById('rawRowBody');
+        const csvPre = document.getElementById('rawRowCsvText');
+
+        if (entries.length === 0) {
+            hint.textContent = '(该记录未保存原始 CSV 行, 多为旧数据迁移记录)';
+            tbody.innerHTML = '<tr><td colspan="3" class="empty-state">无原始 CSV 数据 (旧记录或非 CSV 导入)</td></tr>';
+            csvPre.textContent = '(空)';
+            return;
+        }
+
+        hint.textContent = `(共 ${entries.length} 个原始列)`;
+
+        // 表格视图渲染
+        tbody.innerHTML = entries.map(([colName, rawVal]) => {
+            // 推断映射关系 (优先使用 _col_mapping)
+            let mappedTo = '<span style="color:#999;">未匹配</span>';
+            let tagStyle = 'background:#f5f5f5;color:#555;';
+            const mapping = colMapping[colName];
+            if (mapping) {
+                if (mapping === 'extra') {
+                    mappedTo = '<span class="tag" style="background:#fff3e0;color:#e65100;">额外字段</span>';
+                    tagStyle = 'background:#fff3e0;color:#e65100;';
+                } else if (mapping.startsWith('clocks.')) {
+                    // clocks.{CLKNAME}.{field_type}
+                    const parts = mapping.split('.');
+                    const clkName = parts[1] || '';
+                    const ftype = parts[2] || '';
+                    mappedTo = `<span class="tag" style="background:#e3f2fd;color:#1565c0;">多时钟 ${escapeHtml(clkName)}.${escapeHtml(ftype)}</span>`;
+                    tagStyle = 'background:#e3f2fd;color:#1565c0;';
+                } else {
+                    // 标准字段
+                    const label = FIELD_DISPLAY[mapping] || mapping;
+                    mappedTo = `<span class="tag tag-success">${escapeHtml(label)}</span>`;
+                    tagStyle = 'background:#e8f5e9;color:#2e7d32;';
+                }
+            } else if (extra[colName] !== undefined && extra[colName] !== null) {
+                // 备用: 列名直接出现在 extra_fields 中
+                mappedTo = '<span class="tag" style="background:#fff3e0;color:#e65100;">额外字段</span>';
+                tagStyle = 'background:#fff3e0;color:#e65100;';
+            } else {
+                // 通过值匹配标准字段 (兜底, 旧数据无 _col_mapping)
+                const matchedField = Object.keys(FIELD_DISPLAY).find(k =>
+                    rec[k] != null && String(rec[k]) === rawVal
+                    && k !== 'version' && k !== 'module_name' && k !== 'project_name'
+                );
+                if (matchedField) {
+                    mappedTo = `<span class="tag tag-success">${escapeHtml(FIELD_DISPLAY[matchedField])}</span>`;
+                    tagStyle = 'background:#e8f5e9;color:#2e7d32;';
+                }
+            }
+            // 空值显示
+            const valDisplay = (rawVal === '' || rawVal == null)
+                ? '<span style="color:#bbb;font-style:italic;">(空)</span>'
+                : escapeHtml(rawVal);
+            return `<tr>
+                <td><span class="tag" style="${tagStyle} font-family:monospace;">${escapeHtml(colName)}</span></td>
+                <td style="font-family:monospace; font-size:12px; word-break:break-all;">${valDisplay}</td>
+                <td>${mappedTo}</td>
+            </tr>`;
+        }).join('');
+
+        // CSV 文本视图渲染 (完整 CSV: 表头 + 数据行)
+        const headers = entries.map(([k]) => k);
+        const values = entries.map(([_, v]) => {
+            // CSV 转义: 含逗号/引号/换行的值用引号包裹, 引号转义为 ""
+            if (v == null) return '';
+            const s = String(v);
+            if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+                return '"' + s.replace(/"/g, '""') + '"';
+            }
+            return s;
+        });
+        csvPre.textContent = headers.join(',') + '\n' + values.join(',');
+
+        // 增强: 列宽拖拽 + 列隐藏 + 行搜索
+        if (window.TBLX) {
+            const t = document.getElementById('rawRowTable');
+            if (t) { t.dataset.tblx = 'qor_rawRow'; window.TBLX.enhance(t); }
+        }
+    }
+
+    // 切换原始 CSV 行的视图 (表格 / CSV 文本)
+    function switchRawRowTab(mode) {
+        const tableBtn = document.getElementById('rawRowTabTable');
+        const csvBtn = document.getElementById('rawRowTabCsv');
+        const tableView = document.getElementById('rawRowTableView');
+        const csvView = document.getElementById('rawRowCsvView');
+        if (mode === 'table') {
+            tableView.style.display = 'block';
+            csvView.style.display = 'none';
+            tableBtn.style.background = 'var(--color-surface)';
+            tableBtn.style.color = 'var(--color-text)';
+            tableBtn.style.borderBottom = '2px solid var(--color-primary)';
+            tableBtn.style.fontWeight = '600';
+            csvBtn.style.background = 'transparent';
+            csvBtn.style.color = 'var(--color-text-secondary)';
+            csvBtn.style.borderBottom = 'none';
+            csvBtn.style.fontWeight = 'normal';
+        } else {
+            tableView.style.display = 'none';
+            csvView.style.display = 'block';
+            csvBtn.style.background = 'var(--color-surface)';
+            csvBtn.style.color = 'var(--color-text)';
+            csvBtn.style.borderBottom = '2px solid var(--color-primary)';
+            csvBtn.style.fontWeight = '600';
+            tableBtn.style.background = 'transparent';
+            tableBtn.style.color = 'var(--color-text-secondary)';
+            tableBtn.style.borderBottom = 'none';
+            tableBtn.style.fontWeight = 'normal';
+        }
+    }
+
+    // ========== Release 目录展示与编辑 ==========
+    function renderReleaseDir(rec) {
+        const codeEl = document.getElementById('pathReleaseDir');
+        const statusEl = document.getElementById('releaseDirStatus');
+        const hintEl = document.getElementById('releaseDirHint');
+        const eff = rec.release_dir_effective || rec.full_dir || '';
+        codeEl.textContent = eff || '(空)';
+        if (rec.release_dir) {
+            // 用户已显式提供
+            codeEl.style.color = '#2e7d32';
+            hintEl.innerHTML = '✅ 已显式设置 release_dir (有效路径: <code style="font-size:11px;">' +
+                escapeHtml(rec.release_dir) + '</code>)';
+        } else if (rec.full_dir) {
+            // fallback 状态
+            codeEl.style.color = '#e65100';
+            hintEl.innerHTML = '⚠️ 未提供 release_dir, 当前以 full_dir 兜底: <code style="font-size:11px;">' +
+                escapeHtml(rec.full_dir) + '</code>. ' +
+                '<span style="color:#1976d2; cursor:pointer; text-decoration:underline;" onclick="editReleaseDir()">点此设置</span>';
+        } else {
+            // 无 full_dir 也无 release_dir
+            codeEl.style.color = '#999';
+            hintEl.innerHTML = 'ℹ️ 无 full_dir 也无 release_dir. 发布前请先设置.';
+        }
+        if (rec.is_released) {
+            statusEl.textContent = '已发布';
+            statusEl.style.background = '#e8f5e9';
+            statusEl.style.color = '#2e7d32';
+        } else {
+            statusEl.textContent = '未发布';
+            statusEl.style.background = '#e0e0e0';
+            statusEl.style.color = '#666';
+        }
+    }
+
+    // 渲染版本描述
+    function renderVersionDescription(rec) {
+        const el = document.getElementById('versionDescriptionContent');
+        if (!el) return;
+        if (rec.version_description && rec.version_description.trim()) {
+            el.textContent = rec.version_description;
+            el.style.color = 'var(--color-text)';
+            el.style.fontStyle = 'normal';
+        } else {
+            el.textContent = '(未设置) 点击右侧编辑添加版本描述...';
+            el.style.color = 'var(--color-text-secondary)';
+            el.style.fontStyle = 'italic';
+        }
+    }
+
+    // 编辑版本描述 (owner 可填, viewer 只读, 数据结构无法统一, 专门为此场景而设)
+    // 多行: 支持 textarea 换行 (Ctrl+Enter 提交, Esc 取消)
+    async function editVersionDescription() {
+        const rec = window._record;
+        if (!rec) return;
+        const current = rec.version_description || '';
+        AppUI.inputDialog({
+            title: '编辑版本描述',
+            label: '请输入版本描述 (特点/改动/注意事项), 支持多行:',
+            defaultValue: current,
+            placeholder: '例如:\n  · 修复 hold 违例\n  · 优化 IR drop\n  · 新增模块 X',
+            multiline: true,
+            rows: 8,
+            submitLabel: '保存',
+            onSubmit: async function (input) {
+                if (input === undefined) return; // 取消
+                const newVal = input.replace(/\r\n/g, '\n').trim();
+                try {
+                    const resp = await fetch(`/api/admin/qor/${rec.id}/description`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ description: newVal })
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        const msg = err.error || `HTTP ${resp.status}`;
+                        alert('修改失败: ' + msg + (err.must_change_password
+                            ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
+                        return;
+                    }
+                    const r = await resp.json();
+                    rec.version_description = r.version_description || '';
+                    window._record = rec;
+                    renderVersionDescription(rec);
+                    AppUI.toast('✓ 版本描述已更新', 'success');
+                } catch (e) {
+                    console.error('editVersionDescription error:', e);
+                    alert('修改出错: ' + e.message + '\n(请检查网络/服务是否正常)');
+                }
+            }
+        });
+    }
+
+    // 编辑 release_dir (调用独立 API, 不影响 is_released)
+    // 多行: 支持 textarea 换行 (Ctrl+Enter 提交, Esc 取消)
+    // 提交时取首行 (trim 后第一个非空行) 作为 release_dir, 其它行作为备注保留在 placeholder
+    async function editReleaseDir() {
+        const rec = window._record;
+        if (!rec) return;
+        const current = rec.release_dir || '';
+        // 编辑时, 把当前 release_dir 放进 textarea 第一行
+        // 用户可以在后面追加备注 (保存时只取首行)
+        AppUI.inputDialog({
+            title: '编辑 Release 目录',
+            label: '请输入 release_dir (对外发布目录). 留空字符串将清空, 后续以 full_dir 兜底.',
+            defaultValue: current,
+            placeholder: '/test/dir/from/api/dfdfdf\n\n支持多行说明 (如备注/注意事项), 提交时只取首行作为 release_dir',
+            multiline: true,
+            rows: 5,
+            submitLabel: '保存',
+            onSubmit: async function (input) {
+                if (input === undefined) return; // 取消
+                // 取首行非空内容
+                const lines = (input || '').split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 0);
+                const newVal = lines.length > 0 ? lines[0] : '';
+                try {
+                    const resp = await fetch(`/api/admin/qor/${rec.id}/release_dir`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ release_dir: newVal })
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        const msg = err.error || `HTTP ${resp.status}`;
+                        alert('修改失败: ' + msg + (err.must_change_password
+                            ? '\n\n请先到 修改密码 页面修改密码后再试.' : ''));
+                        return;
+                    }
+                    const r = await resp.json();
+                    // 更新本地记录
+                    rec.release_dir = r.release_dir || '';
+                    rec.release_dir_effective = r.release_dir_effective || rec.full_dir || '';
+                    window._record = rec;
+                    renderReleaseDir(rec);
+                    renderVersionDescription(rec);
+                    AppUI.toast('✓ release_dir 已更新: ' + (r.release_dir || '(空, fallback 到 full_dir)'), 'success');
+                } catch (e) {
+                    console.error('editReleaseDir error:', e);
+                    alert('修改出错: ' + e.message + '\n(请检查网络/服务是否正常)');
+                }
+            }
+        });
+    }
+
+    function copyRawCsvRow() {
+        const rec = window._record;
+        if (!rec) return;
+        const extra = (rec.extra_fields && typeof rec.extra_fields === 'object') ? rec.extra_fields : {};
+        const rawCsv = extra._raw_csv || {};
+        const entries = Object.entries(rawCsv);
+        if (entries.length === 0) {
+            AppUI.toast('无可复制的原始 CSV 数据', 'error');
+            return;
+        }
+        const headers = entries.map(([k]) => k);
+        const values = entries.map(([_, v]) => {
+            if (v == null) return '';
+            const s = String(v);
+            if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+                return '"' + s.replace(/"/g, '""') + '"';
+            }
+            return s;
+        });
+        const text = headers.join(',') + '\n' + values.join(',');
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(text).then(() => {
+                AppUI.toast('✓ 已复制原始 CSV 行 (含表头)', 'success');
+            }, () => fallbackCopy(text));
+        } else {
+            fallbackCopy(text);
+        }
+    }
+
+    // 下载完整原始 CSV 行为 .csv 文件
+    function downloadRawCsvRow() {
+        const rec = window._record;
+        if (!rec) return;
+        const extra = (rec.extra_fields && typeof rec.extra_fields === 'object') ? rec.extra_fields : {};
+        const rawCsv = extra._raw_csv || {};
+        const entries = Object.entries(rawCsv);
+        if (entries.length === 0) {
+            AppUI.toast('无可下载的原始 CSV 数据', 'error');
+            return;
+        }
+        const headers = entries.map(([k]) => k);
+        const values = entries.map(([_, v]) => {
+            if (v == null) return '';
+            const s = String(v);
+            if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+                return '"' + s.replace(/"/g, '""') + '"';
+            }
+            return s;
+        });
+        const text = headers.join(',') + '\n' + values.join(',');
+        const blob = new Blob([text], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `qor_record_${rec.id}_${(rec.version || 'v1').replace(/[^\w-]/g, '_')}_raw.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        AppUI.toast('已下载: ' + a.download, 'success');
+    }
+
+    // 复制原始 CSV JSON 到剪贴板
+    function copyOriginalCsv() {
+        const r = window._record;
+        if (!r) return;
+        const text = JSON.stringify(r.extra_fields || {}, null, 2);
+        AppUI.copyText(text).then(() => AppUI.toast('✓ 已复制 extra_fields JSON', 'success'));
+    }
+    function fallbackCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); AppUI.toast('✓ 已复制', 'success'); }
+        catch (e) { AppUI.toast('复制失败: ' + e.message, 'error'); }
+        document.body.removeChild(ta);
+    }
+    // 下载完整记录为 JSON 文件
+    function downloadOriginalCsv() {
+        const r = window._record;
+        if (!r) return;
+        const text = JSON.stringify(r, null, 2);
+        const blob = new Blob([text], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `qor_record_${r.id}_${(r.version || 'v1').replace(/[^\w-]/g, '_')}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        AppUI.toast('✓ 已下载: ' + a.download, 'success');
+    }
+    // 轻量 toast 提示 (统一调用 AppUI.toast)
+
+    loadDetail();
+</script>
+{% endblock %}

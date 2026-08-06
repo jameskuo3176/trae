@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qor-recorder.example.com/schemas/qor_upload.v1.json",
+  "title": "QoR Upload",
+  "description": "QoR Recorder 上传 JSON 格式 (v1.0, 2026-07-30)",
+  "type": "object",
+  "required": ["schema_version", "upload", "records"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "主版本.次版本, 当前仅支持 1.x"
+    },
+    "upload": {
+      "type": "object",
+      "required": ["project_id", "version"],
+      "properties": {
+        "project_id":     { "type": "integer", "minimum": 1 },
+        "project_name":   { "type": "string", "maxLength": 64 },
+        "version":        { "type": "string", "minLength": 1, "maxLength": 64 },
+        "module_name":    { "type": "string", "maxLength": 128 },
+        "module_id":      { "type": "integer", "minimum": 1 },
+        "mark_released":  { "type": "boolean" },
+        "full_dir":       { "type": "string", "maxLength": 1024 },
+        "release_dir":    { "type": "string", "maxLength": 1024 },
+        "uploader_note":  { "type": "string", "maxLength": 1024 }
+      },
+      "additionalProperties": false
+    },
+    "records": {
+      "type": "array", "minItems": 1,
+      "items": { "$ref": "#/$defs/record" }
+    },
+    "violation_paths": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/violation_path" }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/note_group" }
+    },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "record": {
+      "type": "object",
+      "required": ["module_name"],
+      "properties": {
+        "module_name":          { "type": "string", "maxLength": 128 },
+        "version":              { "type": "string", "maxLength": 64 },
+        "version_description":  { "type": "string", "maxLength": 1024 },
+        "full_dir":             { "type": "string", "maxLength": 1024 },
+        "release_dir":          { "type": "string", "maxLength": 1024 },
+        "source_file":          { "type": "string", "maxLength": 1024 },
+        "comment":              { "type": "string", "maxLength": 1024 },
+        "area":                 { "$ref": "#/$defs/area" },
+        "timing":               { "$ref": "#/$defs/timing" },
+        "power":                { "$ref": "#/$defs/power" },
+        "cells":                { "$ref": "#/$defs/cells" },
+        "frequency":            { "$ref": "#/$defs/frequency" },
+        "ratios":               { "$ref": "#/$defs/ratios" },
+        "congestion":           { "$ref": "#/$defs/congestion" },
+        "clocks":               { "type": "object", "additionalProperties": { "$ref": "#/$defs/clock" } },
+        "extra":                { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": false
+    },
+    "area": {
+      "type": "object",
+      "properties": {
+        "total":         { "type": "number", "minimum": 0, "maximum": 1e9 },
+        "combinational": { "type": "number", "minimum": 0, "maximum": 1e9 },
+        "sequential":    { "type": "number", "minimum": 0, "maximum": 1e9 },
+        "black_box":     { "type": "number", "minimum": 0, "maximum": 1e9 },
+        "macro":         { "type": "number", "minimum": 0, "maximum": 1e9 }
+      },
+      "additionalProperties": false
+    },
+    "timing": {
+      "type": "object",
+      "properties": {
+        "setup": { "$ref": "#/$defs/timing_endpoint" },
+        "hold":  { "$ref": "#/$defs/timing_endpoint" }
+      },
+      "additionalProperties": false
+    },
+    "timing_endpoint": {
+      "type": "object",
+      "properties": {
+        "wns": { "type": "number", "minimum": -1e6, "maximum": 1e6 },
+        "tns": { "type": "number", "minimum": -1e9, "maximum": 1e9 },
+        "nvp": { "type": "integer", "minimum": 0, "maximum": 1e9 }
+      },
+      "additionalProperties": false
+    },
+    "power": {
+      "type": "object",
+      "properties": {
+        "internal":  { "type": "number", "minimum": 0, "maximum": 1e6 },
+        "switching": { "type": "number", "minimum": 0, "maximum": 1e6 },
+        "leakage":   { "type": "number", "minimum": 0, "maximum": 1e6 },
+        "total":     { "type": "number", "minimum": 0, "maximum": 1e6 }
+      },
+      "additionalProperties": false
+    },
+    "cells": {
+      "type": "object",
+      "properties": {
+        "cell_count":            { "type": "integer", "minimum": 0 },
+        "instance_count":        { "type": "integer", "minimum": 0 },
+        "net_count":             { "type": "integer", "minimum": 0 },
+        "sequential_cell_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "frequency": {
+      "type": "object",
+      "properties": {
+        "target":   { "type": "number", "minimum": 0, "maximum": 1e6 },
+        "achieved": { "type": "number", "minimum": 0, "maximum": 1e6 }
+      },
+      "additionalProperties": false
+    },
+    "ratios": {
+      "type": "object",
+      "properties": {
+        "mbb_ratio":          { "type": "number", "minimum": 0, "maximum": 1 },
+        "clock_gating_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "utilization":        { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "congestion": {
+      "type": "object",
+      "properties": {
+        "h":   { "type": "number", "minimum": 0, "maximum": 1 },
+        "v":   { "type": "number", "minimum": 0, "maximum": 1 },
+        "b":   { "type": "number", "minimum": 0, "maximum": 1 },
+        "max": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "clock": {
+      "type": "object",
+      "properties": {
+        "period": { "type": "number", "minimum": 0, "maximum": 1e3 },
+        "wns":    { "type": "number", "minimum": -1e3, "maximum": 1e3 },
+        "tns":    { "type": "number", "minimum": -1e3, "maximum": 1e3 },
+        "path":   { "type": "string",  "maxLength": 1024 }
+      },
+      "additionalProperties": false
+    },
+    "violation_path": {
+      "type": "object",
+      "required": ["module_name", "timing_group", "slack", "startpoint", "endpoint"],
+      "properties": {
+        "module_name":   { "type": "string", "maxLength": 128 },
+        "timing_group":  { "type": "string", "maxLength": 128 },
+        "type":          { "type": "string", "enum": ["setup", "hold"] },
+        "slack":         { "type": "number" },
+        "startpoint":    { "type": "string", "maxLength": 256 },
+        "endpoint":      { "type": "string", "maxLength": 256 },
+        "depth":         { "type": "integer", "minimum": 0 },
+        "pure_depth":    { "type": "integer", "minimum": 0 },
+        "cell_delay":    { "type": "number", "minimum": 0 },
+        "net_delay":     { "type": "number", "minimum": 0 },
+        "et_slack":      { "type": "number" },
+        "st_slack":      { "type": "number" },
+        "st_fanin":      { "type": "integer", "minimum": 0 },
+        "st_fanout":     { "type": "integer", "minimum": 0 },
+        "et_fanin":      { "type": "integer", "minimum": 0 },
+        "et_fanout":     { "type": "integer", "minimum": 0 },
+        "clock_domain":  { "type": "string", "maxLength": 128 },
+        "extra":         { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": false
+    },
+    "note_group": {
+      "type": "object",
+      "required": ["module_name", "items"],
+      "properties": {
+        "module_name": { "type": "string", "maxLength": 128 },
+        "full_dir":    { "type": "string", "maxLength": 1024 },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["item"],
+            "properties": {
+              "category":    { "type": "string", "maxLength": 64 },
+              "item":        { "type": "string", "maxLength": 128 },
+              "value":       { "type": "string", "maxLength": 1024 },
+              "unit":        { "type": "string", "maxLength": 32 },
+              "description": { "type": "string", "maxLength": 1024 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,5 @@
+tag,full_dir,comment,reg_count,comb_count,macro_count,total_count,reg_area,comb_area,macro_area,stdcell_area,total_area,no_clock,unconstraint,SYS_CLK_period,SYS_CLK_wns,SYS_CLK_tns,SYS_CLK_path
+run_20260102,/proj/decoder/module_ctrl/v1,baseline,80,420,0,500,96.0,252.0,0.0,348.0,348.0,0,0,1.8,-0.05,-0.08,2
+run_20260112,/proj/decoder/module_ctrl/v2,added enable,88,440,0,528,105.6,264.0,0.0,369.6,369.6,0,0,1.8,0.02,0.0,0
+run_20260122,/proj/decoder/module_ctrl/v3,cleanup,86,432,0,518,103.2,259.2,0.0,362.4,362.4,0,0,1.8,0.08,0.0,0
+run_20260202,/proj/decoder/module_ctrl/v4,final,85,430,0,515,102.0,258.0,0.0,360.0,360.0,0,0,1.8,0.15,0.0,0
