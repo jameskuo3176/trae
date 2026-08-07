@@ -681,6 +681,8 @@
     let allProjects = [];
     let currentData = [];
     let charts = {};
+    let _dashboardDataAbortController = null;
+    let _dashboardDataRequestSeq = 0;
 
     const COLORS = ['#1a237e', '#e91e63', '#00838f', '#ff8f00', '#43a047', '#5e35b1', '#6d4c41', '#00897b'];
 
@@ -1142,7 +1144,7 @@
             modCount += p.module_count;
             recCount += p.modules.reduce((sum, m) => sum + m.record_count, 0);
             p.modules.forEach(m => {
-                modSelect.innerHTML += `<option value="${m.id}">${p.name} / ${m.name} (${m.record_count})</option>`;
+                modSelect.innerHTML += `<option value="${p.id}:${m.id}">${p.name} / ${m.name} (${m.record_count})</option>`;
             });
         });
 
@@ -1150,29 +1152,45 @@
         document.getElementById('statRecords').textContent = recCount;
     }
 
+    let _refreshVersionsInProgress = false;
+    let _refreshVersionsSeq = 0;
+
     async function refreshVersions() {
         const sel = document.getElementById('filterVersion');
-        // 保留已选中的 tag
-        const previouslySelected = Array.from(sel.selectedOptions).map(o => o.value);
+        const mySeq = ++_refreshVersionsSeq;
 
         const params = new URLSearchParams();
         const projId = document.getElementById('filterProject').value;
         const selectedModules = getMultiSelectValues('Modules').filter(Boolean);
 
         if (selectedModules.length > 0) {
-            params.set('module_ids', selectedModules.join(','));
+            params.set('module_ids', _extractModuleIds(selectedModules).join(','));
+            const derivedProjectIds = _resolveProjectIdsForModules(selectedModules);
+            if (derivedProjectIds.length > 0) {
+                params.set('project_ids', derivedProjectIds.join(','));
+            }
         } else if (projId) {
             params.set('project_ids', projId);
         }
 
         const resp = await fetch('/api/versions?' + params.toString());
         const versions = await resp.json();
+
+        // 如果在此期间又有新的 refreshVersions 启动, 丢弃本次结果
+        if (mySeq !== _refreshVersionsSeq) {
+            console.log('[Filter] 版本列表请求 #%d 已过期, 丢弃', mySeq);
+            return;
+        }
+
+        // 在清空之前重新读取当前选中状态, 防止用户在 fetch 期间做的选择被覆盖
+        const currentSelected = Array.from(sel.selectedOptions).map(o => o.value);
+
         sel.innerHTML = '';
         versions.forEach(v => {
             const opt = document.createElement('option');
             opt.value = v;
             opt.textContent = v;
-            if (previouslySelected.includes(v)) opt.selected = true;
+            if (currentSelected.includes(v)) opt.selected = true;
             sel.appendChild(opt);
         });
         renderVersionSelected();
@@ -1186,7 +1204,7 @@
         allProjects.forEach(p => {
             if (!projId || p.id == projId) {
                 p.modules.forEach(m => {
-                    modSelect.innerHTML += `<option value="${m.id}">${p.name} / ${m.name} (${m.record_count})</option>`;
+                    modSelect.innerHTML += `<option value="${p.id}:${m.id}">${p.name} / ${m.name} (${m.record_count})</option>`;
                 });
             }
         });
@@ -1417,12 +1435,14 @@
         const verSelect = document.getElementById('filterVersion');
         Array.from(verSelect.options).forEach(opt => opt.selected = true);
         renderVersionSelected();
+        loadDashboardData();
     }
 
     function clearVersionSelection() {
         const verSelect = document.getElementById('filterVersion');
         Array.from(verSelect.options).forEach(opt => opt.selected = false);
         renderVersionSelected();
+        loadDashboardData();
     }
 
     function clearDirPrefix() {
@@ -1438,7 +1458,8 @@
         const params = new URLSearchParams();
         const projId = document.getElementById('filterProject').value;
         const modSelect = document.getElementById('filterModules');
-        const selectedModules = Array.from(modSelect.selectedOptions).map(o => o.value).filter(Boolean);
+        const selectedModuleValues = Array.from(modSelect.selectedOptions).map(o => o.value).filter(Boolean);
+        const selectedModules = _extractModuleIds(selectedModuleValues);
         const selectedVersions = Array.from(document.getElementById('filterVersion').selectedOptions).map(o => o.value).filter(Boolean);
         const dirPrefix = document.getElementById('filterDirPrefix').value.trim();
 
@@ -1450,40 +1471,48 @@
             _lastFilterFingerprint = newFingerprint;
             _dcReportSelectedIds.clear();
             _dcReportBaselineId = null;
-            // 更新 DC 报告视图为加载状态
             _showDcLoading();
         }
 
         // ── 路径分离: 目录过滤 vs 模块/版本过滤 ──
         if (dirPrefix) {
-            // ====== 路径 A: 目录前缀过滤 ======
             console.log('[Filter] 目录过滤模式: dir_prefix=%s', dirPrefix);
             console.log('[Filter] 附加过滤: modules=%s, versions=%s',
                 selectedModules.length > 0 ? selectedModules.join(',') : '(全部)',
                 selectedVersions.length > 0 ? selectedVersions.join(',') : '(全部)');
 
-            // 项目 ID 始终作为基础限定
-            if (projId) {
+            if (selectedModules.length > 0) {
+                const derivedProjectIds = _resolveProjectIdsForModules(selectedModuleValues);
+                if (derivedProjectIds.length > 0) {
+                    params.set('project_ids', derivedProjectIds.join(','));
+                } else if (projId) {
+                    params.set('project_ids', projId);
+                } else if (allProjects.length > 0) {
+                    params.set('project_ids', allProjects[0].id);
+                }
+                params.set('module_ids', selectedModules.join(','));
+            } else if (projId) {
                 params.set('project_ids', projId);
             } else if (allProjects.length > 0) {
                 params.set('project_ids', allProjects[0].id);
             }
-            // 目录前缀作为主过滤条件
             params.set('dir_prefix', dirPrefix);
-            // 模块/版本作为附加过滤 (如有选择)
-            if (selectedModules.length > 0) params.set('module_ids', selectedModules.join(','));
             if (selectedVersions.length > 0) params.set('versions', selectedVersions.join(','));
 
-            // 视觉状态: 显示目录过滤标记
             document.getElementById('clearDirPrefixBtn').style.display = '';
             document.getElementById('dirFilterBadge').style.display = '';
 
         } else {
-            // ====== 路径 B: 模块/版本过滤 (默认) ======
             console.log('[Filter] 模块/版本过滤模式 (目录过滤为空)');
 
             if (selectedModules.length > 0) {
                 params.set('module_ids', selectedModules.join(','));
+                const derivedProjectIds = _resolveProjectIdsForModules(selectedModuleValues);
+                if (derivedProjectIds.length > 0) {
+                    params.set('project_ids', derivedProjectIds.join(','));
+                    console.log('[Filter] modules=%s, derived project_ids=%s',
+                        selectedModules.join(','), derivedProjectIds.join(','));
+                }
                 console.log('[Filter] modules=%s', selectedModules.join(','));
             } else if (projId) {
                 params.set('project_ids', projId);
@@ -1497,14 +1526,41 @@
                 console.log('[Filter] versions=%s', selectedVersions.join(','));
             }
 
-            // 视觉状态: 隐藏目录过滤标记
             document.getElementById('clearDirPrefixBtn').style.display = 'none';
             document.getElementById('dirFilterBadge').style.display = 'none';
         }
 
-        const resp = await fetch('/api/qor_data?' + params.toString());
-        currentData = await resp.json();
-        console.log('[Filter] 数据加载完成: %d 条记录', currentData.length);
+        // ── 取消上一次未完成的请求, 防止后发先至导致数据错乱 ──
+        if (_dashboardDataAbortController) {
+            _dashboardDataAbortController.abort();
+        }
+        _dashboardDataAbortController = new AbortController();
+        const thisSeq = ++_dashboardDataRequestSeq;
+        const requestUrl = '/api/qor_data?' + params.toString();
+        console.log('[Filter] 请求 #%d: %s', thisSeq, requestUrl);
+
+        let data;
+        try {
+            const resp = await fetch(requestUrl, { signal: _dashboardDataAbortController.signal });
+            data = await resp.json();
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                console.log('[Filter] 请求 #%d 已被新请求取消', thisSeq);
+                return;
+            }
+            console.error('[Filter] 数据加载失败:', e);
+            _hideDcLoading();
+            return;
+        }
+
+        // 如果此请求已被更新的请求取代, 丢弃结果
+        if (thisSeq !== _dashboardDataRequestSeq) {
+            console.log('[Filter] 请求 #%d 已过期 (当前 #%d), 丢弃结果', thisSeq, _dashboardDataRequestSeq);
+            return;
+        }
+
+        currentData = data;
+        console.log('[Filter] 数据加载完成: %d 条记录 (请求 #%d)', currentData.length, thisSeq);
 
         try { renderAreaChart(); } catch (e) { console.error('renderAreaChart error:', e); }
         try { renderTimingChart(); } catch (e) { console.error('renderTimingChart error:', e); }
@@ -1515,19 +1571,45 @@
         try { renderClockGatingChart(); } catch (e) { console.error('renderClockGatingChart error:', e); }
         try { renderUtilizationChart(); } catch (e) { console.error('renderUtilizationChart error:', e); }
         try { renderCongestionChart(); } catch (e) { console.error('renderCongestionChart error:', e); }
-        // 加载 DC 报告分类视图 (默认视图, 左侧导航 + 分类卡片, 多 run 对比)
         try { renderDcReportSections(); } catch (e) { console.error('renderDcReportSections error:', e); }
-        // 加载违例路径
         initViolationPanels();
-        // 加载 Run 备注面板
         initNotesPanel();
 
-        // 隐藏 DC 报告加载状态
         _hideDcLoading();
     }
 
     function getFilteredData() {
         return currentData;
+    }
+
+    function _parseModuleValue(val) {
+        const s = String(val);
+        const idx = s.indexOf(':');
+        if (idx > 0) {
+            return { projectId: s.substring(0, idx), moduleId: s.substring(idx + 1) };
+        }
+        return { projectId: null, moduleId: s };
+    }
+
+    function _resolveProjectIdsForModules(selectedModuleValues) {
+        if (!selectedModuleValues || selectedModuleValues.length === 0) return [];
+        const projectIds = new Set();
+        selectedModuleValues.forEach(v => {
+            const parsed = _parseModuleValue(v);
+            if (parsed.projectId) projectIds.add(parsed.projectId);
+        });
+        if (projectIds.size > 0) return Array.from(projectIds);
+        const idSet = new Set(selectedModuleValues.map(String));
+        allProjects.forEach(p => {
+            p.modules.forEach(m => {
+                if (idSet.has(String(m.id))) projectIds.add(p.id);
+            });
+        });
+        return Array.from(projectIds);
+    }
+
+    function _extractModuleIds(selectedModuleValues) {
+        return selectedModuleValues.map(v => _parseModuleValue(v).moduleId);
     }
 
     // 图表用数据源: 优先使用 DC 报告面板的勾选状态, 未勾选时退化为全部过滤后数据

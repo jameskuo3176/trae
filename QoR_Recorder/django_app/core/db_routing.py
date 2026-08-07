@@ -370,6 +370,37 @@ def _resolve_project_ids(project_ids_str=''):
     return [d['project_id'] for d in dbs]
 
 
+def _map_module_ids_to_projects(module_id_set, proj_id_list=None):
+    """批量查找 module ID 所属的项目, 返回 {project_id: set(module_id)}
+
+    由于每个项目库的 module ID 独立自增, 同一 ID 可能存在于多个项目中,
+    此函数返回每个项目中实际存在的 module ID 集合 (不做互斥分配).
+    """
+    from django.apps import apps
+    Module = apps.get_model('core', 'Module')
+
+    if proj_id_list is None:
+        proj_id_list = _resolve_project_ids()
+
+    project_module_map = {}
+
+    for pid in proj_id_list:
+        alias = _get_project_db_alias(pid)
+        try:
+            get_project_engine(pid)
+            found = set(
+                Module.objects.using(alias)
+                .filter(id__in=list(module_id_set))
+                .values_list('id', flat=True)
+            )
+            if found:
+                project_module_map[pid] = found
+        except OperationalError:
+            continue
+
+    return project_module_map
+
+
 def query_records_by_projects(
     proj_id_list=None,
     module_ids_str='',
@@ -405,19 +436,33 @@ def query_records_by_projects(
     from django.apps import apps
     QorRecord = apps.get_model('core', 'QorRecord')
 
+    # 当指定了 module_ids 时, 必须先解析每个 module 属于哪个项目,
+    # 因为各项目库的 module ID 独立自增, 直接用 module_id__in 在所有
+    # 项目中过滤会误匹配其他项目中相同 ID 的模块.
+    project_module_map = None
+    if mod_id_filter:
+        project_module_map = _map_module_ids_to_projects(mod_id_filter, proj_id_list)
+        # 只查询实际包含所选模块的项目
+        query_proj_list = [pid for pid in proj_id_list if pid in project_module_map]
+    else:
+        query_proj_list = list(proj_id_list)
+
     all_records = []
-    for pid in proj_id_list:
+    for pid in query_proj_list:
         set_current_project_id(pid)
         alias = _get_project_db_alias(pid)
-        # 确保连接已注册
         get_project_engine(pid)
 
         try:
             qs = QorRecord.objects.using(alias).all()
             if release_only:
                 qs = qs.filter(is_released=True)
-            if mod_id_filter:
-                qs = qs.filter(module_id__in=mod_id_filter)
+            if mod_id_filter and project_module_map:
+                # 仅使用该项目中实际存在的 module ID 子集
+                pid_mods = project_module_map.get(pid, set())
+                if not pid_mods:
+                    continue
+                qs = qs.filter(module_id__in=pid_mods)
             if ver_filter:
                 qs = qs.filter(version__in=ver_filter)
             if owner_id is not None:
