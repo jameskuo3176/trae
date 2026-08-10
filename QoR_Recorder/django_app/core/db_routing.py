@@ -451,7 +451,10 @@ def query_records_by_projects(
     for pid in query_proj_list:
         set_current_project_id(pid)
         alias = _get_project_db_alias(pid)
-        get_project_engine(pid)
+        try:
+            get_project_engine(pid)
+        except Exception:
+            continue
 
         try:
             qs = QorRecord.objects.using(alias).all()
@@ -473,6 +476,8 @@ def query_records_by_projects(
             qs = qs.order_by(order)[:limit]
             all_records.extend(list(qs))
         except OperationalError:
+            continue
+        except Exception:
             continue
 
     # 跨项目排序

@@ -1,0 +1,19 @@
+:root {
+  --color-primary: #00d4ff;
+  --color-primary-gradient-end: #7b2ff7;
+  --color-background: #0a0e1a;
+  --color-surface: #131829;
+  --color-surface-hover: #1a2138;
+  --color-text: #e6f1ff;
+  --color-text-secondary: #8b9bb4;
+  --color-border: #1f2a44;
+  --color-navbar-text: rgba(230, 241, 255, 0.75);
+  --color-navbar-text-active: #00d4ff;
+  --glow-primary: 0 0 20px rgba(0, 212, 255, 0.35);
+  --glass-bg: rgba(19, 24, 41, 0.72);
+  --glass-border: rgba(0, 212, 255, 0.18);
+  --grid-line: rgba(0, 212, 255, 0.04);
+  --neon-cyan: #00d4ff;
+  --neon-purple: #7b2ff7;
+  --neon-pink: #ff2d95;
+}

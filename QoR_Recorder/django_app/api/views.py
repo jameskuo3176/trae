@@ -24,7 +24,7 @@ from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from django.contrib.auth import update_session_auth_hash
+from django.contrib.auth import update_session_auth_hash, login
 from django_app.core.decorators import login_required, api_auth_required
 from django_app.core.security import generate_csrf_token
 from django_app.core.db_routing import (
@@ -159,40 +159,45 @@ def tools_source_files_check_page(request):
 @login_required
 def api_get_projects(request):
     """获取项目列表 (默认排除已隐藏项目)"""
-    include_hidden = request.GET.get('include_hidden', '').lower() in ('1', 'true', 'yes')
-    query = Project.objects.all()
-    if not (include_hidden and request.user.is_admin):
-        query = query.exclude(status='hidden')
-    projects = query.order_by('name')
+    try:
+        include_hidden = request.GET.get('include_hidden', '').lower() in ('1', 'true', 'yes')
+        query = Project.objects.all()
+        if not (include_hidden and request.user.is_admin):
+            query = query.exclude(status='hidden')
+        projects = query.order_by('name')
 
-    result = []
-    for p in projects:
-        db_name = _get_project_db(p.id)
-        try:
-            get_project_engine(p.id)
-            modules = Module.objects.using(db_name).filter(project_id=p.id).order_by('name')
-            module_list = []
-            for m in modules:
-                record_count = QorRecord.objects.using(db_name).filter(module_id=m.id).count()
-                module_list.append({
-                    'id': m.id, 'name': m.name, 'record_count': record_count,
-                })
-        except Exception:
-            module_list = []
+        result = []
+        for p in projects:
+            db_name = _get_project_db(p.id)
+            try:
+                get_project_engine(p.id)
+                modules = Module.objects.using(db_name).filter(project_id=p.id).order_by('name')
+                module_list = []
+                for m in modules:
+                    record_count = QorRecord.objects.using(db_name).filter(module_id=m.id).count()
+                    module_list.append({
+                        'id': m.id, 'name': m.name, 'record_count': record_count,
+                    })
+            except Exception:
+                module_list = []
 
-        result.append({
-            'id': p.id,
-            'name': p.name,
-            'description': p.description,
-            'status': p.status,
-            'is_writable': p.is_writable,
-            'locked_at': p.locked_at.isoformat() if p.locked_at else None,
-            'locked_by_name': p.locked_by.username if p.locked_by else None,
-            'lock_reason': p.lock_reason,
-            'module_count': len(module_list),
-            'modules': module_list,
-        })
-    return JsonResponse(result, safe=False)
+            result.append({
+                'id': p.id,
+                'name': p.name,
+                'description': p.description,
+                'status': p.status,
+                'is_writable': p.is_writable,
+                'locked_at': p.locked_at.isoformat() if p.locked_at else None,
+                'locked_by_name': p.locked_by.username if p.locked_by else None,
+                'lock_reason': p.lock_reason,
+                'module_count': len(module_list),
+                'modules': module_list,
+            })
+        return JsonResponse(result, safe=False)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse([], safe=False)
 
 
 @login_required
@@ -256,36 +261,41 @@ def api_get_module_records(request, project_id, module_id):
 @login_required
 def api_get_qor_data(request):
     """查询 QoR 数据"""
-    project_ids = request.GET.get('project_ids', '')
-    module_ids = request.GET.get('module_ids', '')
-    versions = request.GET.get('versions', '')
-    owner_id = request.GET.get('owner_id', '').strip()
-    owner_username = request.GET.get('owner_username', '').strip()
-    dir_prefix = request.GET.get('dir_prefix', '').strip() or None
+    try:
+        project_ids = request.GET.get('project_ids', '')
+        module_ids = request.GET.get('module_ids', '')
+        versions = request.GET.get('versions', '')
+        owner_id = request.GET.get('owner_id', '').strip()
+        owner_username = request.GET.get('owner_username', '').strip()
+        dir_prefix = request.GET.get('dir_prefix', '').strip() or None
 
-    owner_user_id = None
-    if owner_id and owner_id.isdigit():
-        owner_user_id = int(owner_id)
-    elif owner_username:
-        try:
-            owner_user = User.objects.get(username=owner_username)
-            owner_user_id = owner_user.id
-        except User.DoesNotExist:
-            return JsonResponse([], safe=False)
+        owner_user_id = None
+        if owner_id and owner_id.isdigit():
+            owner_user_id = int(owner_id)
+        elif owner_username:
+            try:
+                owner_user = User.objects.get(username=owner_username)
+                owner_user_id = owner_user.id
+            except User.DoesNotExist:
+                return JsonResponse([], safe=False)
 
-    proj_id_list = _resolve_project_ids(project_ids) or None
-    release_only = request.user.is_viewer
-    records = query_records_by_projects(
-        proj_id_list=proj_id_list,
-        module_ids_str=module_ids,
-        versions_str=versions,
-        owner_id=owner_user_id,
-        release_only=release_only,
-        dir_prefix=dir_prefix,
-        order_desc=True,
-        limit=5000,
-    )
-    return JsonResponse([r.to_dict() for r in records], safe=False)
+        proj_id_list = _resolve_project_ids(project_ids) or None
+        release_only = request.user.is_viewer
+        records = query_records_by_projects(
+            proj_id_list=proj_id_list,
+            module_ids_str=module_ids,
+            versions_str=versions,
+            owner_id=owner_user_id,
+            release_only=release_only,
+            dir_prefix=dir_prefix,
+            order_desc=True,
+            limit=5000,
+        )
+        return JsonResponse([r.to_dict() for r in records], safe=False)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse([], safe=False)
 
 
 @login_required
@@ -2615,6 +2625,9 @@ def api_v1_login(request):
     if not user.check_password(password):
         return JsonResponse({'error': '用户名或密码错误'}, status=401)
 
+    # 创建 Django session，确保 @login_required 端点能识别已认证用户
+    login(request, user)
+
     plaintext = ApiKey.generate_key()
     api_key = ApiKey(
         user=user,
@@ -2629,11 +2642,16 @@ def api_v1_login(request):
     return JsonResponse({
         'api_key': plaintext,
         'api_key_id': api_key.id,
+        'must_change_password': user.must_change_password,
         'user': {
             'id': user.id,
             'username': user.username,
             'role': user.role,
             'display_name': user.display_name,
+            'is_admin': user.is_admin,
+            'is_owner': user.is_owner,
+            'is_release': user.is_release,
+            'is_viewer': user.is_viewer,
         },
     })
 
@@ -2643,10 +2661,16 @@ def api_v1_me(request):
     """API v1 当前用户信息"""
     user = request.user
     return JsonResponse({
-        'id': user.id,
-        'username': user.username,
-        'role': user.role,
-        'display_name': user.display_name,
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'role': user.role,
+            'display_name': user.display_name,
+            'is_admin': user.is_admin,
+            'is_owner': user.is_owner,
+            'is_release': user.is_release,
+            'is_viewer': user.is_viewer,
+        },
         'auth_method': getattr(request, 'auth_method', 'session'),
     })
 

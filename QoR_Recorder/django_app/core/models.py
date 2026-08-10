@@ -601,10 +601,19 @@ class QorRecord(models.Model):
         full_dir = self.full_dir or (extra.get('full_dir', '') if isinstance(extra, dict) else '')
         release_dir_effective = self.release_dir or full_dir
 
+        # 兼容 module 已被删除的孤立记录 (反向访问不存在对象会抛 DoesNotExist)
+        try:
+            module_name = self.module.name
+            project_id = self.module.project_id
+        except Module.DoesNotExist:
+            module_name = None
+            project_id = None
+
         result = {
             'id': self.id,
             'module_id': self.module_id,
-            'module_name': self.module.name if self.module else None,
+            'module_name': module_name,
+            'project_id': project_id,
             'version': self.version,
             'tag': self._compute_tag(),
             'comment': extra.get('comment', '') if isinstance(extra, dict) else '',
