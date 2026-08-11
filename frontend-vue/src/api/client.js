@@ -15,6 +15,10 @@ apiClient.interceptors.request.use(config => {
   const auth = useAuthStore()
   const headers = auth.getAuthHeaders()
   Object.assign(config.headers, headers)
+  const csrfToken = getCsrfToken()
+  if (csrfToken && !['get', 'head', 'options'].includes(config.method?.toLowerCase())) {
+    config.headers['X-CSRFToken'] = csrfToken
+  }
   return config
 })
 
@@ -28,7 +32,19 @@ apiClient.interceptors.response.use(
         window.location.href = '/login'
       }
     }
-    return Promise.reject(error)
+    const payload = error.response?.data?.error
+    const normalized = new Error(
+      payload?.message || error.response?.data?.message || error.message || 'Request failed'
+    )
+    normalized.code = payload?.code || error.code
+    normalized.status = error.response?.status
+    normalized.details = payload?.details || {}
+    normalized.cause = error
+    if (error.name === 'CanceledError' || error.code === 'ERR_CANCELED') {
+      normalized.name = 'CanceledError'
+      normalized.code = 'ERR_CANCELED'
+    }
+    return Promise.reject(normalized)
   }
 )
 

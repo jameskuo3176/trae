@@ -12,14 +12,27 @@ const props = defineProps({
   multiMetrics: { type: Array, default: () => null }
 })
 
-const COLORS = ['#1a237e', '#e91e63', '#00838f', '#ff8f00', '#43a047', '#5e35b1', '#6d4c41', '#00897b']
+const COLORS = [
+  '#1a237e',
+  '#e91e63',
+  '#00838f',
+  '#ff8f00',
+  '#43a047',
+  '#5e35b1',
+  '#6d4c41',
+  '#00897b'
+]
 const dashboard = useDashboardStore()
 
 function getUnifiedValue(r, metric) {
   if (r.raw_dc_report) {
     let raw = r.raw_dc_report
     if (typeof raw === 'string') {
-      try { raw = JSON.parse(raw) } catch { return null }
+      try {
+        raw = JSON.parse(raw)
+      } catch {
+        return null
+      }
     }
     const parts = metric.split('.')
     let val = raw
@@ -59,27 +72,39 @@ const chartOption = computed(() => {
     }))
     return {
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      legend: { data: props.multiMetrics.map(m => m.label || m.key), textStyle: { color: '#8b9bb4' } },
-      xAxis: { type: 'category', data: cats, axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 } },
+      legend: {
+        data: props.multiMetrics.map(m => m.label || m.key),
+        textStyle: { color: '#8b9bb4' }
+      },
+      xAxis: {
+        type: 'category',
+        data: cats,
+        axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
+      },
       yAxis: { type: 'value', name: props.unit, axisLabel: { color: '#8b9bb4' } },
       series
     }
   }
 
   const vals = records.map(r => parseValue(getUnifiedValue(r, props.metric)))
-  const hasData = vals.some(v => v != null)
 
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
     legend: { data: [props.title], textStyle: { color: '#8b9bb4' } },
-    xAxis: { type: 'category', data: cats, axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 } },
+    xAxis: {
+      type: 'category',
+      data: cats,
+      axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
+    },
     yAxis: { type: 'value', name: props.unit, axisLabel: { color: '#8b9bb4' } },
-    series: [{
-      name: props.title,
-      type: 'bar',
-      data: vals,
-      itemStyle: { color: COLORS[props.colorIdx % COLORS.length] }
-    }]
+    series: [
+      {
+        name: props.title,
+        type: 'bar',
+        data: vals,
+        itemStyle: { color: COLORS[props.colorIdx % COLORS.length] }
+      }
+    ]
   }
 })
 </script>

@@ -18,9 +18,11 @@ export const adminApi = {
   },
 
   uploadCsv(formData) {
-    return apiClient.post('/admin/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    }).then(r => r.data)
+    return apiClient
+      .post('/admin/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      .then(r => r.data)
   },
 
   getRecordOwners() {
@@ -52,11 +54,15 @@ export const adminApi = {
   },
 
   updateReleaseDir(recordId, dir) {
-    return apiClient.post(`/admin/qor/${recordId}/release_dir`, { release_dir: dir }).then(r => r.data)
+    return apiClient
+      .post(`/admin/qor/${recordId}/release_dir`, { release_dir: dir })
+      .then(r => r.data)
   },
 
   updateVersionDescription(recordId, desc) {
-    return apiClient.post(`/admin/qor/${recordId}/description`, { description: desc }).then(r => r.data)
+    return apiClient
+      .post(`/admin/qor/${recordId}/description`, { description: desc })
+      .then(r => r.data)
   },
 
   getDashboardConfigs() {

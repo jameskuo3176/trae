@@ -10,13 +10,13 @@
 #   3. 请修改 MYSQL_ROOT_PASSWORD 和 MYSQL_PASSWORD
 # =========================================================================
 
-version: '3.8'
-
 services:
-  qor_recorder:
-    # 覆盖 SQLite 配置, 使用 MySQL
+  django:
+    # Override the relational metadata database; Mongo remains available for
+    # PERSISTENCE_MODE=mongo/hybrid heavy records.
     environment:
-      - DATABASE_URL=mysql+pymysql://qor:${MYSQL_PASSWORD:-qor_password}@mysql:3306/qor_recorder?charset=utf8mb4
+      DB_TYPE: sql
+      DATABASE_URL: mysql+pymysql://qor:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}@mysql:3306/qor_recorder?charset=utf8mb4
     depends_on:
       mysql:
         condition: service_healthy
@@ -26,10 +26,10 @@ services:
     image: mysql:8.0
     container_name: qor_recorder_mysql
     environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root_password}
-      - MYSQL_DATABASE=qor_recorder
-      - MYSQL_USER=qor
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-qor_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: qor_recorder
+      MYSQL_USER: qor
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}
     volumes:
       - qor_mysql_data:/var/lib/mysql
     restart: unless-stopped

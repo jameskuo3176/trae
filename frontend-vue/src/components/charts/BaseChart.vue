@@ -1,7 +1,6 @@
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { useCharts } from '@/composables/useCharts'
-import { useDashboardStore } from '@/stores/dashboard'
 
 const props = defineProps({
   chartId: { type: String, required: true },
@@ -10,8 +9,6 @@ const props = defineProps({
 })
 
 const { initChart, setOption, resize, dispose } = useCharts()
-const dashboard = useDashboardStore()
-
 let chartInitialized = false
 
 function handleResize() {
@@ -36,17 +33,17 @@ onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
 })
 
-watch(() => props.option, () => {
-  renderChart()
-}, { deep: true })
+watch(
+  () => props.option,
+  () => {
+    renderChart()
+  },
+  { deep: true }
+)
 </script>
 
 <template>
-  <div
-    :id="chartId"
-    class="chart-container"
-    :style="{ height: height }"
-  />
+  <div :id="chartId" class="chart-container" :style="{ height: height }" />
 </template>
 
 <style scoped>

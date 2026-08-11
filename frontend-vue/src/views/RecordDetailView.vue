@@ -26,9 +26,7 @@ onMounted(async () => {
     <LoadingSpinner v-if="loading" text="加载记录详情..." />
     <div v-else-if="error" class="error-state">{{ error }}</div>
     <div v-else-if="record" class="card">
-      <div class="card-header">
-        记录详情 #{{ record.id }}
-      </div>
+      <div class="card-header">记录详情 #{{ record.id }}</div>
       <div class="card-body">
         <div class="detail-grid">
           <div class="detail-item">
@@ -56,7 +54,7 @@ onMounted(async () => {
             <span>{{ record.date }}</span>
           </div>
         </div>
-        <div class="metrics-section" v-if="record.metrics">
+        <div v-if="record.metrics" class="metrics-section">
           <h3>指标数据</h3>
           <table class="table">
             <thead>

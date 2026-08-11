@@ -1,6 +1,7 @@
-# QoR Recorder API v1 契约
+# QoR Recorder API v2 契约
 
-> 供 React/Vue 前端及自动化集成消费的纯 REST API。
+> API v2 is the stable SPA contract. Existing `/api/*` and `/api/v1/*`
+> endpoints remain compatibility surfaces.
 
 ## 认证
 
@@ -9,7 +10,11 @@
 | 方式 | 请求头 | 场景 |
 |------|--------|------|
 | API Key | `X-API-Key: qor_xxxxxxxxxxxx` 或 `Authorization: Bearer qor_xxx` | 自动化、SPA |
-| Session | Cookie (Flask-Login) | 浏览器 (兼容现有 Jinja2 UI) |
+| Session | Django session cookie | 浏览器 |
+
+Session-authenticated unsafe requests (`POST`, `PUT`, `PATCH`, `DELETE`) must
+send the `csrftoken` cookie value in `X-CSRFToken`. API v2 does not disable
+Django CSRF protection.
 
 ### 获取 API Key (登录)
 ```http
@@ -35,7 +40,89 @@ X-API-Key: qor_xxx
 
 ---
 
-## 项目管理
+## v2 conventions
+
+- Every success is `{"ok": true, "data": ...}`.
+- Every error is
+  `{"ok": false, "error": {"code": "...", "message": "...", "details": {}}}`.
+- Record, violation, report and note IDs are opaque strings. Never parse them
+  as integers; ORM IDs and Mongo ObjectIds share this representation.
+- Heavy-data requests always carry an explicit `project_id` (query parameter or
+  project path segment). IDs are not globally unique in legacy project DBs.
+- Collections use `page` (1-based) and `page_size` (1..200), returning
+  `pagination: {page, page_size, total, pages}`.
+- Record list/detail omit raw DC text. Fetch it lazily from `/raw`.
+- `version` is server-derived only from normalized `full_dir`: a valid
+  `regr_*` directly before `main` wins, otherwise the last valid `regr_*`
+  segment wins. New imports have no `v1` or request-field fallback.
+
+## Health
+
+`GET /health` is unauthenticated and reports independent SQL and Mongo
+readiness. Mongo is considered ready-but-disabled in ORM mode. A failed enabled
+dependency returns HTTP 503 with `status: "degraded"`.
+
+## Global modules
+
+`GET /api/v2/modules?project_id={id}` returns canonical global module IDs plus
+the explicit project association:
+
+```json
+{"ok":true,"data":[{"id":12,"name":"cpu_top","normalized_name":"cpu_top","project_id":3}]}
+```
+
+Names are NFKC-normalized, trimmed, case-folded, whitespace-collapsed, and
+globally unique. A module can be associated with many projects. During
+migration, `LegacyModuleMapping` preserves each `(project_id, local_module_id)`
+for rollback and old APIs.
+
+## Versions
+
+`GET /api/v2/versions?project_id={id}` returns path-derived values. `meta`
+reports records whose old paths cannot produce a version.
+
+## Records
+
+`GET /api/v2/records?project_id={id}&module_id={global_id}&version={value}&page=1&page_size=50`
+
+```json
+{
+  "ok": true,
+  "data": [{"id":"663e...","project_id":3,"module_id":12,"version":"regr_20260810"}],
+  "pagination": {"page":1,"page_size":50,"total":1,"pages":1}
+}
+```
+
+- `GET /api/v2/projects/{project_id}/records/{record_id}`
+- `GET /api/v2/projects/{project_id}/records/{record_id}/raw`
+- `GET /api/v2/projects/{project_id}/records/{record_id}/violations`
+- `GET /api/v2/projects/{project_id}/records/{record_id}/notes`
+
+Violation objects consistently use string `id` and `record_id`, include
+`project_id`, and expose `timing_group`, `startpoint`, `endpoint`, `slack`,
+`depth`, `pure_depth`, `cell_delay`, `net_delay`, fan-in/fan-out fields and
+`source_file`. They do not expose the old `qor_record_id` key.
+
+## Persistence and migration
+
+Relational SQL remains authoritative for users, projects, global modules,
+project-module associations, mappings, reviews, and configuration. QoR records,
+raw reports, violation paths, and run notes are accessed only through the
+repository layer. `PERSISTENCE_MODE=orm|mongo|hybrid` selects the adapter;
+hybrid reads Mongo first and falls back to ORM.
+
+Migration commands are non-destructive and dry-run by default:
+
+```bash
+python manage.py migrate_global_modules
+python manage.py migrate_global_modules --execute [--project-id 3]
+python manage.py migrate_sqlite_to_mongo [--project-id 3]
+python manage.py migrate_sqlite_to_mongo --execute [--project-id 3]
+```
+
+No command deletes or mutates project-local module/record rows.
+
+## API v1 compatibility
 
 ### 列出可访问项目
 ```http

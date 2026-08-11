@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { useDashboardStore } from '@/stores/dashboard'
 import BaseChart from './BaseChart.vue'
 
@@ -53,13 +53,19 @@ const chartOption = computed(() => {
     return {
       tooltip: { trigger: 'axis' },
       legend: { data: [m?.label || metric], textStyle: { color: '#8b9bb4' } },
-      xAxis: { type: 'category', data: cats, axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 } },
+      xAxis: {
+        type: 'category',
+        data: cats,
+        axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
+      },
       yAxis: { type: 'value', name: 'ns', axisLabel: { color: '#8b9bb4' } },
-      series: [{
-        name: m?.label || metric,
-        type: 'bar',
-        data: records.map(r => r[metric] ?? null)
-      }]
+      series: [
+        {
+          name: m?.label || metric,
+          type: 'bar',
+          data: records.map(r => r[metric] ?? null)
+        }
+      ]
     }
   }
 
@@ -73,12 +79,19 @@ const chartOption = computed(() => {
           name: `${clock} · ${metrics.find(m => m.value === metric)?.label || metric}`,
           type: 'bar',
           data: records.map(r => {
-            const cd = (r.extra_fields && r.extra_fields.clocks && r.extra_fields.clocks[clock]) || {}
+            const cd =
+              (r.extra_fields && r.extra_fields.clocks && r.extra_fields.clocks[clock]) || {}
             const shortMetric = metric.replace('_setup', '').replace('_hold', '')
             const fieldMap = {
-              wns: 'wns', tns: 'tns', nvp: 'nvp',
-              wns_setup: 'wns', tns_setup: 'tns', nvp_setup: 'nvp',
-              wns_hold: 'wns', tns_hold: 'tns', nvp_hold: 'nvp'
+              wns: 'wns',
+              tns: 'tns',
+              nvp: 'nvp',
+              wns_setup: 'wns',
+              tns_setup: 'tns',
+              nvp_setup: 'nvp',
+              wns_hold: 'wns',
+              tns_hold: 'tns',
+              nvp_hold: 'nvp'
             }
             const field = fieldMap[shortMetric] || fieldMap[metric] || metric
             return cd[field] ?? null
@@ -89,7 +102,11 @@ const chartOption = computed(() => {
     return {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', textStyle: { color: '#8b9bb4' } },
-      xAxis: { type: 'category', data: cats, axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 } },
+      xAxis: {
+        type: 'category',
+        data: cats,
+        axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
+      },
       yAxis: { type: 'value', name: 'ns', axisLabel: { color: '#8b9bb4' } },
       series
     }
@@ -98,9 +115,15 @@ const chartOption = computed(() => {
   const metric = selectedMetric.value
   const shortMetric = metric.replace('_setup', '').replace('_hold', '')
   const fieldMap = {
-    wns: 'wns', tns: 'tns', nvp: 'nvp',
-    wns_setup: 'wns', tns_setup: 'tns', nvp_setup: 'nvp',
-    wns_hold: 'wns', tns_hold: 'tns', nvp_hold: 'nvp'
+    wns: 'wns',
+    tns: 'tns',
+    nvp: 'nvp',
+    wns_setup: 'wns',
+    tns_setup: 'tns',
+    nvp_setup: 'nvp',
+    wns_hold: 'wns',
+    tns_hold: 'tns',
+    nvp_hold: 'nvp'
   }
   const field = fieldMap[shortMetric] || fieldMap[metric] || metric
 
@@ -116,7 +139,11 @@ const chartOption = computed(() => {
   return {
     tooltip: { trigger: 'axis' },
     legend: { type: 'scroll', textStyle: { color: '#8b9bb4' } },
-    xAxis: { type: 'category', data: cats, axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 } },
+    xAxis: {
+      type: 'category',
+      data: cats,
+      axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
+    },
     yAxis: { type: 'value', name: 'ns', axisLabel: { color: '#8b9bb4' } },
     series
   }
@@ -137,16 +164,28 @@ function clearClocks() {
       <span>时序分析</span>
       <div class="timing-controls">
         <label class="control-label">
-          <input type="checkbox" v-model="aggregateMode" />
+          <input v-model="aggregateMode" type="checkbox" />
           按指标聚合
         </label>
         <select v-if="!aggregateMode" v-model="selectedMetric" class="btn-sm">
           <option v-for="m in metrics" :key="m.value" :value="m.value">{{ m.label }}</option>
         </select>
-        <select v-else v-model="selectedMetrics" multiple class="btn-sm" style="min-width: 120px; height: 56px;">
+        <select
+          v-else
+          v-model="selectedMetrics"
+          multiple
+          class="btn-sm"
+          style="min-width: 120px; height: 56px"
+        >
           <option v-for="m in metrics" :key="m.value" :value="m.value">{{ m.label }}</option>
         </select>
-        <select v-if="hasClockData" v-model="selectedClocks" multiple class="btn-sm" style="min-width: 100px; max-height: 80px;">
+        <select
+          v-if="hasClockData"
+          v-model="selectedClocks"
+          multiple
+          class="btn-sm"
+          style="min-width: 100px; max-height: 80px"
+        >
           <option v-for="c in availableClocks" :key="c" :value="c">{{ c }}</option>
         </select>
         <div v-if="hasClockData" class="clock-actions">
@@ -165,9 +204,7 @@ function clearClocks() {
       <div v-else-if="dashboard.selectedRecords.length === 0" class="empty-state">
         请选择数据记录
       </div>
-      <div v-else class="empty-state">
-        暂无时序数据
-      </div>
+      <div v-else class="empty-state">暂无时序数据</div>
     </div>
   </div>
 </template>

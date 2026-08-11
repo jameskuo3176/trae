@@ -1,9 +1,7 @@
 [Unit]
 Description=QoR Recorder - Design Compiler QoR 数据管理系统
 Documentation=file:///opt/qor_recorder/docs/user_guide.md
-After=network.target
-# 若使用 MySQL 后端, 取消下一行注释
-# Requires=mysql.service mariadb.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -12,9 +10,13 @@ User=qor
 Group=qor
 WorkingDirectory=/opt/qor_recorder
 EnvironmentFile=/opt/qor_recorder/.env
+Environment=HOST=127.0.0.1
+Environment=PORT=8000
+Environment=GUNICORN_WORKERS=3
+Environment=GUNICORN_TIMEOUT=120
 
-# 启动命令: 使用虚拟环境中的 python
-ExecStart=/opt/qor_recorder/venv/bin/python app.py
+# start.sh validates the prebuilt offline venv, migrates Django, then execs gunicorn.
+ExecStart=/bin/bash /opt/qor_recorder/start.sh
 
 # 重启策略: 失败后 5 秒重启, 最多尝试 10 次 (10 秒内)
 Restart=on-failure
@@ -58,7 +60,8 @@ LockPersonality=yes
 ReadWritePaths=/opt/qor_recorder/data \
                /opt/qor_recorder/uploads \
                /opt/qor_recorder/backups \
-               /opt/qor_recorder/logs
+               /opt/qor_recorder/logs \
+               /opt/qor_recorder/mongodbdir
 
 # 资源限制 (按需调整)
 LimitNOFILE=65536

@@ -1,7 +1,8 @@
 <script setup>
 import { useTheme } from '@/composables/useTheme'
 
-const { THEME_FIELDS, currentTheme, showModal, saveThemeToStorage, resetToDefault } = useTheme()
+const { THEME_FIELDS, currentTheme, presets, showModal, saveThemeToStorage, resetToDefault } =
+  useTheme()
 </script>
 
 <template>
@@ -12,19 +13,30 @@ const { THEME_FIELDS, currentTheme, showModal, saveThemeToStorage, resetToDefaul
         <button class="close-btn" @click="showModal = false">×</button>
       </div>
       <div class="modal-body">
+        <div class="preset-grid" role="group" aria-label="Theme presets">
+          <button
+            v-for="(preset, name) in presets"
+            :key="name"
+            type="button"
+            :aria-pressed="currentTheme.name === name"
+            @click="saveThemeToStorage(preset)"
+          >
+            <span :style="{ background: preset.primary }" />{{ name }}
+          </button>
+        </div>
         <div v-for="field in THEME_FIELDS" :key="field.key" class="theme-field">
           <label>{{ field.label }}</label>
           <div class="field-control">
             <input
               v-if="field.color"
-              type="color"
               v-model="currentTheme[field.key]"
+              type="color"
               @change="saveThemeToStorage(currentTheme)"
             />
             <input
               v-else
-              type="text"
               v-model="currentTheme[field.key]"
+              type="text"
               @change="saveThemeToStorage(currentTheme)"
             />
           </div>
@@ -76,6 +88,30 @@ const { THEME_FIELDS, currentTheme, showModal, saveThemeToStorage, resetToDefaul
 }
 .modal-body {
   padding: 20px;
+}
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 18px;
+}
+.preset-grid button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-text);
+  text-transform: capitalize;
+}
+.preset-grid button[aria-pressed='true'] {
+  border-color: var(--color-primary);
+}
+.preset-grid span {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--color-border);
 }
 .theme-field {
   display: flex;

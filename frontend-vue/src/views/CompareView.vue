@@ -49,7 +49,7 @@ async function loadCompareData() {
   <div class="compare-page">
     <h1>数据对比</h1>
     <FilterBar />
-    <p v-if="error" style="color: var(--color-text-secondary); padding: 20px;">{{ error }}</p>
+    <p v-if="error" style="color: var(--color-text-secondary); padding: 20px">{{ error }}</p>
     <LoadingSpinner v-else-if="loading" text="加载对比数据..." />
     <div v-else-if="compareData?.length > 0" class="card">
       <div class="card-header">对比结果</div>

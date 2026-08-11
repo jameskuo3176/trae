@@ -1,5 +1,9 @@
 # QoR Recorder 开发文档：设计思路与开发流程
 
+> 当前运行架构是 Django API + `frontend-vue/` + MongoDB/关系库。本文较早
+> 章节仍包含迁移前设计背景；启动、迁移和部署必须以第 6 节及
+> `deploy/README.md` 为准，不再使用 Flask 命令。
+
 ## 1. 项目背景与目标
 
 ### 1.1 问题来源
@@ -29,14 +33,14 @@ QoR Recorder 是一个面向 IC 设计团队的**综合质量数据管理系统*
 
 | 层 | 选型 | 选型理由 |
 |---|---|---|
-| Web 框架 | Flask 3.1 | 轻量、灵活，适合中小型内部工具；生态成熟 |
-| ORM | Flask-SQLAlchemy | 与 Flask 无缝集成；支持多数据库后端、多 binds |
+| Web 框架 | Django 5.2 + Gunicorn | API、认证、会话和生产 WSGI |
+| ORM | Django ORM + repository 层 | 关系数据与 Mongo 重数据适配 |
 | 数据库后端 | SQLite（默认）/ MySQL / PostgreSQL / MongoDB | 单一变量 `DB_TYPE` 切换；按项目分库解决累计数据性能下降 |
 | 数据处理 | pandas + openpyxl | CSV 解析与 Excel 导出的工业标准 |
-| 前端图表 | ECharts (本地化) | 功能强大、交互丰富；本地化到 `static/vendor/` 支持离线 |
-| 认证 | Flask-Login + Werkzeug | 会话管理 + 密码哈希，够用且不臃肿 |
-| 模板 | Jinja2 (Flask 内置) | 服务端渲染，无前端构建依赖 |
-| 数据库迁移 | Flask-Migrate (Alembic) | 主库 schema 版本管理；项目库用 ORM create_all 兜底 |
+| 前端图表 | Vue 3 + Vite + ECharts | 依赖随前端构建打包，不在运行时访问 CDN |
+| 认证 | Django session/CSRF | 同源 Nginx 代理下的 cookie 会话 |
+| 模板 | Vue SPA；Django legacy fallback | `/legacy/dashboard/` 暂留回滚 |
+| 数据库迁移 | Django migrations | `python manage.py migrate` |
 
 **选型原则**：内部工具优先「单进程可跑、易备份、随团队增长可扩展」。SQLite + Flask 单进程即可服务一个 10-20 人团队；按项目分库后单项目万级记录性能仍优良；多后端切换满足团队跨规模迁移需求。
 
@@ -540,78 +544,71 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 # 2. 安装依赖
 pip install -r requirements.txt
 
-# 3. 初始化数据库（自动按 DB_TYPE 切换后端）
-python db_init.py --seed
-# 上面会自动建主库 + 跑 alembic 迁移 + 创建 demo 项目库 + seed 演示数据
+# 3. 迁移并检查 Django
+python manage.py migrate
+python manage.py check
 
-# 4. 启动
-python app.py
-# 访问 http://localhost:5000，admin/admin@2026
+# 4. 启动 API（开发）
+python manage.py runserver 127.0.0.1:8000
+
+# 5. 另一终端启动 canonical Vue source
+cd ../frontend-vue
+npm ci
+npm run dev
+# 访问 http://localhost:5173
 ```
 
 ### 6.2 切换数据库后端
 
 ```bash
-# SQLite (默认)
-DB_TYPE=sqlite python db_init.py --seed
+# SQLite + ORM (默认)
+DB_TYPE=sqlite PERSISTENCE_MODE=orm python manage.py runserver
 
-# MySQL
+# SQL 全局库
 DB_TYPE=sql DATABASE_URL='mysql+pymysql://root:pwd@localhost:3306/qor_recorder' \
-  python db_init.py --seed
+  python manage.py migrate
 
-# MongoDB
-DB_TYPE=mongodb MONGODB_URI=mongodb://localhost:27017 \
-  python db_init.py --seed
+# Mongo heavy-data repository + relational metadata
+PERSISTENCE_MODE=hybrid MONGODB_URI=mongodb://localhost:27017 \
+  python manage.py runserver
 ```
 
 ### 6.3 开发迭代节奏
 项目采用「需求驱动、小步快跑」的迭代方式：
 
 1. **需求确认**：与用户确认数据格式、查询场景、展示诉求
-2. **模型先行**：先在 `models.py` 定义/修改表结构
-   - 主库表：自动通过 `flask db migrate` + `flask db upgrade` 升级
-   - 项目库表：直接生效（下次 `create_project_db` 用 ORM `create_all` 应用）
+2. **模型先行**：先在 `django_app/core/models.py` 定义/修改表结构
+   - 生成迁移：`python manage.py makemigrations`
+   - 应用迁移：`python manage.py migrate`
 3. **解析器开发**：在 `qor_parser.py` 实现新格式的解析，用真实 CSV 验证
-4. **API 开发**：在 `routes/` 实现路由，用脚本或 Postman 测试
-5. **前端开发**：在 `templates/` 实现页面，浏览器验证
+4. **API 开发**：在 `django_app/api/` 实现路由并补充 Django 测试
+5. **前端开发**：只修改仓库根目录 `frontend-vue/`，不要复制 Vue source
 6. **数据验证**：用 demo 数据或真实数据端到端验证
 
 ### 6.4 数据库迁移策略
 
-**主库**（v4.0 起使用 Flask-Migrate / Alembic）：
+**关系数据库**：
 ```bash
-# 修改 models.py 后
-flask db migrate -m "add xxx"
-flask db upgrade
-```
-
-**项目库**：修改 `models.py` 中带 `__bind_key__='project'` 的模型即可。下次新创建项目库时自动应用 `create_all`；已有项目库需要手动跑 `db_init.py --migrate-only` 或调用 `migrate_to_per_project_db.py` 重新建表。
-
-**跨项目迁移**（v3.x → v4.0 升级）：
-```bash
-# 1. 升级代码 + alembic 主库迁移
-flask db upgrade
-
-# 2. 迁移历史业务数据到项目库
-python migrate_to_per_project_db.py --dry-run  # 预览
-python migrate_to_per_project_db.py             # 执行
-python migrate_to_per_project_db.py --clean     # 清理主库残留
+python manage.py makemigrations
+python manage.py migrate
+python manage.py check
 ```
 
 **跨后端迁移**（SQLite → MongoDB）：
 ```bash
-# 1. 设置 DB_TYPE=mongodb + MONGODB_URI
-# 2. 跑迁移脚本
-python migrate_sqlite_to_mongo.py --dry-run
-python migrate_sqlite_to_mongo.py
+python manage.py migrate_global_modules
+python manage.py migrate_global_modules --execute
+python manage.py migrate_sqlite_to_mongo
+python manage.py migrate_sqlite_to_mongo --execute
+python manage.py migrate_sqlite_to_mongo
 ```
 
 ### 6.5 测试方式
 
-- 单元测试：`test_*.py`（如 `test_qor_aggregate.py`, `test_review_workflow.py`）
-- 端到端测试：`_verify_e2e.py` 验证主库 + 项目库 + ORM 路由
-- HTTP 端点测试：`_http_test.py`, `test_groups_http.py`
-- 集成测试：MongoDB dual-write 模式通过 `test_groups_and_repo.py` 验证
+- Django/仓储测试：`pytest`
+- Django 配置：`python manage.py check`
+- Vue 单元测试：在 `frontend-vue/` 运行 `npm run test:unit`
+- Vue 生产构建：在 `frontend-vue/` 运行 `npm run build`
 
 ### 6.6 代码规范
 - 中文注释（与用户语言一致）

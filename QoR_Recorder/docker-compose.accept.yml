@@ -1,0 +1,10 @@
+# Local acceptance overlay: isolated data volumes so production SQLite is untouched.
+services:
+  django:
+    volumes:
+      - ./data_accept:/app/data
+      - ./uploads_accept:/app/uploads
+      - ./backups_accept:/app/backups
+  mongo:
+    volumes:
+      - ./mongodbdir_accept:/data/db

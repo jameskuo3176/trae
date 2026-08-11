@@ -58,11 +58,7 @@ async function handleLogin() {
               :disabled="loading"
               @keyup.enter="handleLogin"
             />
-            <button
-              class="toggle-password"
-              type="button"
-              @click="showPassword = !showPassword"
-            >
+            <button class="toggle-password" type="button" @click="showPassword = !showPassword">
               {{ showPassword ? '隐藏' : '显示' }}
             </button>
           </div>

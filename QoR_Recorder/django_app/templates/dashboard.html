@@ -1,6 +1,115 @@
 {% extends 'base.html' %}
 {% block title %}Dashboard - QoR Recorder{% endblock %}
 
+{% block extra_head %}
+<style>
+    :root { --color-on-primary:#fff; }
+    body[data-theme="neon"] { --color-on-primary:#06121a; }
+    .dc-toolbar-actions { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+    .dc-tool-btn {
+        min-width:28px; height:26px; padding:2px 8px; border:1px solid var(--color-border);
+        border-radius:3px; background:var(--color-surface); color:var(--color-text);
+        font:600 11px/1 inherit; cursor:pointer; transition:border-color .15s, color .15s, background .15s;
+    }
+    .dc-tool-btn:hover, .dc-tool-btn:focus-visible { border-color:var(--color-primary); color:var(--color-primary); outline:none; }
+    .dc-tool-btn.primary { background:var(--color-primary); border-color:var(--color-primary); color:var(--color-on-primary); }
+    .dc-tool-btn.active {
+        background:var(--color-primary); border-color:var(--color-primary); color:var(--color-on-primary);
+        box-shadow:inset 0 0 0 2px color-mix(in srgb, var(--color-on-primary) 45%, transparent), 0 0 0 2px color-mix(in srgb, var(--color-primary) 24%, transparent);
+    }
+    .dc-tool-btn:disabled { opacity:.45; cursor:not-allowed; }
+    .dc-picker-count { margin-left:3px; font-size:9px; font-weight:700; opacity:.82; }
+    .dc-vs-status { display:none; color:var(--color-primary); font-size:10px; font-weight:600; }
+    .dc-vs-status.show { display:inline; }
+    .dc-run-option { display:flex; align-items:center; gap:4px; border-left:3px solid transparent; padding:3px 4px !important; }
+    .dc-run-option.vs-selected { border-left-color:var(--color-primary); background:color-mix(in srgb, var(--color-primary) 12%, transparent); }
+    .dc-run-option > label { min-width:0; flex:1; display:flex; align-items:center; gap:4px; margin:0; cursor:pointer; font-size:11px; }
+    .dc-run-option .dc-run-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .dc-run-copy-btn {
+        flex:0 0 auto; border:0; background:transparent; color:var(--color-text-secondary); padding:1px 3px;
+        cursor:copy; font-size:11px; line-height:1;
+    }
+    .dc-run-copy-btn:hover, .dc-run-copy-btn:focus-visible { color:var(--color-primary); outline:1px solid var(--color-primary); }
+
+    .dc-picker-mask {
+        display:none; position:fixed; inset:0; z-index:3100; align-items:center; justify-content:center;
+        padding:18px; background:rgba(6, 10, 18, .58);
+    }
+    .dc-picker-mask.show { display:flex; }
+    .dc-picker {
+        position:relative;
+        width:min(980px, 96vw); max-height:min(690px, 92vh); display:flex; flex-direction:column;
+        color:var(--color-text); background:var(--color-surface); border:1px solid var(--color-border);
+        border-radius:6px; box-shadow:0 18px 56px rgba(0,0,0,.35);
+    }
+    .dc-picker-header {
+        display:flex; justify-content:space-between; align-items:center; padding:12px 16px;
+        border-bottom:1px solid var(--color-border);
+    }
+    .dc-picker-header > div { min-width:0; padding-right:12px; }
+    .dc-picker-title { font-size:15px; font-weight:700; letter-spacing:.02em; }
+    .dc-picker-subtitle { margin-left:8px; color:var(--color-text-secondary); font-size:11px; font-weight:400; }
+    .dc-picker-close { border:0; background:transparent; color:var(--color-text-secondary); font-size:22px; cursor:pointer; }
+    .dc-picker-close:focus-visible { color:var(--color-primary); outline:2px solid var(--color-primary); outline-offset:2px; }
+    .dc-picker-body {
+        display:grid; grid-template-columns:minmax(235px,1fr) minmax(150px,max-content) minmax(210px,max-content) minmax(190px,max-content);
+        align-items:start; gap:8px; padding:10px; overflow:auto;
+    }
+    .dc-picker-group { min-width:0; border:1px solid var(--color-border); background:var(--color-background); }
+    .dc-picker-group-head {
+        display:flex; justify-content:space-between; align-items:center; gap:8px; padding:7px 9px;
+        border-bottom:1px solid var(--color-border); color:var(--color-text-secondary);
+        font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+    }
+    .dc-picker-mini-actions { display:flex; gap:3px; }
+    .dc-picker-mini-actions button { padding:0 5px; border:1px solid var(--color-border); background:var(--color-surface); color:var(--color-text); cursor:pointer; }
+    .dc-picker-list { max-height:360px; overflow:auto; padding:6px 8px; }
+    .dc-picker-list label {
+        display:flex; align-items:flex-start; gap:6px; margin:0; padding:4px 2px;
+        color:var(--color-text); font-size:11px; font-weight:400; line-height:1.35;
+    }
+    .dc-picker-list input { flex:0 0 auto; margin-top:1px; accent-color:var(--color-primary); }
+    .dc-picker-sections, .dc-picker-metrics { display:grid; grid-template-columns:1fr; gap:1px; }
+    .dc-picker-metrics { font-family:Consolas, Monaco, 'Courier New', monospace; }
+    .dc-picker-options { display:grid; gap:5px; }
+    .dc-picker-footer {
+        display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:12px;
+        padding:10px 12px; border-top:1px solid var(--color-border); background:var(--color-surface-hover);
+    }
+    .dc-picker-footer-left, .dc-picker-footer-right { display:flex; gap:6px; }
+    .dc-picker-footer-right { justify-content:flex-end; }
+    .dc-sort-segment { display:flex; align-items:center; gap:0; font-size:10px; color:var(--color-text-secondary); }
+    .dc-sort-segment > span { margin-right:6px; text-transform:uppercase; letter-spacing:.05em; }
+    .dc-sort-segment button {
+        min-width:48px; padding:4px 8px; border:1px solid var(--color-border); border-right:0;
+        background:var(--color-surface); color:var(--color-text); font-size:10px; cursor:pointer;
+    }
+    .dc-sort-segment button:last-child { border-right:1px solid var(--color-border); }
+    .dc-sort-segment button.active { background:var(--color-primary); color:var(--color-on-primary); border-color:var(--color-primary); font-weight:700; }
+    .dc-copyable { cursor:copy; }
+    .dc-path-link { color:var(--color-primary); text-decoration:underline; text-underline-offset:2px; cursor:pointer; }
+    .dc-sortable { cursor:pointer !important; }
+    .dc-sortable .sort-indicator { display:inline-block; min-width:12px; margin-left:4px; color:var(--color-text-secondary); }
+    .dc-subsection-table td:not(:first-child), .dc-compact-timing td:not(:first-child) {
+        font-family:Consolas, Monaco, 'Courier New', monospace; font-variant-numeric:tabular-nums;
+    }
+    @media (max-width:900px) {
+        .dc-picker-body { grid-template-columns:1fr 1fr; }
+        .dc-picker-list { max-height:none; overflow:visible; }
+        .dc-picker-footer { grid-template-columns:1fr; }
+        .dc-picker-footer-left, .dc-picker-footer-right, .dc-sort-segment { justify-content:center; }
+    }
+    @media (max-width:620px) {
+        .dc-picker-mask { padding:6px; }
+        .dc-picker-body { grid-template-columns:1fr; }
+        .dc-picker-header { align-items:flex-start; }
+        .dc-picker-header > div { display:flex; flex-direction:column; padding-right:24px; }
+        .dc-picker-subtitle { margin:3px 0 0; line-height:1.35; }
+        .dc-picker-close { position:absolute; right:16px; top:8px; }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
     <h2 style="font-size: 22px;">数据总览</h2>
@@ -203,6 +312,8 @@
             <div style="display:flex; gap: 4px; flex-wrap: wrap;">
                 <button class="btn-sm" onclick="selectAllDcRuns()" style="font-size:10px; padding:2px 6px;">全选</button>
                 <button class="btn-sm" onclick="clearDcRunSelection()" style="font-size:10px; padding:2px 6px;">清空</button>
+                <button id="dcVsCancelBtn" class="dc-tool-btn" onclick="cancelDcVsMode()" title="取消 VS 选择" style="display:none;">取消</button>
+                <span id="dcVsStatus" class="dc-vs-status" aria-live="polite">已选 0</span>
             </div>
             <div id="dcRunChecklist" style="margin-top: 6px; max-height: 200px; overflow-y: auto;"></div>
         </div>
@@ -219,21 +330,94 @@
                 <strong>数据对比视图</strong>
                 <span style="color: var(--color-text-secondary); margin-left: 8px;">CSV / DC 报告数据统一管理, 勾选数据集进行对比分析</span>
             </span>
-            <div style="display:flex; gap: 6px; flex-wrap: wrap;">
+            <div class="dc-toolbar-actions">
+                <button id="dcPickerBtn" class="dc-tool-btn primary" onclick="openDcPicker()" title="打开显示与排序 Picker" aria-haspopup="dialog" aria-controls="dcPickerMask">#<span id="dcPickerCount" class="dc-picker-count"></span></button>
+                <button class="dc-tool-btn" data-dc-vs-toggle onclick="toggleDcVsMode()" title="选择 Run 进行 VS 对比" aria-label="切换 VS 对比模式" aria-pressed="false">VS</button>
                 <label style="display:flex; align-items:center; gap:3px; font-size:11px;">
-                    <input type="checkbox" id="dcReportOnlyWithRaw" onchange="renderDcReportSections()"> 仅含 DC 报告
+                    <input type="checkbox" id="dcReportOnlyWithRaw" onchange="onDcToolbarOptionChange('onlyWithRaw', this.checked)"> 仅含 DC 报告
                 </label>
                 <label style="display:flex; align-items:center; gap:3px; font-size:11px;">
-                    <input type="checkbox" id="dcReportShowChange" checked onchange="renderDcReportSections()"> 标注变化
+                    <input type="checkbox" id="dcReportShowChange" checked onchange="onDcToolbarOptionChange('showChange', this.checked)"> 标注变化
                 </label>
                 <label style="display:flex; align-items:center; gap:3px; font-size:11px;" title="时序表格仅显示 WNS/TNS/NVP，紧凑展示所有 path_group">
-                    <input type="checkbox" id="dcReportCompactTiming" onchange="renderDcReportSections()"> 紧凑时序
+                    <input type="checkbox" id="dcReportCompactTiming" onchange="onDcToolbarOptionChange('compactTiming', this.checked)"> 紧凑时序
                 </label>
                 <button class="btn-sm" onclick="exportDcReportSections()" style="font-size:11px; padding:2px 8px;">下载 CSV</button>
             </div>
         </div>
         <div id="dcSectionsContainer"></div>
     </div>
+</div>
+
+<!-- TileScope-style DC comparison Picker: edits remain draft until Apply -->
+<div id="dcPickerMask" class="dc-picker-mask" role="presentation" onclick="if(event.target===this)closeDcPicker(false)">
+    <section class="dc-picker" role="dialog" aria-modal="true" aria-labelledby="dcPickerTitle">
+        <header class="dc-picker-header">
+            <div>
+                <span id="dcPickerTitle" class="dc-picker-title">DC Comparison Picker</span>
+                <span class="dc-picker-subtitle">Choose runs, visible metrics, and table behavior</span>
+            </div>
+            <button type="button" class="dc-picker-close" onclick="closeDcPicker(false)" title="Cancel and close" aria-label="Close Picker">×</button>
+        </header>
+        <div class="dc-picker-body">
+            <section class="dc-picker-group" aria-labelledby="dcPickerRunsLabel">
+                <div class="dc-picker-group-head">
+                    <span id="dcPickerRunsLabel">Runs <b id="dcPickerRunCount">0 / 0</b></span>
+                    <span class="dc-picker-mini-actions">
+                        <button type="button" onclick="setDcPickerGroup('runs', true)" title="Select all runs">✓</button>
+                        <button type="button" onclick="setDcPickerGroup('runs', false)" title="Clear runs">□</button>
+                    </span>
+                </div>
+                <div id="dcPickerRuns" class="dc-picker-list"></div>
+            </section>
+            <section class="dc-picker-group" aria-labelledby="dcPickerSectionsLabel">
+                <div class="dc-picker-group-head">
+                    <span id="dcPickerSectionsLabel">Sections</span>
+                    <span class="dc-picker-mini-actions">
+                        <button type="button" onclick="setDcPickerGroup('section-groups', true)" title="Show all sections">✓</button>
+                        <button type="button" onclick="setDcPickerGroup('section-groups', false)" title="Hide all sections">□</button>
+                    </span>
+                </div>
+                <div id="dcPickerSections" class="dc-picker-list dc-picker-sections"></div>
+            </section>
+            <section class="dc-picker-group" aria-labelledby="dcPickerMetricsLabel">
+                <div class="dc-picker-group-head">
+                    <span id="dcPickerMetricsLabel">Metrics</span>
+                    <span class="dc-picker-mini-actions">
+                        <button type="button" onclick="setDcPickerGroup('metrics', true)" title="Show all metrics">✓</button>
+                        <button type="button" onclick="setDcPickerGroup('metrics', false)" title="Hide all metrics">□</button>
+                    </span>
+                </div>
+                <div id="dcPickerMetrics" class="dc-picker-list dc-picker-metrics"></div>
+            </section>
+            <section class="dc-picker-group" aria-labelledby="dcPickerOptionsLabel">
+                <div class="dc-picker-group-head"><span id="dcPickerOptionsLabel">Display options</span></div>
+                <div class="dc-picker-list dc-picker-options">
+                    <label><input type="checkbox" data-dc-option="showChange"> Highlight change vs baseline</label>
+                    <label><input type="checkbox" data-dc-option="compactTiming"> Compact timing values</label>
+                    <label><input type="checkbox" data-dc-option="onlyWithRaw"> DC report runs only</label>
+                    <label><input type="checkbox" data-dc-option="copyOnClick"> Click table values to copy</label>
+                    <label><input type="checkbox" data-dc-option="pathLinks"> Open recognizable paths with gvim://</label>
+                </div>
+            </section>
+        </div>
+        <footer class="dc-picker-footer">
+            <div class="dc-picker-footer-left">
+                <button type="button" class="dc-tool-btn" onclick="copyDcDisplayed('md')" title="Copy displayed comparison as Markdown">Copy MD</button>
+                <button type="button" class="dc-tool-btn" onclick="copyDcDisplayed('csv')" title="Copy displayed comparison as CSV">CSV</button>
+            </div>
+            <div class="dc-sort-segment" role="group" aria-label="Sort multi-value timing cells by">
+                <span>Sorted by</span>
+                <button type="button" data-dc-sort="WNS" onclick="setDcPickerSortMetric('WNS')">WNS</button>
+                <button type="button" data-dc-sort="TNS" onclick="setDcPickerSortMetric('TNS')">TNS</button>
+                <button type="button" data-dc-sort="NVP" onclick="setDcPickerSortMetric('NVP')">NVP</button>
+            </div>
+            <div class="dc-picker-footer-right">
+                <button type="button" class="dc-tool-btn" onclick="closeDcPicker(false)">Cancel</button>
+                <button type="button" class="dc-tool-btn primary" onclick="applyDcPicker()">Apply</button>
+            </div>
+        </footer>
+    </section>
 </div>
 
 <!-- 图表区域 (自由拖拽布局) -->
@@ -692,6 +876,15 @@
         restoreLayoutOrder();
         restoreCardSizes();
         injectCsvButtons();  // 给每个图表卡片头部注入 CSV 按钮
+        const pickerOptionMap = {
+            dcReportShowChange: 'showChange',
+            dcReportCompactTiming: 'compactTiming',
+            dcReportOnlyWithRaw: 'onlyWithRaw',
+        };
+        Object.entries(pickerOptionMap).forEach(([id, key]) => {
+            const input = document.getElementById(id);
+            if (input) input.checked = !!_dcPickerApplied[key];
+        });
         await loadProjects();
         await refreshVersions();
         await loadDashboardList();
@@ -1645,6 +1838,368 @@
 
     let _dcReportSelectedIds = new Set();
     let _lastFilterFingerprint = '';
+    const DC_PICKER_STORAGE_KEY = 'qor_dc_picker_preferences_v1';
+    const DC_PICKER_DEFAULTS = {
+        sortMetric: 'WNS',
+        showChange: true,
+        compactTiming: false,
+        onlyWithRaw: false,
+        copyOnClick: true,
+        pathLinks: true,
+        hiddenSections: [],
+    };
+    let _dcPickerApplied = _loadDcPickerPreferences();
+    let _dcPickerDraft = null;
+    let _dcPickerReturnFocus = null;
+    let _dcPickerInertElements = [];
+    let _dcVsMode = false;
+    let _dcVsDraftIds = new Set();
+
+    function _loadDcPickerPreferences() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(DC_PICKER_STORAGE_KEY) || '{}');
+            const sortMetric = ['WNS', 'TNS', 'NVP'].includes(parsed.sortMetric) ? parsed.sortMetric : 'WNS';
+            return {
+                ...DC_PICKER_DEFAULTS,
+                ...parsed,
+                sortMetric,
+                hiddenSections: Array.isArray(parsed.hiddenSections) ? parsed.hiddenSections : [],
+                legacyVisibleSections: !Array.isArray(parsed.hiddenSections) && Array.isArray(parsed.visibleSections)
+                    ? parsed.visibleSections : null,
+            };
+        } catch (e) {
+            return { ...DC_PICKER_DEFAULTS };
+        }
+    }
+
+    function _saveDcPickerPreferences() {
+        try {
+            localStorage.setItem(DC_PICKER_STORAGE_KEY, JSON.stringify({
+                sortMetric: _dcPickerApplied.sortMetric,
+                showChange: !!_dcPickerApplied.showChange,
+                compactTiming: !!_dcPickerApplied.compactTiming,
+                onlyWithRaw: !!_dcPickerApplied.onlyWithRaw,
+                copyOnClick: !!_dcPickerApplied.copyOnClick,
+                pathLinks: !!_dcPickerApplied.pathLinks,
+                hiddenSections: _dcPickerApplied.hiddenSections,
+            }));
+        } catch (e) {
+            console.warn('[DC Picker] preference storage unavailable', e);
+        }
+    }
+
+    function _getDcPickerSections(list) {
+        let sections = [];
+        for (const r of list) {
+            const dc = _parseRawDc(r);
+            if (dc) { sections = _dcSectionDefs(dc); break; }
+        }
+        if (sections.length === 0) {
+            sections = _dcFallbackSectionDefs(list.map(r => ({ rec: r, dc: _parseRawDc(r) })));
+        }
+        return sections;
+    }
+
+    function _filterDcSections(sections) {
+        const allIds = [];
+        const legacySelectableIds = [];
+        sections.forEach(sec => {
+            allIds.push(sec.id);
+            if (sec.subs) {
+                sec.subs.forEach(sub => {
+                    if (!sub.isNote) {
+                        allIds.push(sub.id);
+                        legacySelectableIds.push(sub.id);
+                    }
+                });
+            } else {
+                legacySelectableIds.push(sec.id);
+            }
+        });
+        if (Array.isArray(_dcPickerApplied.legacyVisibleSections)) {
+            const legacyVisible = new Set(_dcPickerApplied.legacyVisibleSections);
+            _dcPickerApplied.hiddenSections = legacySelectableIds.filter(id => !legacyVisible.has(id));
+            _dcPickerApplied.legacyVisibleSections = null;
+            _saveDcPickerPreferences();
+        }
+        const hidden = new Set(_dcPickerApplied.hiddenSections || []);
+        _updateDcPickerCount(allIds, hidden);
+        return sections.reduce((out, sec) => {
+            if (hidden.has(sec.id)) return out;
+            if (sec.subs) {
+                const subs = sec.subs.filter(sub => sub.isNote || !hidden.has(sub.id));
+                if (subs.some(sub => !sub.isNote)) out.push({ ...sec, subs });
+            } else {
+                out.push(sec);
+            }
+            return out;
+        }, []);
+    }
+
+    function _updateDcPickerCount(allIds, hiddenSet) {
+        const unique = [...new Set(allIds || [])];
+        const hidden = hiddenSet || new Set(_dcPickerApplied.hiddenSections || []);
+        const visibleCount = unique.filter(id => !hidden.has(id)).length;
+        const count = document.getElementById('dcPickerCount');
+        if (count) {
+            count.textContent = unique.length && visibleCount < unique.length ? `${visibleCount}/${unique.length}` : '';
+            count.parentElement?.classList.toggle('active', unique.length > 0 && visibleCount < unique.length);
+            count.parentElement?.setAttribute('title', unique.length && visibleCount < unique.length
+                ? `Picker: showing ${visibleCount} of ${unique.length} groups`
+                : '打开显示与排序 Picker');
+        }
+    }
+
+    function openDcPicker() {
+        const liveOptions = {
+            showChange: document.getElementById('dcReportShowChange')?.checked,
+            compactTiming: document.getElementById('dcReportCompactTiming')?.checked,
+            onlyWithRaw: document.getElementById('dcReportOnlyWithRaw')?.checked,
+        };
+        Object.entries(liveOptions).forEach(([key, value]) => {
+            if (typeof value === 'boolean') _dcPickerApplied[key] = value;
+        });
+        const list = (getFilteredData() || []).filter(r => !_dcPickerApplied.onlyWithRaw || !!r.raw_dc_report);
+        _dcPickerReturnFocus = document.activeElement;
+        _dcPickerDraft = {
+            ..._dcPickerApplied,
+            runIds: new Set(_dcReportSelectedIds),
+            hiddenSections: [...(_dcPickerApplied.hiddenSections || [])],
+        };
+        const runHost = document.getElementById('dcPickerRuns');
+        runHost.innerHTML = list.map(r => {
+            const label = `${r.module_name || '?'} / ${r.version || '?'} #${r.id}`;
+            return `<label><input type="checkbox" data-picker-run="${r.id}" ${_dcPickerDraft.runIds.has(r.id) ? 'checked' : ''}>` +
+                `<span title="${escapeAttr(label)}">${escapeHtml(label)}</span></label>`;
+        }).join('') || '<div class="empty-state" style="padding:18px;font-size:11px;">No runs available</div>';
+
+        const sections = _getDcPickerSections(list);
+        const allIds = [];
+        const sectionHost = document.getElementById('dcPickerSections');
+        const metricHost = document.getElementById('dcPickerMetrics');
+        let sectionHtml = '';
+        let metricHtml = '';
+        sections.forEach(sec => {
+            allIds.push(sec.id);
+            sectionHtml += _dcPickerSectionOption(sec.id, sec.label, 'section-group');
+            if (sec.subs) {
+                sec.subs.forEach(sub => {
+                    if (sub.isNote) return;
+                    allIds.push(sub.id);
+                    metricHtml += _dcPickerSectionOption(sub.id, sub.label, 'metric');
+                });
+            }
+        });
+        sectionHost.innerHTML = sectionHtml || '<div class="empty-state" style="padding:18px;font-size:11px;">No metrics available</div>';
+        metricHost.innerHTML = metricHtml || '<div style="padding:10px;color:var(--color-text-secondary);font-size:10px;">No nested metrics</div>';
+        document.querySelectorAll('[data-picker-section]').forEach(input => {
+            input.checked = !_dcPickerDraft.hiddenSections.includes(input.dataset.pickerSection);
+        });
+        document.querySelectorAll('[data-dc-option]').forEach(input => {
+            input.checked = !!_dcPickerDraft[input.dataset.dcOption];
+        });
+        _syncDcPickerUi();
+        const mask = document.getElementById('dcPickerMask');
+        mask.classList.add('show');
+        _dcPickerInertElements = [
+            ...Array.from(mask.parentElement.children).filter(el => el !== mask),
+            ...Array.from(document.querySelectorAll('body > .navbar')),
+        ];
+        _dcPickerInertElements.forEach(el => { el.inert = true; });
+        document.body.style.overflow = 'hidden';
+        setTimeout(() => {
+            const first = mask.querySelector('#dcPickerRuns input, [data-picker-section], .dc-picker-footer button');
+            if (first) first.focus();
+        }, 0);
+    }
+
+    function _dcPickerSectionOption(id, label, kind) {
+        const plainLabel = String(label).replace(/<[^>]*>/g, '');
+        return `<label><input type="checkbox" data-picker-section="${escapeAttr(id)}" data-picker-kind="${kind}">` +
+            `<span title="${escapeAttr(plainLabel)}">${escapeHtml(plainLabel)}</span></label>`;
+    }
+
+    function _captureDcPickerDraft() {
+        if (!_dcPickerDraft) return;
+        _dcPickerDraft.runIds = new Set(Array.from(document.querySelectorAll('[data-picker-run]:checked')).map(el => Number(el.dataset.pickerRun)));
+        _dcPickerDraft.hiddenSections = Array.from(document.querySelectorAll('[data-picker-section]:not(:checked)')).map(el => el.dataset.pickerSection);
+        document.querySelectorAll('[data-dc-option]').forEach(input => {
+            _dcPickerDraft[input.dataset.dcOption] = input.checked;
+        });
+    }
+
+    function _syncDcPickerUi() {
+        if (!_dcPickerDraft) return;
+        _captureDcPickerDraft();
+        const total = document.querySelectorAll('[data-picker-run]').length;
+        const count = _dcPickerDraft.runIds.size;
+        const countEl = document.getElementById('dcPickerRunCount');
+        if (countEl) countEl.textContent = `${count} / ${total}`;
+        document.querySelectorAll('[data-dc-sort]').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.dcSort === _dcPickerDraft.sortMetric);
+            btn.setAttribute('aria-pressed', btn.dataset.dcSort === _dcPickerDraft.sortMetric ? 'true' : 'false');
+        });
+    }
+
+    function setDcPickerSortMetric(metric) {
+        if (!_dcPickerDraft || !['WNS', 'TNS', 'NVP'].includes(metric)) return;
+        _dcPickerDraft.sortMetric = metric;
+        _syncDcPickerUi();
+    }
+
+    function setDcPickerGroup(group, checked) {
+        const selectors = {
+            runs: '[data-picker-run]',
+            'section-groups': '[data-picker-kind="section-group"]',
+            metrics: '[data-picker-kind="metric"]',
+            sections: '[data-picker-section]',
+        };
+        const selector = selectors[group] || '[data-picker-section]';
+        document.querySelectorAll(selector).forEach(input => { input.checked = checked; });
+        _syncDcPickerUi();
+    }
+
+    function closeDcPicker(applied) {
+        const mask = document.getElementById('dcPickerMask');
+        if (!mask.classList.contains('show')) return;
+        mask.classList.remove('show');
+        _dcPickerInertElements.forEach(el => { el.inert = false; });
+        _dcPickerInertElements = [];
+        document.body.style.overflow = '';
+        _dcPickerDraft = null;
+        if (_dcPickerReturnFocus && _dcPickerReturnFocus.focus) _dcPickerReturnFocus.focus();
+        if (!applied && window.AppUI) AppUI.toast('Picker changes discarded', 'info');
+    }
+
+    function applyDcPicker() {
+        if (!_dcPickerDraft) return;
+        _captureDcPickerDraft();
+        _dcPickerApplied = {
+            sortMetric: _dcPickerDraft.sortMetric,
+            showChange: _dcPickerDraft.showChange,
+            compactTiming: _dcPickerDraft.compactTiming,
+            onlyWithRaw: _dcPickerDraft.onlyWithRaw,
+            copyOnClick: _dcPickerDraft.copyOnClick,
+            pathLinks: _dcPickerDraft.pathLinks,
+            hiddenSections: [..._dcPickerDraft.hiddenSections],
+        };
+        _dcReportSelectedIds = new Set(_dcPickerDraft.runIds);
+        const optionMap = {
+            dcReportShowChange: 'showChange',
+            dcReportCompactTiming: 'compactTiming',
+            dcReportOnlyWithRaw: 'onlyWithRaw',
+        };
+        Object.entries(optionMap).forEach(([id, key]) => {
+            const input = document.getElementById(id);
+            if (input) input.checked = !!_dcPickerApplied[key];
+        });
+        _saveDcPickerPreferences();
+        closeDcPicker(true);
+        renderDcReportSections();
+        _refreshAllCharts();
+        if (window.AppUI) AppUI.toast('DC comparison updated', 'success');
+    }
+
+    function onDcToolbarOptionChange(key, checked) {
+        if (!['showChange', 'compactTiming', 'onlyWithRaw'].includes(key)) return;
+        _dcPickerApplied[key] = !!checked;
+        _saveDcPickerPreferences();
+        renderDcReportSections();
+    }
+
+    function toggleDcVsMode() {
+        if (!_dcVsMode) {
+            _dcVsMode = true;
+            _dcVsDraftIds = new Set(_dcReportSelectedIds);
+        } else {
+            _dcReportSelectedIds = new Set(_dcVsDraftIds);
+            _dcVsMode = false;
+            renderDcReportSections();
+            _refreshAllCharts();
+            if (window.AppUI) AppUI.toast(`${_dcReportSelectedIds.size} runs applied to comparison`, 'success');
+        }
+        _syncDcVsUi();
+        if (_dcVsMode) _renderDcNav(getFilteredData() || [], (getFilteredData() || []).filter(r => _dcReportSelectedIds.has(r.id)));
+    }
+
+    function cancelDcVsMode() {
+        _dcVsMode = false;
+        _dcVsDraftIds.clear();
+        _syncDcVsUi();
+        renderDcReportSections();
+    }
+
+    function _syncDcVsUi() {
+        document.querySelectorAll('[data-dc-vs-toggle]').forEach(btn => {
+            btn.classList.toggle('active', _dcVsMode);
+            btn.setAttribute('aria-pressed', _dcVsMode ? 'true' : 'false');
+        });
+        const cancel = document.getElementById('dcVsCancelBtn');
+        if (cancel) cancel.style.display = _dcVsMode ? '' : 'none';
+        const status = document.getElementById('dcVsStatus');
+        if (status) {
+            status.classList.toggle('show', _dcVsMode);
+            status.textContent = `已选 ${_dcVsDraftIds.size}`;
+        }
+    }
+
+    function _copyDcText(text, successMessage) {
+        if (!window.AppUI || !AppUI.copyText) return Promise.reject(new Error('Clipboard helper unavailable'));
+        return AppUI.copyText(text).then(() => AppUI.toast(successMessage || 'Copied', 'success'))
+            .catch(err => { AppUI.toast('Copy failed', 'error'); throw err; });
+    }
+
+    function copyDcDisplayed(format) {
+        const tables = Array.from(document.querySelectorAll('#dcSectionsContainer table')).filter(tbl => tbl.offsetParent !== null);
+        if (!tables.length) {
+            if (window.AppUI) AppUI.toast('No displayed table to copy', 'error');
+            return;
+        }
+        const chunks = tables.map(tbl => {
+            const title = tbl.closest('.dc-section')?.querySelector('h3,h4')?.textContent?.trim() || 'DC comparison';
+            const rows = Array.from(tbl.rows).map(row => Array.from(row.cells).map(cell => {
+                const clone = cell.cloneNode(true);
+                clone.querySelectorAll('.sort-indicator').forEach(el => el.remove());
+                return clone.textContent.trim().replace(/\s+/g, ' ');
+            }));
+            if (format === 'md') {
+                if (!rows.length) return '';
+                const esc = v => String(v).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+                return `### ${title}\n\n| ${rows[0].map(esc).join(' | ')} |\n| ${rows[0].map(() => '---').join(' | ')} |\n` +
+                    rows.slice(1).map(row => `| ${row.map(esc).join(' | ')} |`).join('\n');
+            }
+            const esc = v => /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+            return rows.map(row => row.map(esc).join(',')).join('\r\n');
+        });
+        _copyDcText(chunks.join(format === 'md' ? '\n\n' : '\r\n\r\n'), format === 'md' ? 'Markdown copied' : 'CSV copied');
+    }
+
+    document.addEventListener('change', function(e) {
+        if (e.target.matches('[data-picker-run], [data-picker-section], [data-dc-option]')) _syncDcPickerUi();
+    });
+
+    document.addEventListener('keydown', function(e) {
+        const mask = document.getElementById('dcPickerMask');
+        if (!mask || !mask.classList.contains('show')) return;
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            closeDcPicker(false);
+        } else if (e.key === 'Tab') {
+            const focusable = Array.from(mask.querySelectorAll(
+                'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+            )).filter(el => el.offsetParent !== null);
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        }
+    });
 
     function _computeFilterFingerprint() {
         const projId = document.getElementById('filterProject').value;
@@ -2029,6 +2584,7 @@
             const runs = selected.map(r => ({ rec: r, dc: _parseRawDc(r) }));
             sections = _dcFallbackSectionDefs(runs);
         }
+        sections = _filterDcSections(sections);
 
         let html = '';
         sections.forEach(sec => {
@@ -2054,18 +2610,24 @@
         if (checklistEl) {
             let ch = '';
             list.forEach(r => {
-                const checked = _dcReportSelectedIds.has(r.id) ? 'checked' : '';
+                const selectedSet = _dcVsMode ? _dcVsDraftIds : _dcReportSelectedIds;
+                const checked = selectedSet.has(r.id) ? 'checked' : '';
                 const label = `${r.module_name || '?'} / ${r.version || '?'} <span style="color:var(--color-text-secondary);font-size:10px;">#${r.id}</span>`;
                 const hasDc = !!r.raw_dc_report;
+                const rawPath = r.full_dir || r.run_directory || (_parseRawDc(r) && _dcGet(_parseRawDc(r), 'run.directory')) || '';
                 const srcBadge = hasDc
                     ? '<span style="font-size:9px;padding:0 4px;background:var(--color-primary);color:#fff;border-radius:2px;opacity:0.8;">DC</span>'
                     : '<span style="font-size:9px;padding:0 4px;background:var(--color-text-secondary);color:#fff;border-radius:2px;opacity:0.6;">CSV</span>';
-                ch += `<label style="display:flex; align-items:center; gap:4px; padding:2px 0; cursor:pointer; font-size:11px;">
-                    <input type="checkbox" data-dc-rid="${r.id}" onchange="onDcRunCheck(${r.id}, this.checked)" ${checked}>
-                    ${label}
-                    ${srcBadge}
-                    ${_dcReportBaselineId === r.id ? '<span style="color:#1890ff;font-size:10px;">基准</span>' : `<button class="btn-sm" onclick="setDcBaseline(${r.id})" style="font-size:9px;padding:0 4px;margin-left:2px;">基准</button>`}
-                </label>`;
+                const copyValue = rawPath || `${r.module_name || '?'}/${r.version || '?'}`;
+                ch += `<div class="dc-run-option${selectedSet.has(r.id) ? ' vs-selected' : ''}">
+                    <label>
+                        <input type="checkbox" data-dc-rid="${r.id}" onchange="onDcRunCheck(${r.id}, this.checked)" ${checked}>
+                        <span class="dc-run-name" title="${escapeAttr(rawPath || `${r.module_name || '?'}/${r.version || '?'}`)}">${label}</span>
+                        ${srcBadge}
+                    </label>
+                    ${_dcReportBaselineId === r.id ? '<span style="color:#1890ff;font-size:10px;">基准</span>' : `<button type="button" class="btn-sm" onclick="setDcBaseline(${r.id})" style="font-size:9px;padding:0 4px;">基准</button>`}
+                    <button type="button" class="dc-run-copy-btn" data-copy-value="${escapeAttr(copyValue)}" title="${escapeAttr(rawPath ? 'Copy run path' : 'Copy run name')}" aria-label="${escapeAttr(rawPath ? 'Copy run path' : 'Copy run name')}">⧉</button>
+                </div>`;
             });
             checklistEl.innerHTML = ch || '<div style="color:var(--color-text-secondary);">无记录</div>';
         }
@@ -2096,6 +2658,7 @@
         if (sections.length === 0) {
             sections = _dcFallbackSectionDefs(runs);
         }
+        sections = _filterDcSections(sections);
 
         // 基准 run
         const baseline = _dcReportBaselineId
@@ -2142,6 +2705,7 @@
                 window.TBLX.enhance(tbl);
             });
         }
+        _enhanceDcTables(container);
     }
 
     // ── 紧凑时序模式: 每个 path_group 一行, WNS/TNS/NVP 合并为 "WNS / TNS / NVP" ──
@@ -2233,7 +2797,8 @@
                     if (worse) cls = ' class="dc-worse"';
                     else if (better) cls = ' class="dc-better"';
                 }
-                html += `<td${cls}${title}>${cellText}</td>`;
+                const rawTiming = `${wns ?? ''} / ${tns ?? ''} / ${nvp ?? ''}`;
+                html += `<td data-raw="${escapeAttr(rawTiming)}"${cls}${title}>${escapeHtml(cellText)}</td>`;
             });
             html += '</tr>';
         });
@@ -2347,6 +2912,140 @@
         return undefined;
     }
 
+    function _isRecognizablePath(value) {
+        if (typeof value !== 'string') return false;
+        return /^(?:[A-Za-z]:[\\/]|\/(?:[^/\0]+\/)+)[^\0]*$/.test(value.trim());
+    }
+
+    function _dcDisplayHtml(value, formatted) {
+        const raw = value === null || value === undefined
+            ? ''
+            : (typeof value === 'object' ? JSON.stringify(value) : String(value));
+        const text = formatted === undefined ? _fmtDcCell(value) : formatted;
+        if (_dcPickerApplied.pathLinks && _isRecognizablePath(raw)) {
+            const prefix = typeof window.QOR_GVIM_PROTOCOL_PREFIX === 'string'
+                ? window.QOR_GVIM_PROTOCOL_PREFIX : 'gvim://open?path=';
+            const href = prefix + encodeURIComponent(raw);
+            return `<a class="dc-path-link dc-copyable" href="${escapeAttr(href)}" data-copy-value="${escapeAttr(raw)}" ` +
+                `data-gvim-path="${escapeAttr(raw)}" title="Open with gvim (Alt+click uses server fallback)">${escapeHtml(text)}</a>`;
+        }
+        return escapeHtml(text);
+    }
+
+    function _dcSortValue(cell) {
+        const raw = (cell && (cell.dataset.raw || cell.innerText) || '').trim();
+        if (raw.includes('/')) {
+            const idx = { WNS: 0, TNS: 1, NVP: 2 }[_dcPickerApplied.sortMetric] || 0;
+            return raw.split('/')[idx]?.trim() || '';
+        }
+        return raw;
+    }
+
+    function _enhanceDcTables(container) {
+        container.querySelectorAll('table').forEach((table, tableIndex) => {
+            const body = table.tBodies[0];
+            if (!body) return;
+            Array.from(body.rows).forEach((row, rowIndex) => {
+                row.dataset.dcOriginalIndex = String(rowIndex);
+                Array.from(row.cells).forEach(cell => {
+                    if (!cell.dataset.raw) cell.dataset.raw = cell.innerText.trim();
+                    if (_dcPickerApplied.copyOnClick) {
+                        const childCopy = cell.querySelector('[data-copy-value]');
+                        cell.classList.add('dc-copyable');
+                        cell.dataset.copyValue = childCopy?.dataset.copyValue || cell.dataset.raw;
+                        cell.title = cell.title || 'Click to copy raw value';
+                    }
+                });
+            });
+            const headerRow = table.tHead && table.tHead.rows[table.tHead.rows.length - 1];
+            if (!headerRow) return;
+            Array.from(headerRow.cells).forEach((th, colIndex) => {
+                if (!th.dataset.raw) th.dataset.raw = th.innerText.trim();
+                th.classList.add('dc-sortable');
+                th.dataset.dcSortState = 'none';
+                th.setAttribute('tabindex', '0');
+                th.setAttribute('role', 'button');
+                th.setAttribute('aria-label', `${th.innerText.trim()}: sort ascending`);
+                if (!th.querySelector('.sort-indicator')) {
+                    th.insertAdjacentHTML('beforeend', '<span class="sort-indicator" aria-hidden="true">⇅</span>');
+                }
+                const sort = () => _sortDcTable(table, th, colIndex);
+                th.addEventListener('click', sort);
+                th.addEventListener('keydown', e => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sort(); }
+                });
+            });
+            table.dataset.dcSortTable = table.dataset.dcSortTable || `dc-${tableIndex}`;
+        });
+    }
+
+    function _sortDcTable(table, activeTh, colIndex) {
+        const body = table.tBodies[0];
+        const current = activeTh.dataset.dcSortState || 'none';
+        const next = current === 'none' ? 'asc' : current === 'asc' ? 'desc' : 'none';
+        const headerRow = table.tHead.rows[table.tHead.rows.length - 1];
+        Array.from(headerRow.cells).forEach(th => {
+            th.dataset.dcSortState = 'none';
+            th.classList.remove('sort-asc', 'sort-desc');
+            const indicator = th.querySelector('.sort-indicator');
+            if (indicator) indicator.textContent = '⇅';
+            th.setAttribute('aria-sort', 'none');
+        });
+        const rows = Array.from(body.rows);
+        if (next === 'none') {
+            rows.sort((a, b) => Number(a.dataset.dcOriginalIndex) - Number(b.dataset.dcOriginalIndex));
+        } else {
+            rows.sort((a, b) => {
+                const av = _dcSortValue(a.cells[colIndex]);
+                const bv = _dcSortValue(b.cells[colIndex]);
+                const an = Number(av.replace(/[%,$]/g, ''));
+                const bn = Number(bv.replace(/[%,$]/g, ''));
+                let cmp;
+                if (av !== '' && bv !== '' && Number.isFinite(an) && Number.isFinite(bn)) cmp = an - bn;
+                else cmp = av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
+                return next === 'asc' ? cmp : -cmp;
+            });
+        }
+        rows.forEach(row => body.appendChild(row));
+        activeTh.dataset.dcSortState = next;
+        activeTh.classList.toggle('sort-asc', next === 'asc');
+        activeTh.classList.toggle('sort-desc', next === 'desc');
+        activeTh.setAttribute('aria-sort', next === 'none' ? 'none' : next === 'asc' ? 'ascending' : 'descending');
+        const indicator = activeTh.querySelector('.sort-indicator');
+        if (indicator) indicator.textContent = next === 'none' ? '⇅' : next === 'asc' ? '↑' : '↓';
+        activeTh.setAttribute('aria-label', `${activeTh.dataset.raw || activeTh.innerText.replace(/[⇅↑↓]/g, '').trim()}: ` +
+            (next === 'none' ? 'sort ascending' : next === 'asc' ? 'sort descending' : 'restore original order'));
+    }
+
+    async function _openDcPathFallback(path) {
+        try {
+            const resp = await fetch('/api/tools/source-files/gvim', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path }),
+            });
+            const result = await resp.json();
+            if (!resp.ok || !result.ok) throw new Error(result.error || 'Open failed');
+            if (window.AppUI) AppUI.toast(result.message || 'Opened in gvim', 'success');
+        } catch (e) {
+            if (window.AppUI) AppUI.toast(e.message || 'Could not open path', 'error');
+        }
+    }
+
+    document.addEventListener('click', function(e) {
+        const copyTarget = e.target.closest('#dcReportWrap [data-copy-value]');
+        if (!copyTarget) return;
+        const isPathLink = copyTarget.matches('.dc-path-link');
+        if (isPathLink && !e.altKey) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (isPathLink && e.altKey) {
+            _openDcPathFallback(copyTarget.dataset.gvimPath || copyTarget.dataset.copyValue);
+            return;
+        }
+        _copyDcText(copyTarget.dataset.copyValue || '', 'Value copied');
+    });
+
     function _renderDcSubSection(sec, runs, colHeaders, baseline, showChange) {
         // 提示类条目 (如筛选说明)
         if (sec.isNote) {
@@ -2382,7 +3081,10 @@
             colHeaders.forEach(ch => {
                 const run = runs.find(r => r.rec.id === ch.recId);
                 const v = _dcGetValue(run, row.path);
-                const display = (v === undefined) ? '<span style="color:#bbb;">—</span>' : escapeHtml((row.fmt || _fmtDcCell)(v));
+                const formatted = v === undefined ? null : (row.fmt || _fmtDcCell)(v);
+                const display = (v === undefined)
+                    ? '<span style="color:#bbb;">—</span>'
+                    : _dcDisplayHtml(v, formatted);
                 let cls = '';
                 let title = '';
                 if (showChange && baseline && ch.recId !== baseline.rec.id) {
@@ -2397,7 +3099,8 @@
                         }
                     }
                 }
-                html += `<td${cls}${title}>${display}</td>`;
+                const rawAttr = v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+                html += `<td data-raw="${escapeAttr(rawAttr)}"${cls}${title}>${display}</td>`;
             });
             html += '</tr>';
         });
@@ -2519,6 +3222,14 @@
     })();
 
     function onDcRunCheck(recId, checked) {
+        if (_dcVsMode) {
+            if (checked) _dcVsDraftIds.add(recId);
+            else _dcVsDraftIds.delete(recId);
+            _syncDcVsUi();
+            const option = document.querySelector(`[data-dc-rid="${recId}"]`)?.closest('.dc-run-option');
+            if (option) option.classList.toggle('vs-selected', checked);
+            return;
+        }
         if (checked) _dcReportSelectedIds.add(recId);
         else _dcReportSelectedIds.delete(recId);
         renderDcReportSections();
@@ -4389,7 +5100,7 @@
         }
     }
 
-    // 表格排序: 按列点击切换升/降序
+    // 表格排序: 按列点击切换升序 → 降序 → 原始顺序
     // 状态保存到 window._tableSortState, 跨多次排序保留 (同一列再点翻转, 换列重置)
     const _tableSortState = {};
     function sortTable(tblId, colIdx, isNumeric) {
@@ -4398,14 +5109,19 @@
         const tbody = tbl.querySelector('tbody');
         if (!tbody) return;
         const rows = Array.from(tbody.querySelectorAll('tr'));
+        rows.forEach((row, index) => {
+            if (row.dataset.originalIndex === undefined) row.dataset.originalIndex = String(index);
+        });
         const key = `${tblId}_${colIdx}`;
-        const dir = _tableSortState[key] === 'asc' ? 'desc' : 'asc';
+        const current = _tableSortState[key] || 'none';
+        const dir = current === 'none' ? 'asc' : current === 'asc' ? 'desc' : 'none';
         // 切换列时重置其他列的指示器
         _tableSortState[key] = dir;
         Object.keys(_tableSortState).forEach(k => {
             if (k !== key) delete _tableSortState[k];
         });
         rows.sort((a, b) => {
+            if (dir === 'none') return Number(a.dataset.originalIndex) - Number(b.dataset.originalIndex);
             const aCell = a.cells[colIdx];
             const bCell = b.cells[colIdx];
             const av = aCell ? (aCell.dataset.raw || '') : '';
@@ -4432,9 +5148,10 @@
         });
         const th = tbl.querySelectorAll('th')[colIdx];
         if (th) {
-            th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
+            if (dir !== 'none') th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
             const ind = th.querySelector('.sort-indicator');
-            if (ind) ind.textContent = dir === 'asc' ? '↑' : '↓';
+            if (ind) ind.textContent = dir === 'none' ? '⇅' : dir === 'asc' ? '↑' : '↓';
+            th.setAttribute('aria-sort', dir === 'none' ? 'none' : dir === 'asc' ? 'ascending' : 'descending');
         }
     }
 
@@ -4781,13 +5498,18 @@
         const tbody = tbl.querySelector('tbody');
         if (!tbody) return;
         const rows = Array.from(tbody.querySelectorAll('tr'));
+        rows.forEach((row, index) => {
+            if (row.dataset.originalIndex === undefined) row.dataset.originalIndex = String(index);
+        });
         const key = `combinedTableContainer_${colIdx}`;
-        const dir = _tableSortState[key] === 'asc' ? 'desc' : 'asc';
+        const current = _tableSortState[key] || 'none';
+        const dir = current === 'none' ? 'asc' : current === 'asc' ? 'desc' : 'none';
         _tableSortState[key] = dir;
         Object.keys(_tableSortState).forEach(k => {
             if (k !== key && k.startsWith('combinedTableContainer_')) delete _tableSortState[k];
         });
         rows.sort((a, b) => {
+            if (dir === 'none') return Number(a.dataset.originalIndex) - Number(b.dataset.originalIndex);
             const aCell = a.cells[colIdx];
             const bCell = b.cells[colIdx];
             const av = aCell ? (aCell.dataset.raw || '') : '';
@@ -4819,9 +5541,10 @@
         if (lastHeaderRow) {
             const th = lastHeaderRow.querySelectorAll('th')[colIdx];
             if (th) {
-                th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
+                if (dir !== 'none') th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
                 const ind = th.querySelector('.sort-indicator');
-                if (ind) ind.textContent = dir === 'asc' ? '↑' : '↓';
+                if (ind) ind.textContent = dir === 'none' ? '⇅' : dir === 'asc' ? '↑' : '↓';
+                th.setAttribute('aria-sort', dir === 'none' ? 'none' : dir === 'asc' ? 'ascending' : 'descending');
             }
         }
     }

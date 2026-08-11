@@ -16,7 +16,10 @@ describe('Dashboard Store', () => {
 
   it('setRecords updates records', () => {
     const store = useDashboardStore()
-    store.setRecords([{ id: 1, name: 'r1' }, { id: 2, name: 'r2' }])
+    store.setRecords([
+      { id: 1, name: 'r1' },
+      { id: 2, name: 'r2' }
+    ])
     expect(store.records).toHaveLength(2)
   })
 
@@ -24,9 +27,9 @@ describe('Dashboard Store', () => {
     const store = useDashboardStore()
     store.setRecords([{ id: 1 }, { id: 2 }])
     store.toggleSelect(1)
-    expect(store.selectedIds.has(1)).toBe(true)
+    expect(store.selectedIds.has('1')).toBe(true)
     store.toggleSelect(1)
-    expect(store.selectedIds.has(1)).toBe(false)
+    expect(store.selectedIds.has('1')).toBe(false)
   })
 
   it('selectAll selects all records', () => {
@@ -50,10 +53,10 @@ describe('Dashboard Store', () => {
     store.setRecords([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }])
     store.selectFirstN(3)
     expect(store.selectedIds.size).toBe(3)
-    expect(store.selectedIds.has(1)).toBe(true)
-    expect(store.selectedIds.has(2)).toBe(true)
-    expect(store.selectedIds.has(3)).toBe(true)
-    expect(store.selectedIds.has(4)).toBe(false)
+    expect(store.selectedIds.has('1')).toBe(true)
+    expect(store.selectedIds.has('2')).toBe(true)
+    expect(store.selectedIds.has('3')).toBe(true)
+    expect(store.selectedIds.has('4')).toBe(false)
   })
 
   it('startRequest returns seq and signal', () => {
@@ -73,7 +76,10 @@ describe('Dashboard Store', () => {
 
   it('selectedRecords computed property', () => {
     const store = useDashboardStore()
-    store.setRecords([{ id: 1, name: 'a' }, { id: 2, name: 'b' }])
+    store.setRecords([
+      { id: 1, name: 'a' },
+      { id: 2, name: 'b' }
+    ])
     store.toggleSelect(1)
     expect(store.selectedRecords).toHaveLength(1)
     expect(store.selectedRecords[0].name).toBe('a')

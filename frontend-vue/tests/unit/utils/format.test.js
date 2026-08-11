@@ -38,8 +38,9 @@ describe('Format Utils', () => {
 
   describe('escapeHtml', () => {
     it('escapes HTML special characters', () => {
-      expect(escapeHtml('<script>alert("xss")</script>'))
-        .toBe('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;')
+      expect(escapeHtml('<script>alert("xss")</script>')).toBe(
+        '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;'
+      )
     })
     it('returns empty string for null', () => {
       expect(escapeHtml(null)).toBe('')
@@ -48,8 +49,9 @@ describe('Format Utils', () => {
 
   describe('truncate', () => {
     it('truncates long strings', () => {
-      expect(truncate('this is a very long string that should be truncated', 20))
-        .toBe('this is a very long ...')
+      expect(truncate('this is a very long string that should be truncated', 20)).toBe(
+        'this is a very long ...'
+      )
     })
     it('does not truncate short strings', () => {
       expect(truncate('short', 50)).toBe('short')

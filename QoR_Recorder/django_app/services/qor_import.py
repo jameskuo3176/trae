@@ -8,13 +8,84 @@ import re
 import logging
 from datetime import datetime
 from typing import Optional
+from django.conf import settings
 
 from django.db import transaction
 from django.db.models import Q
 
-from django_app.core.models import Module, QorRecord, ViolationPath, RunNote
+from django_app.core.models import (
+    GlobalModule, LegacyModuleMapping, Module, ProjectModule, QorRecord,
+    ViolationPath, RunNote, normalize_module_name,
+)
+from django_app.services.path_derivation import derive_version, normalize_full_dir
 
 _log = logging.getLogger(__name__)
+
+
+def associate_global_module(project, legacy_module):
+    """Idempotently bridge a legacy local module to canonical metadata."""
+    key = normalize_module_name(legacy_module.name)
+    with transaction.atomic(using='default'):
+        canonical, _ = GlobalModule.objects.get_or_create(
+            normalized_name=key,
+            defaults={
+                'name': legacy_module.name,
+                'description': legacy_module.description,
+            },
+        )
+        ProjectModule.objects.get_or_create(
+            project_id=project.id,
+            module=canonical,
+            defaults={
+                'owner_id': legacy_module.owner_id,
+                'collaborators': legacy_module.collaborators,
+            },
+        )
+        LegacyModuleMapping.objects.update_or_create(
+            project_id=project.id,
+            legacy_module_id=legacy_module.id,
+            defaults={'module': canonical, 'legacy_name': legacy_module.name},
+        )
+    return canonical
+
+
+def mirror_heavy_document(project_id, instance):
+    """Best-effort Mongo side of hybrid writes after the ORM save succeeds."""
+    if getattr(settings, 'PERSISTENCE_MODE', 'orm') == 'orm':
+        return
+    try:
+        from django_app.repositories import get_record_repository
+        repository = get_record_repository()
+        if isinstance(instance, QorRecord):
+            value = instance.to_dict()
+            value.update({
+                'id': str(instance.id), 'legacy_id': str(instance.id),
+                'project_id': project_id, 'legacy_module_id': instance.module_id,
+            })
+            mapping = LegacyModuleMapping.objects.filter(
+                project_id=project_id, legacy_module_id=instance.module_id
+            ).values_list('module_id', flat=True).first()
+            value['module_id'] = mapping
+            repository.upsert_record(value)
+        elif isinstance(instance, ViolationPath):
+            value = instance.to_dict()
+            value.update({
+                'id': str(instance.id), 'project_id': project_id,
+                'record_id': str(instance.qor_record_id),
+            })
+            value.pop('qor_record_id', None)
+            repository.upsert_violation(value)
+        elif isinstance(instance, RunNote):
+            value = instance.to_dict()
+            value.update({
+                'id': str(instance.id), 'project_id': project_id,
+                'record_id': str(instance.qor_record_id),
+            })
+            value.pop('qor_record_id', None)
+            repository.upsert_note(value)
+    except Exception:
+        # Hybrid mode keeps the relational write available during Mongo outages.
+        _log.exception('Mongo mirror failed for %s id=%s', type(instance).__name__, instance.pk)
 
 
 # ---------------------------------------------------------------------------
@@ -384,8 +455,7 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                             mod = Module(project_id=project.id, name=mod_name)
                             mod.save()
                         module_cache[mod_name] = mod
-
-            rec_version = sanitize_str(record.get('version')) or sanitize_str(version) or 'v1'
+            associate_global_module(project, mod)
 
             # 提取本条 record 的 full_dir (用于精确去重)
             _rec_full_dir = sanitize_str(record.get('full_dir'))
@@ -402,6 +472,10 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                         pass
             _rec_full_dir = str(_rec_full_dir)[:500] if _rec_full_dir else None
             _rec_full_dir = validate_full_dir(_rec_full_dir, 'full_dir')  # 校验绝对路径
+            # New imports have one canonical source of truth. Caller-supplied
+            # version is intentionally ignored and there is no v1 fallback.
+            rec_version = derive_version(_rec_full_dir)
+            _rec_full_dir = normalize_full_dir(_rec_full_dir)
 
             # 去重: QorRecord 唯一键是 (module_id, version, full_dir)
             q = QorRecord.objects.filter(module_id=mod.id, version=rec_version)
@@ -489,6 +563,7 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                     if not existing.released_by and current_user and current_user.is_authenticated:
                         existing.released_by = current_user.id
                 existing.save()
+                mirror_heavy_document(project.id, existing)
                 updated_count += 1
             else:
                 # 新建 record 路径: 优先从 record.full_dir 读, 退化到 extra_fields.full_dir
@@ -564,6 +639,7 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                     if current_user and current_user.is_authenticated:
                         qor.released_by = current_user.id
                 qor.save()
+                mirror_heavy_document(project.id, qor)
                 saved_count += 1
         except Exception as e:
             import traceback
@@ -614,7 +690,10 @@ def merge_power_to_db(records, project, module_id, version, source_filename,
         if not mod:
             continue
 
-        rec_version = record.get('version') or version or 'v1'
+        full_dir = record.get('full_dir')
+        if not full_dir and isinstance(record.get('extra_fields'), dict):
+            full_dir = record['extra_fields'].get('full_dir')
+        rec_version = derive_version(full_dir)
 
         existing = QorRecord.objects.filter(module_id=mod.id, version=rec_version).first()
 
@@ -655,6 +734,7 @@ def merge_power_to_db(records, project, module_id, version, source_filename,
                     if not existing.released_by and current_user and current_user.is_authenticated:
                         existing.released_by = current_user.id
                 existing.save()
+                mirror_heavy_document(project.id, existing)
                 merged_count += 1
         else:
             _fd = ''
@@ -685,6 +765,7 @@ def merge_power_to_db(records, project, module_id, version, source_filename,
                 if current_user and current_user.is_authenticated:
                     qor.released_by = current_user.id
             qor.save()
+            mirror_heavy_document(project.id, qor)
             created_count += 1
 
     return merged_count, created_count
@@ -729,7 +810,10 @@ def save_violations_to_db(records, project, module_id, version, source_filename,
                 skipped_count += 1
                 continue
 
-            rec_version = sanitize_str(record.get('version')) or sanitize_str(version) or 'v1'
+            full_dir = record.get('full_dir')
+            if not full_dir and isinstance(record.get('extra_fields'), dict):
+                full_dir = record['extra_fields'].get('full_dir')
+            rec_version = derive_version(full_dir)
 
             qor_rec = QorRecord.objects.filter(module_id=mod.id, version=rec_version).first()
             if not qor_rec:
@@ -757,6 +841,7 @@ def save_violations_to_db(records, project, module_id, version, source_filename,
                 source_file=sanitize_str(source_filename),
             )
             vp.save()
+            mirror_heavy_document(project.id, vp)
             saved_count += 1
         except Exception:
             skipped_count += 1
@@ -810,8 +895,9 @@ def save_notes_to_db(records, project, module_id, version, source_filename, full
                 skipped_count += 1
                 continue
 
-            rec_version = sanitize_str(record.get('version')) or sanitize_str(version) or 'v1'
             row_full_dir = sanitize_str(record.get('full_dir'), MAX_STR_LEN) or full_dir
+            rec_version = derive_version(row_full_dir)
+            row_full_dir = normalize_full_dir(row_full_dir)
 
             # 查找关联的 QorRecord
             qor_rec = QorRecord.objects.filter(module_id=mod.id, version=rec_version).first()
@@ -873,6 +959,7 @@ def save_notes_to_db(records, project, module_id, version, source_filename, full
                 full_dir=sanitize_str(row_full_dir, MAX_STR_LEN),
             )
             note.save()
+            mirror_heavy_document(project.id, note)
             saved_count += 1
         except Exception:
             skipped_count += 1

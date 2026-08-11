@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import { adminApi } from '@/api/admin'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -18,7 +18,7 @@ async function loadData() {
       const data = await adminApi.getDashboardConfigs()
       snapshots.value = data || []
     } else {
-      const data = await adminApi.getDashboardConfigs() // 使用同接口
+      await adminApi.getDashboardConfigs() // 使用同接口
       backups.value = [
         { id: 1, created_at: '2026-08-09 14:30', status: 'OK', size: '2.4MB' },
         { id: 2, created_at: '2026-08-08 00:00', status: 'OK', size: '2.3MB' }
@@ -32,6 +32,10 @@ async function loadData() {
 }
 
 onMounted(() => loadData())
+function selectTab(tab) {
+  activeTab.value = tab
+  loadData()
+}
 
 const pendingConfirm = ref(null)
 
@@ -116,25 +120,23 @@ async function handleConfirm() {
           <span>📸 Snapshot & Backup</span>
         </div>
         <div class="header-actions">
-          <button class="btn btn-sm" @click="createSnapshot" v-if="activeTab === 'snapshots'">
+          <button v-if="activeTab === 'snapshots'" class="btn btn-sm" @click="createSnapshot">
             + 创建快照
           </button>
-          <button class="btn btn-sm" @click="createBackup" v-else>
-            + 创建备份
-          </button>
+          <button v-else class="btn btn-sm" @click="createBackup">+ 创建备份</button>
         </div>
       </div>
 
       <div class="tabs">
         <button
           :class="['tab-btn', { active: activeTab === 'snapshots' }]"
-          @click="activeTab = 'snapshots'; loadData()"
+          @click="selectTab('snapshots')"
         >
           Snapshots
         </button>
         <button
           :class="['tab-btn', { active: activeTab === 'backups' }]"
-          @click="activeTab = 'backups'; loadData()"
+          @click="selectTab('backups')"
         >
           Backups
         </button>
@@ -144,9 +146,7 @@ async function handleConfirm() {
         <LoadingSpinner v-if="loading" text="加载中..." />
 
         <div v-else-if="activeTab === 'snapshots'">
-          <div v-if="snapshots.length === 0" class="empty-state">
-            暂无快照
-          </div>
+          <div v-if="snapshots.length === 0" class="empty-state">暂无快照</div>
           <div v-else class="list-container">
             <div v-for="snap in snapshots" :key="snap.id" class="list-item">
               <div class="item-main">
@@ -154,9 +154,7 @@ async function handleConfirm() {
                 <span class="item-meta">{{ snap.created_at }}</span>
               </div>
               <div class="item-actions">
-                <button class="btn btn-sm btn-default" @click="verifySnapshot(snap)">
-                  ✓ 验证
-                </button>
+                <button class="btn btn-sm btn-default" @click="verifySnapshot(snap)">✓ 验证</button>
                 <button class="btn btn-sm btn-danger" @click="rollbackSnapshot(snap)">
                   ↩ 回滚
                 </button>
@@ -166,9 +164,7 @@ async function handleConfirm() {
         </div>
 
         <div v-else>
-          <div v-if="backups.length === 0" class="empty-state">
-            暂无备份
-          </div>
+          <div v-if="backups.length === 0" class="empty-state">暂无备份</div>
           <div v-else class="list-container">
             <div v-for="bk in backups" :key="bk.id" class="list-item">
               <div class="item-main">
@@ -176,7 +172,10 @@ async function handleConfirm() {
                 <span class="item-meta">{{ bk.created_at }}</span>
               </div>
               <div class="item-right">
-                <span class="tag" :style="{ background: bk.status === 'OK' ? '#4caf50' : '#ff9800' }">
+                <span
+                  class="tag"
+                  :style="{ background: bk.status === 'OK' ? '#4caf50' : '#ff9800' }"
+                >
                   {{ bk.status }}
                 </span>
                 <span class="item-meta">{{ bk.size }}</span>
@@ -193,7 +192,7 @@ async function handleConfirm() {
       :title="confirmConfig.title"
       :message="confirmConfig.message"
       :confirm-text="confirmConfig.confirmText"
-      :isDanger="confirmConfig.isDanger"
+      :is-danger="confirmConfig.isDanger"
       @confirm="handleConfirm"
     />
   </div>

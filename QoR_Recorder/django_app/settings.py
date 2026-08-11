@@ -32,8 +32,12 @@ if _DATA_DIR:
 else:
     DATA_DIR = PARENT_DIR / 'data'
 
-UPLOAD_FOLDER = str(DATA_DIR / 'uploads')
-BACKUP_DIR = str(DATA_DIR / 'backups')
+UPLOAD_FOLDER = str(Path(
+    os.environ.get('UPLOAD_FOLDER', str(DATA_DIR / 'uploads'))
+).resolve())
+BACKUP_DIR = str(Path(
+    os.environ.get('BACKUP_DIR', str(DATA_DIR / 'backups'))
+).resolve())
 MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB
 
 # 确保数据目录存在
@@ -111,7 +115,11 @@ _DEFAULT_SECRET_KEY = 'qor-recorder-dev-key-change-in-prod'
 
 DEBUG = os.environ.get('DEBUG', '0') == '1'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [
+    value.strip()
+    for value in os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+    if value.strip()
+]
 
 # ===========================================================================
 # 应用定义
@@ -248,6 +256,12 @@ SESSION_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', '0') == '1'
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 SESSION_COOKIE_AGE = int(os.environ.get('SESSION_LIFETIME_HOURS', '12')) * 3600
+SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', '0') == '1'
+SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', '0'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = (
+    os.environ.get('SECURE_HSTS_INCLUDE_SUBDOMAINS', '0') == '1'
+)
+SECURE_HSTS_PRELOAD = os.environ.get('SECURE_HSTS_PRELOAD', '0') == '1'
 
 # ===========================================================================
 # CSRF
@@ -255,6 +269,15 @@ SESSION_COOKIE_AGE = int(os.environ.get('SESSION_LIFETIME_HOURS', '12')) * 3600
 CSRF_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', '0') == '1'
+# Django expects browser clients to send the cookie token as X-CSRFToken.
+CSRF_HEADER_NAME = 'HTTP_X_CSRFTOKEN'
+CSRF_TRUSTED_ORIGINS = [
+    value.strip()
+    for value in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
+    if value.strip()
+]
+# Trust only the proxy's scheme header; production ingress must overwrite it.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # ===========================================================================
 # 静态文件 / 媒体文件
@@ -287,6 +310,24 @@ ENFORCE_SECRET_KEY = os.environ.get('ENFORCE_SECRET_KEY', '1') == '1'
 # ===========================================================================
 MONGODB_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017')
 MONGODB_DB = os.environ.get('MONGODB_DB', 'qor_recorder')
+MONGODB_DATA_DIR = Path(
+    os.environ.get('MONGODB_DATA_DIR', str(PARENT_DIR / 'mongodbdir'))
+).resolve()
+MONGODB_TIMEOUT_MS = int(os.environ.get('MONGODB_TIMEOUT_MS', '2000'))
+
+# orm: project SQLite only; mongo: Mongo only; hybrid: Mongo-first with ORM
+# fallback. DB_TYPE remains accepted for legacy deployments.
+_default_persistence = 'hybrid' if DB_TYPE == DB_TYPE_MONGODB else 'orm'
+PERSISTENCE_MODE = os.environ.get('PERSISTENCE_MODE', _default_persistence).strip().lower()
+if PERSISTENCE_MODE not in ('orm', 'mongo', 'hybrid'):
+    raise RuntimeError('PERSISTENCE_MODE must be orm, mongo, or hybrid')
+
+# Deployment cutover marker. Nginx serves Vue by default while the legacy
+# server-rendered dashboard remains reachable at /legacy/dashboard/.
+FRONTEND_MODE = os.environ.get('FRONTEND_MODE', 'vue').strip().lower()
+if FRONTEND_MODE not in ('vue', 'legacy'):
+    raise RuntimeError('FRONTEND_MODE must be vue or legacy')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', '/').strip() or '/'
 
 # ===========================================================================
 # 日志

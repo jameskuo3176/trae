@@ -18,6 +18,7 @@ import re
 from typing import Any
 
 from django_app.services.qor_import import validate_full_dir
+from django_app.services.path_derivation import PathDerivationError, derive_version, normalize_full_dir
 
 _log = logging.getLogger(__name__)
 logger = _log
@@ -137,10 +138,17 @@ def _validate_upload(upload: dict, path: str) -> None:
         raise JSONUploadError(f'{path}.project_id', '必填, 整数 >= 1')
 
     version = upload.get('version')
-    if not version or not isinstance(version, str):
-        raise JSONUploadError(f'{path}.version', '必填, 字符串')
-    if len(version) > MAX_VERSION_LEN:
+    if version is not None and not isinstance(version, str):
+        raise JSONUploadError(f'{path}.version', '若提供则必须为字符串；服务端会忽略并从 full_dir 派生')
+    if version and len(version) > MAX_VERSION_LEN:
         raise JSONUploadError(f'{path}.version', f'长度不能超过 {MAX_VERSION_LEN}')
+    full_dir = upload.get('full_dir')
+    if not full_dir or not isinstance(full_dir, str):
+        raise JSONUploadError(f'{path}.full_dir', '必填, 字符串；version 仅从该路径派生')
+    try:
+        derive_version(full_dir)
+    except PathDerivationError as exc:
+        raise JSONUploadError(f'{path}.full_dir', exc.message) from exc
 
     if 'module_id' in upload and upload['module_id'] is not None:
         if not isinstance(upload['module_id'], int) or upload['module_id'] < 1:
@@ -368,11 +376,15 @@ def json_to_qor_records(
     for rec in records_raw:
         # 字段优先级: record 自身 > upload 顶层 > 入参 default
         module_name = _sanitize_str(rec.get('module_name'))
-        version = _sanitize_str(rec.get('version')) or _sanitize_str(default_version)
         full_dir = (_sanitize_str(rec.get('full_dir')) or
                     _sanitize_str(default_full_dir) or
                     _sanitize_str(upload.get('full_dir')))
         full_dir = validate_full_dir(full_dir, 'full_dir')  # 校验绝对路径
+        try:
+            full_dir = normalize_full_dir(full_dir)
+            version = derive_version(full_dir)
+        except PathDerivationError as exc:
+            raise JSONUploadError('$.records[].full_dir', exc.message) from exc
         release_dir = (_sanitize_str(rec.get('release_dir')) or
                        _sanitize_str(default_release_dir) or
                        _sanitize_str(upload.get('release_dir')))
@@ -460,6 +472,7 @@ def json_to_violation_records(
             'st_fanout': _coerce_num(v.get('st_fanout')),
             'et_fanin': _coerce_num(v.get('et_fanin')),
             'et_fanout': _coerce_num(v.get('et_fanout')),
+            'full_dir': _sanitize_str(v.get('full_dir')) or _sanitize_str(upload.get('full_dir')),
         }
         # 保留 extra 字段
         if v.get('clock_domain'):
@@ -505,6 +518,7 @@ def json_to_notes_records(
             out.append({
                 'module_name': mn,
                 'full_dir': ng_full_dir,
+                'version': derive_version(ng_full_dir),
                 'item': item,
                 'description': desc_text,
                 'category': _sanitize_str(it.get('category')),

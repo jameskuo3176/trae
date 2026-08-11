@@ -4,7 +4,6 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useTheme } from '@/composables/useTheme'
 import ChangePasswordModal from './ChangePasswordModal.vue'
-import ThemeModal from './ThemeModal.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -43,6 +42,14 @@ function toggleDropdown() {
 function closeDropdown() {
   showDropdown.value = false
 }
+function openTheme() {
+  showThemeModal.value = true
+  closeDropdown()
+}
+function openChangePassword() {
+  showChangePassword.value = true
+  closeDropdown()
+}
 </script>
 
 <template>
@@ -65,21 +72,17 @@ function closeDropdown() {
     <div class="navbar-actions">
       <div class="user-dropdown" @click="toggleDropdown">
         <button class="user-btn">
-          <span class="user-avatar">{{ auth.user?.username?.charAt(0)?.toUpperCase() || 'U' }}</span>
+          <span class="user-avatar">{{
+            auth.user?.username?.charAt(0)?.toUpperCase() || 'U'
+          }}</span>
           <span class="user-name">{{ auth.user?.username }}</span>
           <span class="dropdown-icon">▼</span>
         </button>
         <div v-if="showDropdown" class="dropdown-menu">
-          <button class="dropdown-item" @click="showThemeModal = true; closeDropdown()">
-            🎨 Theme
-          </button>
-          <button class="dropdown-item" @click="showChangePassword = true; closeDropdown()">
-            🔑 Change Password
-          </button>
+          <button class="dropdown-item" @click="openTheme">🎨 Theme</button>
+          <button class="dropdown-item" @click="openChangePassword">🔑 Change Password</button>
           <div class="dropdown-divider"></div>
-          <button class="dropdown-item logout-item" @click="handleLogout">
-            🚪 Logout
-          </button>
+          <button class="dropdown-item logout-item" @click="handleLogout">🚪 Logout</button>
         </div>
       </div>
     </div>
@@ -161,7 +164,7 @@ function closeDropdown() {
   height: 28px;
   border-radius: 50%;
   background: var(--color-primary);
-  color: white;
+  color: var(--color-on-primary);
   display: flex;
   align-items: center;
   justify-content: center;

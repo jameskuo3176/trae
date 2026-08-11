@@ -1,5 +1,10 @@
 # 迁移指南：SQLite → MongoDB + 按项目分库
 
+> **Historical document.** This guide describes the pre-Django v4 migration
+> utilities and must not be used for the current migration. Use
+> `FINAL_MIGRATION_RUNBOOK.md`; current Django management commands are dry-run
+> by default and persist only when `--execute` is supplied.
+
 > 本文档说明如何将 QoR Recorder 从 v3.x 单库 SQLite 架构迁移到 v4.0 按项目分库 + MongoDB dual-write 架构。
 
 ## 1. 升级架构概览

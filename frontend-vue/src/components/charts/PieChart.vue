@@ -12,14 +12,16 @@ const chartOption = computed(() => {
   return {
     tooltip: { trigger: 'item' },
     legend: { textStyle: { color: '#8b9bb4' } },
-    series: [{
-      type: 'pie',
-      radius: ['40%', '70%'],
-      data: records.map(r => ({
-        name: `${r.module_name || ''} (${r.tag || r.version || r.id})`,
-        value: r.area_total ?? 0
-      }))
-    }]
+    series: [
+      {
+        type: 'pie',
+        radius: ['40%', '70%'],
+        data: records.map(r => ({
+          name: `${r.module_name || ''} (${r.tag || r.version || r.id})`,
+          value: r.area_total ?? 0
+        }))
+      }
+    ]
   }
 })
 </script>

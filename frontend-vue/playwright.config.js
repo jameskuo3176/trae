@@ -1,5 +1,25 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const projects = [
+  {
+    name: 'chromium',
+    use: { ...devices['Desktop Chrome'] }
+  }
+]
+
+if (process.env.PLAYWRIGHT_EXTENDED === '1') {
+  projects.push(
+    {
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'] }
+    },
+    {
+      name: 'msedge',
+      use: { ...devices['Desktop Edge'], channel: 'msedge' }
+    }
+  )
+}
+
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
@@ -12,12 +32,7 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'only-on-failure'
   },
-  projects: [
-    {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'] }
-    }
-  ],
+  projects,
   webServer: {
     command: 'npm run dev',
     url: 'http://localhost:5173',

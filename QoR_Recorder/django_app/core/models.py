@@ -14,6 +14,8 @@ import hashlib
 import hmac
 import json
 import secrets
+import re
+import unicodedata
 from datetime import datetime
 
 from django.contrib.auth.hashers import make_password, check_password
@@ -297,6 +299,75 @@ class ProjectMember(models.Model):
             'role': self.role,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+def normalize_module_name(name):
+    """Canonical module key shared by every project."""
+    if not isinstance(name, str):
+        raise ValueError('module name must be a string')
+    normalized = unicodedata.normalize('NFKC', name).strip().casefold()
+    normalized = re.sub(r'\s+', ' ', normalized)
+    if not normalized:
+        raise ValueError('module name must not be empty')
+    return normalized
+
+
+class GlobalModule(models.Model):
+    """Canonical module metadata in the default relational database.
+
+    The legacy ``Module`` model remains in project databases until all local
+    foreign keys have been migrated. New APIs expose this model's ID.
+    """
+    name = models.CharField(max_length=200)
+    normalized_name = models.CharField(max_length=200, unique=True, db_index=True)
+    description = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'global_modules'
+        ordering = ('normalized_name',)
+
+    def save(self, *args, **kwargs):
+        self.name = unicodedata.normalize('NFKC', self.name).strip()
+        self.normalized_name = normalize_module_name(self.name)
+        self.updated_at = timezone.now()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
+class ProjectModule(models.Model):
+    """Explicit many-to-many association between projects and global modules."""
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='module_links')
+    module = models.ForeignKey(GlobalModule, on_delete=models.CASCADE, related_name='project_links')
+    owner_id = models.IntegerField(null=True, blank=True, db_index=True)
+    collaborators = models.TextField(default='[]')
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'project_modules'
+        constraints = [
+            models.UniqueConstraint(fields=('project', 'module'), name='uq_project_global_module'),
+        ]
+
+
+class LegacyModuleMapping(models.Model):
+    """Rollback-safe mapping; no legacy project row is modified automatically."""
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='legacy_module_mappings')
+    legacy_module_id = models.BigIntegerField()
+    module = models.ForeignKey(GlobalModule, on_delete=models.CASCADE, related_name='legacy_mappings')
+    legacy_name = models.CharField(max_length=200)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'legacy_module_mappings'
+        constraints = [
+            models.UniqueConstraint(
+                fields=('project', 'legacy_module_id'), name='uq_project_legacy_module'
+            ),
+        ]
 
 
 class DataLock(models.Model):

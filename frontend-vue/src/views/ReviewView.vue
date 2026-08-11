@@ -27,20 +27,20 @@ const subsystemReview = ref({
 
 const tabCounts = computed(() => {
   return {
-    tile: reviews.filter(r => r.type === 'tile').length,
-    group: reviews.filter(r => r.type === 'group').length,
-    subsystem: reviews.filter(r => r.type === 'subsystem').length
+    tile: reviews.value.filter(r => r.type === 'tile').length,
+    group: reviews.value.filter(r => r.type === 'group').length,
+    subsystem: reviews.value.filter(r => r.type === 'subsystem').length
   }
 })
 
-const getStatusColor = (status) => {
+const getStatusColor = status => {
   if (status === 'APPROVED') return '#4caf50'
   if (status === 'REJECTED') return '#e74c3c'
   if (status === 'SUBMITTED') return '#3498db'
   return '#999'
 }
 
-const getStatusLabel = (status) => {
+const getStatusLabel = status => {
   if (status === 'APPROVED') return '已通过'
   if (status === 'REJECTED') return '已拒绝'
   if (status === 'SUBMITTED') return '已提交'
@@ -104,17 +104,11 @@ async function reject() {
     <FilterBar />
 
     <div class="tabs">
-      <button
-        :class="['tab-btn', { active: activeTab === 'tile' }]"
-        @click="activeTab = 'tile'"
-      >
+      <button :class="['tab-btn', { active: activeTab === 'tile' }]" @click="activeTab = 'tile'">
         Tile 评审
         <span v-if="tabCounts.tile" class="tab-count">{{ tabCounts.tile }}</span>
       </button>
-      <button
-        :class="['tab-btn', { active: activeTab === 'group' }]"
-        @click="activeTab = 'group'"
-      >
+      <button :class="['tab-btn', { active: activeTab === 'group' }]" @click="activeTab = 'group'">
         Group 评审
         <span v-if="tabCounts.group" class="tab-count">{{ tabCounts.group }}</span>
       </button>
@@ -149,22 +143,34 @@ async function reject() {
           </div>
           <div class="form-group checkbox-group">
             <label>
-              <input type="checkbox" v-model="tileReview.qaSignoff" />
+              <input v-model="tileReview.qaSignoff" type="checkbox" />
               QA 已签核
             </label>
           </div>
           <div class="actions-row">
-            <button class="btn" @click="saveTileReview" :disabled="tileReview.status !== 'DRAFT'">
+            <button class="btn" :disabled="tileReview.status !== 'DRAFT'" @click="saveTileReview">
               保存草稿
             </button>
-            <button class="btn btn-primary" @click="saveTileReview" :disabled="tileReview.status !== 'DRAFT'">
+            <button
+              class="btn btn-primary"
+              :disabled="tileReview.status !== 'DRAFT'"
+              @click="saveTileReview"
+            >
               提交评审
             </button>
             <div class="approval-actions">
-              <button class="btn btn-success" @click="approve" :disabled="tileReview.status !== 'SUBMITTED'">
+              <button
+                class="btn btn-success"
+                :disabled="tileReview.status !== 'SUBMITTED'"
+                @click="approve"
+              >
                 通过
               </button>
-              <button class="btn btn-danger" @click="reject" :disabled="tileReview.status !== 'SUBMITTED'">
+              <button
+                class="btn btn-danger"
+                :disabled="tileReview.status !== 'SUBMITTED'"
+                @click="reject"
+              >
                 拒绝
               </button>
             </div>
@@ -198,17 +204,29 @@ async function reject() {
             ></textarea>
           </div>
           <div class="actions-row">
-            <button class="btn" @click="saveGroupReview" :disabled="groupReview.status !== 'DRAFT'">
+            <button class="btn" :disabled="groupReview.status !== 'DRAFT'" @click="saveGroupReview">
               保存草稿
             </button>
-            <button class="btn btn-primary" @click="saveGroupReview" :disabled="groupReview.status !== 'DRAFT'">
+            <button
+              class="btn btn-primary"
+              :disabled="groupReview.status !== 'DRAFT'"
+              @click="saveGroupReview"
+            >
               提交评审
             </button>
             <div class="approval-actions">
-              <button class="btn btn-success" @click="approve" :disabled="groupReview.status !== 'SUBMITTED'">
+              <button
+                class="btn btn-success"
+                :disabled="groupReview.status !== 'SUBMITTED'"
+                @click="approve"
+              >
                 通过
               </button>
-              <button class="btn btn-danger" @click="reject" :disabled="groupReview.status !== 'SUBMITTED'">
+              <button
+                class="btn btn-danger"
+                :disabled="groupReview.status !== 'SUBMITTED'"
+                @click="reject"
+              >
                 拒绝
               </button>
             </div>
@@ -235,17 +253,23 @@ async function reject() {
             </select>
           </div>
           <div class="actions-row">
-            <button class="btn" :disabled="subsystemReview.status !== 'DRAFT'">
-              保存草稿
-            </button>
+            <button class="btn" :disabled="subsystemReview.status !== 'DRAFT'">保存草稿</button>
             <button class="btn btn-primary" :disabled="subsystemReview.status !== 'DRAFT'">
               提交评审
             </button>
             <div class="approval-actions">
-              <button class="btn btn-success" @click="approve" :disabled="subsystemReview.status !== 'SUBMITTED'">
+              <button
+                class="btn btn-success"
+                :disabled="subsystemReview.status !== 'SUBMITTED'"
+                @click="approve"
+              >
                 通过
               </button>
-              <button class="btn btn-danger" @click="reject" :disabled="subsystemReview.status !== 'SUBMITTED'">
+              <button
+                class="btn btn-danger"
+                :disabled="subsystemReview.status !== 'SUBMITTED'"
+                @click="reject"
+              >
                 拒绝
               </button>
             </div>

@@ -27,7 +27,6 @@ const newUser = ref({ username: '', password: '', role: 'owner', display_name: '
 // 记录管理筛选
 const recordFilter = ref({ project_id: '', module_id: '', version: '', owner_id: '' })
 const selectedRecordIds = ref(new Set())
-const recordOwners = ref([])
 
 // 排序状态
 const recordsSort = useTableSort('id', 'desc')
@@ -48,7 +47,16 @@ const roleLabels = {
 // 排序后的计算数据（带调试日志）
 const sortedRecords = computed(() => {
   const result = recordsSort.computeSorted(records.value)
-  console.log('[Admin] sortedRecords computed:', result?.length, 'rows, first 3:', (result || []).slice(0, 3).map(r => ({ id: r.id, proj: r.project_name || r.project_id, mod: r.module_name || r.module_id })))
+  console.log(
+    '[Admin] sortedRecords computed:',
+    result?.length,
+    'rows, first 3:',
+    (result || []).slice(0, 3).map(r => ({
+      id: r.id,
+      proj: r.project_name || r.project_id,
+      mod: r.module_name || r.module_id
+    }))
+  )
   return result
 })
 const sortedProjects = computed(() => projectsSort.computeSorted(projects.value))
@@ -92,133 +100,156 @@ watch(activeTab, () => {
 })
 
 // 项目变更 → 清除模块选择 + 自动加载记录
-watch(() => recordFilter.value.project_id, (newVal) => {
-  // 清除可能无效的模块选择
-  if (recordFilter.value.module_id) {
-    const validModuleIds = filterModules.value.map(m => String(m.id))
-    if (!validModuleIds.includes(String(recordFilter.value.module_id))) {
-      recordFilter.value.module_id = ''
+watch(
+  () => recordFilter.value.project_id,
+  () => {
+    // 清除可能无效的模块选择
+    if (recordFilter.value.module_id) {
+      const validModuleIds = filterModules.value.map(m => String(m.id))
+      if (!validModuleIds.includes(String(recordFilter.value.module_id))) {
+        recordFilter.value.module_id = ''
+      }
     }
+    // 自动加载记录（与原始 Django 模板行为一致）
+    loadRecords()
   }
-  // 自动加载记录（与原始 Django 模板行为一致）
-  loadRecords()
-})
+)
 
 // 模块变更 → 自动加载记录
-watch(() => recordFilter.value.module_id, (newVal, oldVal) => {
-  console.log('[Admin] module_id watcher:', oldVal, '→', newVal, '| project_id:', recordFilter.value.project_id)
-  loadRecords()
-})
+watch(
+  () => recordFilter.value.module_id,
+  (newVal, oldVal) => {
+    console.log(
+      '[Admin] module_id watcher:',
+      oldVal,
+      '→',
+      newVal,
+      '| project_id:',
+      recordFilter.value.project_id
+    )
+    loadRecords()
+  }
+)
 
 async function loadProjects() {
-    try {
-        const data = await projectsApi.list()
-        projects.value = data || []
-    } catch { /* ignore */ }
+  try {
+    const data = await projectsApi.list()
+    projects.value = data || []
+  } catch {
+    /* ignore */
+  }
 }
 
 async function loadTabData() {
-    loading.value = true
-    error.value = ''
-    try {
-        if (activeTab.value === 'projects') {
-            const data = await projectsApi.list()
-            projects.value = data || []
-        } else if (activeTab.value === 'modules') {
-            const allProjects = await projectsApi.list()
-            projects.value = allProjects || []
-            const allModules = []
-            for (const p of (allProjects || [])) {
-                if (p.modules) {
-                    p.modules.forEach(m => {
-                        allModules.push({ ...m, project_name: p.name, project_id: p.id })
-                    })
-                }
-            }
-            modules.value = allModules
-        } else if (activeTab.value === 'users') {
-            const data = await adminApi.listUsers()
-            users.value = data || []
-        } else if (activeTab.value === 'records') {
-            await loadRecords()
+  loading.value = true
+  error.value = ''
+  try {
+    if (activeTab.value === 'projects') {
+      const data = await projectsApi.list()
+      projects.value = data || []
+    } else if (activeTab.value === 'modules') {
+      const allProjects = await projectsApi.list()
+      projects.value = allProjects || []
+      const allModules = []
+      for (const p of allProjects || []) {
+        if (p.modules) {
+          p.modules.forEach(m => {
+            allModules.push({ ...m, project_name: p.name, project_id: p.id })
+          })
         }
-    } catch (e) {
-        error.value = e.response?.data?.error || e.message || '加载失败'
-    } finally {
-        loading.value = false
+      }
+      modules.value = allModules
+    } else if (activeTab.value === 'users') {
+      const data = await adminApi.listUsers()
+      users.value = data || []
+    } else if (activeTab.value === 'records') {
+      await loadRecords()
     }
+  } catch (e) {
+    error.value = e.response?.data?.error || e.message || '加载失败'
+  } finally {
+    loading.value = false
+  }
 }
 
 async function loadRecords() {
-    console.log('[Admin] loadRecords START, filter:', JSON.stringify(recordFilter.value))
-    // 取消上一次未完成的请求，防止竞态条件
-    if (abortController) {
-        abortController.abort()
-        console.log('[Admin] loadRecords: aborted previous request')
+  console.log('[Admin] loadRecords START, filter:', JSON.stringify(recordFilter.value))
+  // 取消上一次未完成的请求，防止竞态条件
+  if (abortController) {
+    abortController.abort()
+    console.log('[Admin] loadRecords: aborted previous request')
+  }
+  abortController = new AbortController()
+  const signal = abortController.signal
+
+  try {
+    const allProjects = await projectsApi.list()
+    // 请求被取消则不再继续
+    if (signal.aborted) return
+    projects.value = allProjects || []
+
+    const projectIdToName = {}
+    for (const p of allProjects || []) {
+      projectIdToName[p.id] = p.name
     }
-    abortController = new AbortController()
-    const signal = abortController.signal
 
-    try {
-        const allProjects = await projectsApi.list()
-        // 请求被取消则不再继续
-        if (signal.aborted) return
-        projects.value = allProjects || []
-        
-        const projectIdToName = {}
-        for (const p of allProjects || []) {
-            projectIdToName[p.id] = p.name
-        }
-
-        let validProjectId = recordFilter.value.project_id
-        if (validProjectId) {
-            const projectExists = allProjects?.some(p => String(p.id) === String(validProjectId))
-            if (!projectExists) {
-                validProjectId = ''
-                recordFilter.value.project_id = ''
-            }
-        }
-        
-        let validModuleId = recordFilter.value.module_id
-        if (validModuleId) {
-            const moduleExists = filterModules.value.some(m => String(m.id) === String(validModuleId))
-            if (!moduleExists) {
-                validModuleId = ''
-                recordFilter.value.module_id = ''
-            }
-        }
-
-        const params = {}
-        if (validProjectId) {
-            params.project_ids = validProjectId
-        } else {
-            params.project_ids = (allProjects || []).map(p => p.id).join(',')
-        }
-        if (validModuleId) params.module_ids = validModuleId
-        if (recordFilter.value.version) params.versions = recordFilter.value.version
-        if (recordFilter.value.owner_id) params.owner_id = recordFilter.value.owner_id
-        
-        console.log('[Admin] loadRecords params:', JSON.stringify(params))
-        
-        const data = await qorApi.getQorData(params, signal)
-        // 请求被取消则不再继续
-        if (signal.aborted) return
-        
-        console.log('[Admin] loadRecords received:', data?.length, 'records')
-        
-        records.value = (data || []).map(r => ({
-            ...r,
-            project_name: projectIdToName[r.project_id] || r.project_name || '-'
-        }))
-        
-        console.log('[Admin] records.value set, sample:', records.value.slice(0, 3).map(r => ({ id: r.id, pid: r.project_id, pn: r.project_name, mid: r.module_id, mn: r.module_name })))
-        
-    } catch (e) {
-        // 忽略取消导致的错误
-        if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED' || signal.aborted) return
-        console.error('Load records error:', e)
-        error.value = '加载记录失败: ' + (e.message || '未知错误')
+    let validProjectId = recordFilter.value.project_id
+    if (validProjectId) {
+      const projectExists = allProjects?.some(p => String(p.id) === String(validProjectId))
+      if (!projectExists) {
+        validProjectId = ''
+        recordFilter.value.project_id = ''
+      }
     }
+
+    let validModuleId = recordFilter.value.module_id
+    if (validModuleId) {
+      const moduleExists = filterModules.value.some(m => String(m.id) === String(validModuleId))
+      if (!moduleExists) {
+        validModuleId = ''
+        recordFilter.value.module_id = ''
+      }
+    }
+
+    const params = {}
+    if (validProjectId) {
+      params.project_ids = validProjectId
+    } else {
+      params.project_ids = (allProjects || []).map(p => p.id).join(',')
+    }
+    if (validModuleId) params.module_ids = validModuleId
+    if (recordFilter.value.version) params.versions = recordFilter.value.version
+    if (recordFilter.value.owner_id) params.owner_id = recordFilter.value.owner_id
+
+    console.log('[Admin] loadRecords params:', JSON.stringify(params))
+
+    const data = await qorApi.getQorData(params, signal)
+    // 请求被取消则不再继续
+    if (signal.aborted) return
+
+    console.log('[Admin] loadRecords received:', data?.length, 'records')
+
+    records.value = (data || []).map(r => ({
+      ...r,
+      project_name: projectIdToName[r.project_id] || r.project_name || '-'
+    }))
+
+    console.log(
+      '[Admin] records.value set, sample:',
+      records.value.slice(0, 3).map(r => ({
+        id: r.id,
+        pid: r.project_id,
+        pn: r.project_name,
+        mid: r.module_id,
+        mn: r.module_name
+      }))
+    )
+  } catch (e) {
+    // 忽略取消导致的错误
+    if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED' || signal.aborted) return
+    console.error('Load records error:', e)
+    error.value = '加载记录失败: ' + (e.message || '未知错误')
+  }
 }
 
 // 记录管理：切换发布状态
@@ -236,7 +267,10 @@ async function toggleRelease(recordId) {
 
 // 记录管理：编辑release目录
 async function editReleaseDir(recordId, currentDir) {
-  const newDir = prompt('请输入release_dir（留空将使用full_dir）:\n当前值: ' + (currentDir || '(未设置)'), currentDir || '')
+  const newDir = prompt(
+    '请输入release_dir（留空将使用full_dir）:\n当前值: ' + (currentDir || '(未设置)'),
+    currentDir || ''
+  )
   if (newDir === null) return
   try {
     const result = await adminApi.updateReleaseDir(recordId, newDir)
@@ -249,10 +283,7 @@ async function editReleaseDir(recordId, currentDir) {
   }
 }
 
-// 记录管理：全选/清空
-function selectAllRecords() {
-  records.value.forEach(r => selectedRecordIds.value.add(r.id))
-}
+// 记录管理：清空
 function clearRecordSelection() {
   selectedRecordIds.value.clear()
 }
@@ -402,19 +433,24 @@ async function handleResetPassword(userId) {
       <button
         :class="['tab-btn', { active: activeTab === 'records' }]"
         @click="activeTab = 'records'"
-      >记录管理</button>
+      >
+        记录管理
+      </button>
       <button
         :class="['tab-btn', { active: activeTab === 'projects' }]"
         @click="activeTab = 'projects'"
-      >项目管理</button>
+      >
+        项目管理
+      </button>
       <button
         :class="['tab-btn', { active: activeTab === 'modules' }]"
         @click="activeTab = 'modules'"
-      >模块管理</button>
-      <button
-        :class="['tab-btn', { active: activeTab === 'users' }]"
-        @click="activeTab = 'users'"
-      >用户管理</button>
+      >
+        模块管理
+      </button>
+      <button :class="['tab-btn', { active: activeTab === 'users' }]" @click="activeTab = 'users'">
+        用户管理
+      </button>
     </div>
 
     <p v-if="error" class="error-text">{{ error }}</p>
@@ -422,33 +458,31 @@ async function handleResetPassword(userId) {
 
     <!-- 记录管理 -->
     <template v-if="activeTab === 'records' && !loading">
-      <div class="card" style="margin-bottom: 12px;">
+      <div class="card" style="margin-bottom: 12px">
         <div class="card-header">
           <span>📋 记录管理</span>
           <div class="header-actions">
-            <button class="btn" @click="showUploadModal = true">
-              📤 上传数据
-            </button>
+            <button class="btn" @click="showUploadModal = true">📤 上传数据</button>
           </div>
         </div>
-        <div class="card-body" style="padding: 10px 16px;">
+        <div class="card-body" style="padding: 10px 16px">
           <div class="record-filter-bar">
-            <select v-model="recordFilter.project_id" style="min-width: 140px;">
+            <select v-model="recordFilter.project_id" style="min-width: 140px">
               <option value="">全部项目</option>
               <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
-            <select v-model="recordFilter.module_id" style="min-width: 140px;">
+            <select v-model="recordFilter.module_id" style="min-width: 140px">
               <option value="">全部模块</option>
               <option v-for="m in filterModules" :key="m.id" :value="m.id">{{ m.name }}</option>
             </select>
             <input
               v-model="recordFilter.version"
               placeholder="版本号"
-              style="width: 120px;"
+              style="width: 120px"
               @keyup.enter="loadRecords"
             />
             <button class="btn btn-sm" @click="loadRecords">查询</button>
-            <span style="margin-left: auto; font-size: 12px; color: var(--color-text-secondary);">
+            <span style="margin-left: auto; font-size: 12px; color: var(--color-text-secondary)">
               共 {{ records.length }} 条记录
             </span>
           </div>
@@ -456,68 +490,122 @@ async function handleResetPassword(userId) {
       </div>
 
       <!-- 批量操作 -->
-      <div class="card" style="margin-bottom: 12px;">
-        <div class="card-body" style="padding: 8px 16px; display: flex; gap: 8px; align-items: center;">
-          <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer;">
-            <input type="checkbox" @change="toggleAllRecords" :checked="selectedCount === records.length && records.length > 0" />
+      <div class="card" style="margin-bottom: 12px">
+        <div
+          class="card-body"
+          style="padding: 8px 16px; display: flex; gap: 8px; align-items: center"
+        >
+          <label
+            style="display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer"
+          >
+            <input
+              type="checkbox"
+              :checked="selectedCount === records.length && records.length > 0"
+              @change="toggleAllRecords"
+            />
             全选
           </label>
-          <span style="font-size: 12px; color: var(--color-text-secondary);">已选 {{ selectedCount }} 条</span>
-          <button class="btn btn-sm btn-success" @click="batchRelease" :disabled="selectedCount === 0">批量发布</button>
-          <button class="btn btn-sm btn-default" @click="batchUnrelease" :disabled="selectedCount === 0">批量撤回</button>
-          <button class="btn btn-sm btn-default" @click="clearRecordSelection" :disabled="selectedCount === 0">清空选择</button>
+          <span style="font-size: 12px; color: var(--color-text-secondary)"
+            >已选 {{ selectedCount }} 条</span
+          >
+          <button
+            class="btn btn-sm btn-success"
+            :disabled="selectedCount === 0"
+            @click="batchRelease"
+          >
+            批量发布
+          </button>
+          <button
+            class="btn btn-sm btn-default"
+            :disabled="selectedCount === 0"
+            @click="batchUnrelease"
+          >
+            批量撤回
+          </button>
+          <button
+            class="btn btn-sm btn-default"
+            :disabled="selectedCount === 0"
+            @click="clearRecordSelection"
+          >
+            清空选择
+          </button>
         </div>
       </div>
 
       <!-- 记录表格 -->
-      <div class="card" :key="`records-card-${recordFilter.project_id}-${recordFilter.module_id}`">
-        <div class="card-body" style="padding: 0; overflow-x: auto;">
-          <table class="table" v-if="records.length > 0" style="margin: 0; font-size: 12px;">
+      <div :key="`records-card-${recordFilter.project_id}-${recordFilter.module_id}`" class="card">
+        <div class="card-body" style="padding: 0; overflow-x: auto">
+          <table v-if="records.length > 0" class="table" style="margin: 0; font-size: 12px">
             <thead>
               <tr>
-                <th style="width: 30px;"></th>
+                <th style="width: 30px"></th>
                 <th
                   :class="['sortable', recordsSort.getSortClass('id')]"
                   @click="recordsSort.sortBy('id')"
-                >ID {{ recordsSort.getSortIcon('id') }}</th>
+                >
+                  ID {{ recordsSort.getSortIcon('id') }}
+                </th>
                 <th
                   :class="['sortable', recordsSort.getSortClass('project_name')]"
                   @click="recordsSort.sortBy('project_name')"
-                >项目 {{ recordsSort.getSortIcon('project_name') }}</th>
+                >
+                  项目 {{ recordsSort.getSortIcon('project_name') }}
+                </th>
                 <th
                   :class="['sortable', recordsSort.getSortClass('module_name')]"
                   @click="recordsSort.sortBy('module_name')"
-                >模块 {{ recordsSort.getSortIcon('module_name') }}</th>
+                >
+                  模块 {{ recordsSort.getSortIcon('module_name') }}
+                </th>
                 <th
                   :class="['sortable', recordsSort.getSortClass('version')]"
                   @click="recordsSort.sortBy('version')"
-                >版本 {{ recordsSort.getSortIcon('version') }}</th>
+                >
+                  版本 {{ recordsSort.getSortIcon('version') }}
+                </th>
                 <th
                   :class="['sortable', recordsSort.getSortClass('recorded_at')]"
                   @click="recordsSort.sortBy('recorded_at')"
-                >日期 {{ recordsSort.getSortIcon('recorded_at') }}</th>
+                >
+                  日期 {{ recordsSort.getSortIcon('recorded_at') }}
+                </th>
                 <th
                   :class="['sortable', recordsSort.getSortClass('owner_username')]"
                   @click="recordsSort.sortBy('owner_username')"
-                >操作者 {{ recordsSort.getSortIcon('owner_username') }}</th>
+                >
+                  操作者 {{ recordsSort.getSortIcon('owner_username') }}
+                </th>
                 <th
                   :class="['sortable', recordsSort.getSortClass('release_dir')]"
                   @click="recordsSort.sortBy('release_dir')"
-                >release_dir {{ recordsSort.getSortIcon('release_dir') }}</th>
+                >
+                  release_dir {{ recordsSort.getSortIcon('release_dir') }}
+                </th>
                 <th
                   :class="['sortable', recordsSort.getSortClass('is_released')]"
                   @click="recordsSort.sortBy('is_released')"
-                >发布状态 {{ recordsSort.getSortIcon('is_released') }}</th>
+                >
+                  发布状态 {{ recordsSort.getSortIcon('is_released') }}
+                </th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="r in sortedRecords" :key="r.id">
                 <td>
-                  <input type="checkbox" :checked="selectedRecordIds.has(r.id)" @change="toggleRecordSelect(r.id)" />
+                  <input
+                    type="checkbox"
+                    :checked="selectedRecordIds.has(r.id)"
+                    @change="toggleRecordSelect(r.id)"
+                  />
                 </td>
                 <td>
-                  <a :href="`/record/${r.id}`" target="_blank" style="color: var(--color-primary);">{{ r.id }}</a>
+                  <a
+                    :href="`/record/${r.id}`"
+                    target="_blank"
+                    style="color: var(--color-primary)"
+                    >{{ r.id }}</a
+                  >
                 </td>
                 <td>{{ getProjectName(r) }}</td>
                 <td>{{ r.module_name || '-' }}</td>
@@ -526,49 +614,72 @@ async function handleResetPassword(userId) {
                   <button
                     v-if="r.version_description"
                     class="btn btn-xs"
-                    style="font-size: 10px; padding: 0 3px; margin-left: 4px;"
+                    style="font-size: 10px; padding: 0 3px; margin-left: 4px"
                     :title="r.version_description"
                     @click="editVersionDescription(r.id, r.version_description)"
-                  >✏️</button>
+                  >
+                    ✏️
+                  </button>
                 </td>
-                <td>{{ r.recorded_at ? r.recorded_at.slice(0,10) : '-' }}</td>
+                <td>{{ r.recorded_at ? r.recorded_at.slice(0, 10) : '-' }}</td>
                 <td>{{ getOwnerDisplay(r) }}</td>
-                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 11px;"
+                <td
+                  style="
+                    max-width: 200px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    font-family: monospace;
+                    font-size: 11px;
+                  "
                   :title="r.release_dir_effective || r.full_dir || ''"
                   :style="{ color: r.is_released && r.release_dir ? '#4caf50' : '#ff9800' }"
                 >
                   <template v-if="r.is_released">
-                    {{ r.release_dir || '⚠️ ' + (r.release_dir_effective || r.full_dir || '-') + ' (fallback)' }}
+                    {{
+                      r.release_dir ||
+                      '⚠️ ' + (r.release_dir_effective || r.full_dir || '-') + ' (fallback)'
+                    }}
                   </template>
                   <template v-else>
                     {{ r.release_dir || r.release_dir_effective || r.full_dir || '-' }}
                   </template>
                   <button
                     class="btn btn-xs"
-                    style="font-size: 10px; padding: 0 3px; margin-left: 4px;"
+                    style="font-size: 10px; padding: 0 3px; margin-left: 4px"
                     title="编辑release_dir"
                     @click="editReleaseDir(r.id, r.release_dir || '')"
-                  >✏️</button>
+                  >
+                    ✏️
+                  </button>
                 </td>
                 <td>
-                  <span class="tag" :style="{
-                    background: r.is_released ? '#4caf50' : '#999',
-                    color: '#fff',
-                    fontSize: '11px'
-                  }">{{ r.is_released ? '已发布' : '未发布' }}</span>
+                  <span
+                    class="tag"
+                    :style="{
+                      background: r.is_released ? '#4caf50' : '#999',
+                      color: '#fff',
+                      fontSize: '11px'
+                    }"
+                    >{{ r.is_released ? '已发布' : '未发布' }}</span
+                  >
                 </td>
                 <td>
                   <button
                     class="btn btn-sm"
                     :class="r.is_released ? 'btn-default' : 'btn-success'"
-                    style="font-size: 11px; padding: 2px 8px;"
+                    style="font-size: 11px; padding: 2px 8px"
                     @click="toggleRelease(r.id)"
-                  >{{ r.is_released ? '撤回' : '发布' }}</button>
+                  >
+                    {{ r.is_released ? '撤回' : '发布' }}
+                  </button>
                 </td>
               </tr>
             </tbody>
           </table>
-          <p v-else style="padding: 24px; text-align: center; color: var(--color-text-secondary);">暂无记录，请选择项目后点击查询</p>
+          <p v-else style="padding: 24px; text-align: center; color: var(--color-text-secondary)">
+            暂无记录，请选择项目后点击查询
+          </p>
         </div>
       </div>
 
@@ -587,32 +698,42 @@ async function handleResetPassword(userId) {
           </div>
         </div>
       </div>
-      <div class="card" style="margin-top: 12px;">
+      <div class="card" style="margin-top: 12px">
         <div class="card-header">项目列表 ({{ projects.length }})</div>
         <div class="card-body">
-          <table class="table" v-if="projects.length > 0">
+          <table v-if="projects.length > 0" class="table">
             <thead>
               <tr>
                 <th
                   :class="['sortable', projectsSort.getSortClass('id')]"
                   @click="projectsSort.sortBy('id')"
-                >ID {{ projectsSort.getSortIcon('id') }}</th>
+                >
+                  ID {{ projectsSort.getSortIcon('id') }}
+                </th>
                 <th
                   :class="['sortable', projectsSort.getSortClass('name')]"
                   @click="projectsSort.sortBy('name')"
-                >名称 {{ projectsSort.getSortIcon('name') }}</th>
+                >
+                  名称 {{ projectsSort.getSortIcon('name') }}
+                </th>
                 <th
                   :class="['sortable', projectsSort.getSortClass('description')]"
                   @click="projectsSort.sortBy('description')"
-                >描述 {{ projectsSort.getSortIcon('description') }}</th>
+                >
+                  描述 {{ projectsSort.getSortIcon('description') }}
+                </th>
                 <th
                   :class="['sortable', projectsSort.getSortClass('module_count')]"
                   @click="projectsSort.sortBy('module_count')"
-                >模块数 {{ projectsSort.getSortIcon('module_count') }}</th>
+                >
+                  模块数 {{ projectsSort.getSortIcon('module_count') }}
+                </th>
                 <th
                   :class="['sortable', projectsSort.getSortClass('status')]"
                   @click="projectsSort.sortBy('status')"
-                >状态 {{ projectsSort.getSortIcon('status') }}</th>
+                >
+                  状态 {{ projectsSort.getSortIcon('status') }}
+                </th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -623,17 +744,22 @@ async function handleResetPassword(userId) {
                 <td>{{ p.description || '-' }}</td>
                 <td>{{ p.module_count || 0 }}</td>
                 <td>
-                  <span class="tag" :style="{ background: p.status === 'hidden' ? '#999' : '#4caf50' }">
+                  <span
+                    class="tag"
+                    :style="{ background: p.status === 'hidden' ? '#999' : '#4caf50' }"
+                  >
                     {{ p.status || 'active' }}
                   </span>
                 </td>
                 <td>
-                  <button class="btn btn-sm btn-danger" @click="handleDeleteProject(p.id)">删除</button>
+                  <button class="btn btn-sm btn-danger" @click="handleDeleteProject(p.id)">
+                    删除
+                  </button>
                 </td>
               </tr>
             </tbody>
           </table>
-          <p v-else style="color: var(--color-text-secondary);">暂无项目</p>
+          <p v-else style="color: var(--color-text-secondary)">暂无项目</p>
         </div>
       </div>
     </template>
@@ -654,24 +780,30 @@ async function handleResetPassword(userId) {
           </div>
         </div>
       </div>
-      <div class="card" style="margin-top: 12px;">
+      <div class="card" style="margin-top: 12px">
         <div class="card-header">模块列表 ({{ modules.length }})</div>
         <div class="card-body">
-          <table class="table" v-if="modules.length > 0">
+          <table v-if="modules.length > 0" class="table">
             <thead>
               <tr>
                 <th
                   :class="['sortable', modulesSort.getSortClass('id')]"
                   @click="modulesSort.sortBy('id')"
-                >ID {{ modulesSort.getSortIcon('id') }}</th>
+                >
+                  ID {{ modulesSort.getSortIcon('id') }}
+                </th>
                 <th
                   :class="['sortable', modulesSort.getSortClass('name')]"
                   @click="modulesSort.sortBy('name')"
-                >名称 {{ modulesSort.getSortIcon('name') }}</th>
+                >
+                  名称 {{ modulesSort.getSortIcon('name') }}
+                </th>
                 <th
                   :class="['sortable', modulesSort.getSortClass('project_name')]"
                   @click="modulesSort.sortBy('project_name')"
-                >所属项目 {{ modulesSort.getSortIcon('project_name') }}</th>
+                >
+                  所属项目 {{ modulesSort.getSortIcon('project_name') }}
+                </th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -681,12 +813,14 @@ async function handleResetPassword(userId) {
                 <td>{{ m.name }}</td>
                 <td>{{ m.project_name || '-' }}</td>
                 <td>
-                  <button class="btn btn-sm btn-danger" @click="handleDeleteModule(m.id)">删除</button>
+                  <button class="btn btn-sm btn-danger" @click="handleDeleteModule(m.id)">
+                    删除
+                  </button>
                 </td>
               </tr>
             </tbody>
           </table>
-          <p v-else style="color: var(--color-text-secondary);">暂无模块</p>
+          <p v-else style="color: var(--color-text-secondary)">暂无模块</p>
         </div>
       </div>
     </template>
@@ -710,28 +844,36 @@ async function handleResetPassword(userId) {
           </div>
         </div>
       </div>
-      <div class="card" style="margin-top: 12px;">
+      <div class="card" style="margin-top: 12px">
         <div class="card-header">用户列表 ({{ users.length }})</div>
         <div class="card-body">
-          <table class="table" v-if="users.length > 0">
+          <table v-if="users.length > 0" class="table">
             <thead>
               <tr>
                 <th
                   :class="['sortable', usersSort.getSortClass('username')]"
                   @click="usersSort.sortBy('username')"
-                >用户名 {{ usersSort.getSortIcon('username') }}</th>
+                >
+                  用户名 {{ usersSort.getSortIcon('username') }}
+                </th>
                 <th
                   :class="['sortable', usersSort.getSortClass('role')]"
                   @click="usersSort.sortBy('role')"
-                >角色 {{ usersSort.getSortIcon('role') }}</th>
+                >
+                  角色 {{ usersSort.getSortIcon('role') }}
+                </th>
                 <th
                   :class="['sortable', usersSort.getSortClass('display_name')]"
                   @click="usersSort.sortBy('display_name')"
-                >显示名称 {{ usersSort.getSortIcon('display_name') }}</th>
+                >
+                  显示名称 {{ usersSort.getSortIcon('display_name') }}
+                </th>
                 <th
                   :class="['sortable', usersSort.getSortClass('created_at')]"
                   @click="usersSort.sortBy('created_at')"
-                >创建时间 {{ usersSort.getSortIcon('created_at') }}</th>
+                >
+                  创建时间 {{ usersSort.getSortIcon('created_at') }}
+                </th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -739,20 +881,31 @@ async function handleResetPassword(userId) {
               <tr v-for="u in sortedUsers" :key="u.id">
                 <td>{{ u.username }}</td>
                 <td>
-                  <span class="tag" :style="{
-                    background: u.role === 'admin' ? '#e74c3c' : u.role === 'release' ? '#4caf50' : '#3498db',
-                    color: '#fff'
-                  }">{{ roleLabels[u.role] || u.role }}</span>
+                  <span
+                    class="tag"
+                    :style="{
+                      background:
+                        u.role === 'admin'
+                          ? '#e74c3c'
+                          : u.role === 'release'
+                            ? '#4caf50'
+                            : '#3498db',
+                      color: '#fff'
+                    }"
+                    >{{ roleLabels[u.role] || u.role }}</span
+                  >
                 </td>
                 <td>{{ u.display_name || '-' }}</td>
                 <td>{{ u.created_at || '-' }}</td>
                 <td>
-                  <button class="btn btn-sm btn-default" @click="handleResetPassword(u.id)">重置密码</button>
+                  <button class="btn btn-sm btn-default" @click="handleResetPassword(u.id)">
+                    重置密码
+                  </button>
                 </td>
               </tr>
             </tbody>
           </table>
-          <p v-else style="color: var(--color-text-secondary);">暂无用户</p>
+          <p v-else style="color: var(--color-text-secondary)">暂无用户</p>
         </div>
       </div>
     </template>

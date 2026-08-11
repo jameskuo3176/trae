@@ -5,6 +5,8 @@
 import hashlib
 import os
 import shutil
+import subprocess
+import zipfile
 from datetime import datetime
 
 from django.conf import settings
@@ -24,12 +26,11 @@ def perform_backup(backup_type='auto', user=None):
         dict: 备份结果
     """
     try:
-        db_type = getattr(settings, 'DB_TYPE', 'sqlite')
-        if db_type != 'sqlite':
-            return {'ok': False, 'error': '仅支持 SQLite 自动备份'}
-
         db_config = settings.DATABASES.get('default', {})
         db_path = db_config.get('NAME', '')
+        engine = db_config.get('ENGINE', '')
+        if 'sqlite' not in engine:
+            return {'ok': False, 'error': '非 SQLite SQL 备份需由部署平台的原生备份工具执行'}
         if not os.path.exists(db_path):
             return {'ok': False, 'error': f'数据库文件不存在: {db_path}'}
 
@@ -38,8 +39,31 @@ def perform_backup(backup_type='auto', user=None):
         os.makedirs(backup_dir, exist_ok=True)
 
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        backup_path = os.path.join(backup_dir, f'qor_recorder_{ts}.db')
-        shutil.copy2(db_path, backup_path)
+        backup_path = os.path.join(backup_dir, f'qor_recorder_{ts}.zip')
+        mongo_enabled = getattr(settings, 'PERSISTENCE_MODE', 'orm') != 'orm'
+        mongo_dump_dir = os.path.join(backup_dir, f'.mongo_{ts}')
+        if mongo_enabled:
+            command = [
+                'mongodump', '--uri', settings.MONGODB_URI,
+                '--db', settings.MONGODB_DB, '--out', mongo_dump_dir,
+            ]
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=600)
+            if completed.returncode:
+                raise RuntimeError(f'mongodump failed: {completed.stderr.strip()}')
+        try:
+            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as archive:
+                archive.write(db_path, 'sql/qor_recorder.db')
+                data_dir = os.path.dirname(db_path)
+                for name in os.listdir(data_dir):
+                    if name.startswith('qor_p_') and name.endswith('.db'):
+                        archive.write(os.path.join(data_dir, name), f'sql/{name}')
+                if mongo_enabled:
+                    for root, _, files in os.walk(mongo_dump_dir):
+                        for name in files:
+                            path = os.path.join(root, name)
+                            archive.write(path, os.path.join('mongo', os.path.relpath(path, mongo_dump_dir)))
+        finally:
+            shutil.rmtree(mongo_dump_dir, ignore_errors=True)
 
         h = hashlib.sha256()
         with open(backup_path, 'rb') as f:
@@ -68,7 +92,7 @@ def perform_backup(backup_type='auto', user=None):
 
         # 清理旧备份
         backups = sorted(
-            [f for f in os.listdir(backup_dir) if f.startswith('qor_recorder_') and f.endswith('.db')],
+            [f for f in os.listdir(backup_dir) if f.startswith('qor_recorder_') and f.endswith('.zip')],
             reverse=True,
         )
         for old in backups[max_backups:]:

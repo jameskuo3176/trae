@@ -33,26 +33,11 @@ describe('Filters Store', () => {
     expect(fp1).toBe(fp2)
   })
 
-  it('parseModuleValue handles composite IDs', () => {
+  it('stores global module IDs without project prefixes', () => {
     const filters = useFiltersStore()
-    const result = filters.parseModuleValue('1:8')
-    expect(result.projectId).toBe('1')
-    expect(result.moduleId).toBe('8')
-  })
-
-  it('parseModuleValue handles plain IDs', () => {
-    const filters = useFiltersStore()
-    const result = filters.parseModuleValue('42')
-    expect(result.projectId).toBeNull()
-    expect(result.moduleId).toBe('42')
-  })
-
-  it('resolveProjectIdsForModules extracts project IDs', () => {
-    const filters = useFiltersStore()
-    const ids = filters.resolveProjectIdsForModules(['1:8', '1:10', '2:5'])
-    expect(ids).toContain('1')
-    expect(ids).toContain('2')
-    expect(ids).toHaveLength(2)
+    filters.moduleIds = ['8', '42']
+    expect(filters.moduleIds).toEqual(['8', '42'])
+    expect(filters.moduleIds.some(value => value.includes(':'))).toBe(false)
   })
 
   it('reset clears all filters', () => {

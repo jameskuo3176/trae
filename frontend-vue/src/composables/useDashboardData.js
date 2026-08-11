@@ -1,12 +1,10 @@
-import { ref, onMounted, onUnmounted } from 'vue'
-import { useAuthStore } from '@/stores/auth'
 import { useFiltersStore } from '@/stores/filters'
 import { useDashboardStore } from '@/stores/dashboard'
 import { projectsApi } from '@/api/projects'
 import { qorApi } from '@/api/qor'
+import { dashboardApi } from '@/api/dashboard'
 
 export function useDashboardData() {
-  const auth = useAuthStore()
   const filters = useFiltersStore()
   const dashboard = useDashboardStore()
 
@@ -21,22 +19,7 @@ export function useDashboardData() {
 
   async function loadModules() {
     try {
-      if (!filters.projectId) {
-        // 未选项目时，从所有项目加载全部模块
-        const allProjects = await projectsApi.list()
-        const allModules = []
-        for (const p of (allProjects || [])) {
-          if (p.modules && Array.isArray(p.modules)) {
-            for (const m of p.modules) {
-              allModules.push({ ...m, project_id: p.id, project_name: p.name })
-            }
-          }
-        }
-        filters.modules = allModules
-        return
-      }
-      const data = await projectsApi.getModules(filters.projectId)
-      filters.modules = data || []
+      filters.modules = filters.projectId ? await dashboardApi.modules(filters.projectId) : []
     } catch (e) {
       console.error('Failed to load modules:', e)
     }
@@ -44,15 +27,7 @@ export function useDashboardData() {
 
   async function loadVersions() {
     try {
-      const params = {}
-      if (filters.moduleIds.length > 0) {
-        params.module_ids = filters.moduleIds.join(',')
-      }
-      if (filters.projectId) {
-        params.project_id = filters.projectId
-      }
-      const versions = await projectsApi.getVersions(params)
-      filters.versions = versions || []
+      filters.versions = filters.projectId ? await dashboardApi.versions(filters.projectId) : []
     } catch (e) {
       console.error('Failed to load versions:', e)
     }
@@ -64,17 +39,64 @@ export function useDashboardData() {
     dashboard.setError(null)
 
     try {
-      const params = {}
-      if (filters.projectId) params.project_ids = filters.projectId
-      if (filters.moduleIds.length > 0) params.module_ids = filters.moduleIds.join(',')
-      if (filters.versionIds.length > 0) params.versions = filters.versionIds.join(',')
-      if (filters.dirPrefix) params.dir_prefix = filters.dirPrefix
-
-      const data = await qorApi.getQorData(params, signal)
+      let data
+      let pagination = null
+      if (filters.projectId) {
+        const modules = filters.moduleIds.length ? filters.moduleIds : [null]
+        const versions = filters.versionIds.length ? filters.versionIds : [null]
+        const requests = modules.flatMap(moduleId =>
+          versions.map(version =>
+            dashboardApi.records(
+              {
+                project_id: filters.projectId,
+                module_id: moduleId || undefined,
+                version: version || undefined,
+                page: 1,
+                page_size: 200
+              },
+              signal
+            )
+          )
+        )
+        const responses = await Promise.all(requests)
+        const unique = new Map()
+        responses
+          .flatMap(response => response.records)
+          .forEach(record => {
+            const normalized = {
+              ...record,
+              id: String(record.id),
+              module_id: String(record.module_id)
+            }
+            if (!filters.dirPrefix || normalized.full_dir?.startsWith(filters.dirPrefix)) {
+              unique.set(normalized.id, normalized)
+            }
+          })
+        data = [...unique.values()]
+        pagination =
+          responses.length === 1
+            ? responses[0].pagination
+            : {
+                page: 1,
+                page_size: data.length,
+                total: data.length,
+                pages: 1
+              }
+      } else {
+        const params = {}
+        if (filters.dirPrefix) params.dir_prefix = filters.dirPrefix
+        data = await qorApi.getQorData(params, signal)
+        data = data.map(record => ({
+          ...record,
+          id: String(record.id),
+          module_id: String(record.module_id)
+        }))
+      }
 
       if (!dashboard.isRequestValid(seq)) return
 
       dashboard.setRecords(data)
+      dashboard.setPagination(pagination)
       if (data.length > 0) {
         dashboard.selectFirstN(4)
       }

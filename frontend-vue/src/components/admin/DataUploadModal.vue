@@ -1,9 +1,9 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { adminApi } from '@/api/admin'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 
-const props = defineProps({
+defineProps({
   modelValue: { type: Boolean, default: false }
 })
 
@@ -96,19 +96,19 @@ function close() {
       </div>
       <div class="modal-body">
         <div class="step-indicator">
-          <div v-for="s in 3" :key="s" class="step-item" :class="{ active: s <= step, done: s < step }">
+          <div
+            v-for="s in 3"
+            :key="s"
+            class="step-item"
+            :class="{ active: s <= step, done: s < step }"
+          >
             <span class="step-number">{{ s === 1 ? '📁' : s === 2 ? '👁️' : '✅' }}</span>
             <span class="step-label">{{ s === 1 ? '选择文件' : s === 2 ? '预览' : '完成' }}</span>
           </div>
         </div>
 
         <div v-if="step === 1" class="step-content">
-          <div
-            class="drop-zone"
-            @dragover="dragOver"
-            @drop="drop"
-            @click="() => fileInput.click()"
-          >
+          <div class="drop-zone" @dragover="dragOver" @drop="drop" @click="() => fileInput.click()">
             <div class="drop-icon">📂</div>
             <div class="drop-text">拖放文件到此处，或点击选择</div>
             <div class="drop-hint">支持 CSV / JSON 格式</div>
@@ -133,7 +133,9 @@ function close() {
               <table class="table preview-table">
                 <thead>
                   <tr>
-                    <th v-for="header in Object.keys(previewData[0])" :key="header">{{ header }}</th>
+                    <th v-for="header in Object.keys(previewData[0])" :key="header">
+                      {{ header }}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -152,7 +154,7 @@ function close() {
             </div>
             <div class="form-group checkbox-group">
               <label>
-                <input type="checkbox" v-model="autoRelease" />
+                <input v-model="autoRelease" type="checkbox" />
                 上传后自动发布
               </label>
             </div>
@@ -169,7 +171,7 @@ function close() {
 
       <div v-if="step === 2" class="modal-footer">
         <button class="btn btn-default" @click="step = 1">上一步</button>
-        <button class="btn" @click="handleUpload" :disabled="loading">
+        <button class="btn" :disabled="loading" @click="handleUpload">
           <LoadingSpinner v-if="loading" text="" />
           确认上传
         </button>
@@ -219,7 +221,8 @@ function close() {
   opacity: 0.5;
 }
 
-.step-item.active, .step-item.done {
+.step-item.active,
+.step-item.done {
   opacity: 1;
 }
 
@@ -317,7 +320,7 @@ function close() {
   margin-bottom: 6px;
 }
 
-.form-group input[type="text"] {
+.form-group input[type='text'] {
   width: 100%;
 }
 

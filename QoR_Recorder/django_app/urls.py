@@ -9,13 +9,31 @@ from django.conf.urls.static import static
 from django.urls import path
 
 from django_app.api import views as api_views
+from django_app import api_v2
 from django_app.core import views as core_views
 
 urlpatterns = [
+    path('health/live', api_v2.live, name='liveness'),
+    path('health/ready', api_v2.health, name='readiness'),
+    path('health', api_v2.health, name='health'),
+    path('api/v2/modules', api_v2.modules, name='api_v2_modules'),
+    path('api/v2/versions', api_v2.versions, name='api_v2_versions'),
+    path('api/v2/records', api_v2.records, name='api_v2_records'),
+    path('api/v2/projects/<int:project_id>/records/<str:record_id>',
+         api_v2.record_detail, name='api_v2_record_detail'),
+    path('api/v2/projects/<int:project_id>/records/<str:record_id>/raw',
+         api_v2.raw_report, name='api_v2_raw_report'),
+    path('api/v2/projects/<int:project_id>/records/<str:record_id>/violations',
+         api_v2.violations, name='api_v2_violations'),
+    path('api/v2/projects/<int:project_id>/records/<str:record_id>/notes',
+         api_v2.notes, name='api_v2_notes'),
     # =========================================================================
     # 页面视图
     # =========================================================================
     path('', core_views.dashboard, name='dashboard'),
+    # Explicit rollback path retained while Nginx serves the Vue SPA.
+    path('legacy/', core_views.dashboard, name='legacy_dashboard_root'),
+    path('legacy/dashboard/', core_views.dashboard, name='legacy_dashboard'),
     path('login/', core_views.login_view, name='login'),
     path('logout/', core_views.logout_view, name='logout'),
     path('change_password/', core_views.change_password_page, name='change_password_page'),

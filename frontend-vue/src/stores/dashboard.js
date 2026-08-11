@@ -9,18 +9,37 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const baselineId = ref(null)
   const requestSeq = ref(0)
   const abortController = ref(null)
+  const pagination = ref(null)
+  const rawReports = ref({})
+  const rawLoadingIds = ref(new Set())
 
   const selectedRecords = computed(() => {
-    return records.value.filter(r => selectedIds.value.has(r.id))
+    return records.value.filter(r => selectedIds.value.has(String(r.id)))
   })
 
   const baselineRecord = computed(() => {
     if (!baselineId.value) return null
-    return records.value.find(r => r.id === baselineId.value) || null
+    return records.value.find(r => String(r.id) === baselineId.value) || null
   })
 
   function setRecords(data) {
     records.value = data || []
+    const validIds = new Set(records.value.map(record => String(record.id)))
+    selectedIds.value = new Set([...selectedIds.value].filter(id => validIds.has(String(id))))
+  }
+
+  function setPagination(value) {
+    pagination.value = value
+  }
+
+  function setRawReport(id, value) {
+    rawReports.value = { ...rawReports.value, [String(id)]: value }
+  }
+
+  function setRawLoading(id, value) {
+    const next = new Set(rawLoadingIds.value)
+    value ? next.add(String(id)) : next.delete(String(id))
+    rawLoadingIds.value = next
   }
 
   function setLoading(val) {
@@ -32,6 +51,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   function toggleSelect(id) {
+    id = String(id)
     const newSet = new Set(selectedIds.value)
     if (newSet.has(id)) {
       newSet.delete(id)
@@ -42,7 +62,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   function selectAll() {
-    selectedIds.value = new Set(records.value.map(r => r.id))
+    selectedIds.value = new Set(records.value.map(r => String(r.id)))
   }
 
   function clearSelection() {
@@ -51,11 +71,11 @@ export const useDashboardStore = defineStore('dashboard', () => {
   }
 
   function setBaseline(id) {
-    baselineId.value = id
+    baselineId.value = id == null ? null : String(id)
   }
 
   function selectFirstN(n = 4) {
-    const ids = records.value.slice(0, n).map(r => r.id)
+    const ids = records.value.slice(0, n).map(r => String(r.id))
     selectedIds.value = new Set(ids)
     if (ids.length > 0) {
       baselineId.value = ids[0]
@@ -82,6 +102,9 @@ export const useDashboardStore = defineStore('dashboard', () => {
     selectedIds.value = new Set()
     baselineId.value = null
     loadError.value = null
+    pagination.value = null
+    rawReports.value = {}
+    abortController.value?.abort()
   }
 
   return {
@@ -91,9 +114,15 @@ export const useDashboardStore = defineStore('dashboard', () => {
     selectedIds,
     baselineId,
     requestSeq,
+    pagination,
+    rawReports,
+    rawLoadingIds,
     selectedRecords,
     baselineRecord,
     setRecords,
+    setPagination,
+    setRawReport,
+    setRawLoading,
     setLoading,
     setError,
     toggleSelect,

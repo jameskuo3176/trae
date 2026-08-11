@@ -21,11 +21,14 @@ onMounted(() => {
   }
 })
 
-watch(() => props.mustChange, (val) => {
-  if (val) {
-    showModal.value = true
+watch(
+  () => props.mustChange,
+  val => {
+    if (val) {
+      showModal.value = true
+    }
   }
-})
+)
 
 async function handleSubmit() {
   error.value = ''
@@ -45,7 +48,9 @@ async function handleSubmit() {
     oldPassword.value = ''
     newPassword.value = ''
     confirmPassword.value = ''
-    setTimeout(() => { showModal.value = false }, 1500)
+    setTimeout(() => {
+      showModal.value = false
+    }, 1500)
   } catch (e) {
     error.value = e.response?.data?.error || e.message || '修改失败'
   } finally {

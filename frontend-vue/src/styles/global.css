@@ -25,6 +25,13 @@ button {
   cursor: pointer;
   font-family: inherit;
 }
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
 
 .card {
   background: var(--color-surface);
@@ -59,7 +66,7 @@ button {
   cursor: pointer;
   transition: all 0.2s;
   background: var(--color-primary);
-  color: white;
+  color: var(--color-on-primary);
   gap: 6px;
 }
 
@@ -93,6 +100,7 @@ button {
 
 select,
 input[type='text'],
+input[type='search'],
 input[type='password'],
 input[type='number'],
 textarea {

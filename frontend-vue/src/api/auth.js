@@ -10,7 +10,9 @@ export const authApi = {
   },
 
   changePassword(oldPassword, newPassword) {
-    return apiClient.post('/user/password', { old_password: oldPassword, new_password: newPassword }).then(r => r.data)
+    return apiClient
+      .post('/user/password', { old_password: oldPassword, new_password: newPassword })
+      .then(r => r.data)
   },
 
   getTheme() {

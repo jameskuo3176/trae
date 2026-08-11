@@ -19,7 +19,11 @@ const chartOption = computed(() => {
   return {
     tooltip: { trigger: 'axis' },
     legend: { data: ['Cell Count', 'Sequential', 'Macro'], textStyle: { color: '#8b9bb4' } },
-    xAxis: { type: 'category', data: cats, axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 } },
+    xAxis: {
+      type: 'category',
+      data: cats,
+      axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
+    },
     yAxis: { type: 'value', name: 'Count', axisLabel: { color: '#8b9bb4' } },
     series: [
       { name: 'Cell Count', type: 'bar', data: records.map(r => r.cell_count ?? null) },

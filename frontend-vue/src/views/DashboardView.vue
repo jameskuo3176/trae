@@ -1,187 +1,188 @@
 <script setup>
-import { ref, computed, onMounted, watch, provide } from 'vue'
+import { computed, defineAsyncComponent, onMounted, provide, reactive, watch } from 'vue'
 import { useFiltersStore } from '@/stores/filters'
 import { useDashboardStore } from '@/stores/dashboard'
 import { useDashboardData } from '@/composables/useDashboardData'
 import { useFilters } from '@/composables/useFilters'
 import FilterBar from '@/components/filters/FilterBar.vue'
-import AreaChart from '@/components/charts/AreaChart.vue'
-import TimingChart from '@/components/charts/TimingChart.vue'
-import PowerChart from '@/components/charts/PowerChart.vue'
-import CellChart from '@/components/charts/CellChart.vue'
-import PieChart from '@/components/charts/PieChart.vue'
-import PhysicalMetricChart from '@/components/charts/PhysicalMetricChart.vue'
-import StatCard from '@/components/common/StatCard.vue'
-import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
-import ViolationPanel from '@/components/violations/ViolationPanel.vue'
-import DcReportPanel from '@/components/dashboard/DcReportPanel.vue'
+import DashboardConfigBar from '@/components/dashboard/DashboardConfigBar.vue'
+import DashboardStats from '@/components/dashboard/DashboardStats.vue'
 import ChartSettingsPanel from '@/components/dashboard/ChartSettingsPanel.vue'
-import CombinedTableView from '@/components/dashboard/CombinedTableView.vue'
-import TransposedTableView from '@/components/dashboard/TransposedTableView.vue'
-import DirAggregateView from '@/components/dashboard/DirAggregateView.vue'
-import DirModulesView from '@/components/dashboard/DirModulesView.vue'
-import RunNotesPanel from '@/components/dashboard/RunNotesPanel.vue'
+import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
+
+const AreaChart = defineAsyncComponent(() => import('@/components/charts/AreaChart.vue'))
+const TimingChart = defineAsyncComponent(() => import('@/components/charts/TimingChart.vue'))
+const PowerChart = defineAsyncComponent(() => import('@/components/charts/PowerChart.vue'))
+const CellChart = defineAsyncComponent(() => import('@/components/charts/CellChart.vue'))
+const PieChart = defineAsyncComponent(() => import('@/components/charts/PieChart.vue'))
+const PhysicalMetricChart = defineAsyncComponent(
+  () => import('@/components/charts/PhysicalMetricChart.vue')
+)
+const ViolationPanel = defineAsyncComponent(
+  () => import('@/components/violations/ViolationPanel.vue')
+)
+const DcReportPanel = defineAsyncComponent(() => import('@/components/dashboard/DcReportPanel.vue'))
+const CombinedTableView = defineAsyncComponent(
+  () => import('@/components/dashboard/CombinedTableView.vue')
+)
+const TransposedTableView = defineAsyncComponent(
+  () => import('@/components/dashboard/TransposedTableView.vue')
+)
+const DirAggregateView = defineAsyncComponent(
+  () => import('@/components/dashboard/DirAggregateView.vue')
+)
+const DirModulesView = defineAsyncComponent(
+  () => import('@/components/dashboard/DirModulesView.vue')
+)
+const RunNotesPanel = defineAsyncComponent(() => import('@/components/dashboard/RunNotesPanel.vue'))
 
 const filters = useFiltersStore()
 const dashboard = useDashboardStore()
 const { loadProjects, loadModules, loadVersions, loadDashboardData } = useDashboardData()
 const { onFilterChange } = useFilters()
-
-const error = ref(null)
-
-// 图表设置
-const chartOrientation = ref('vertical')
-const chartHeight = ref(500)
-const chartLabelMode = ref('both')
-const chartType = ref('bar')
-const globalTableWidth = ref(0)
-
-// 视图切换
-const showCombinedTable = ref(false)
-const showTransposedTable = ref(false)
-const showDirAggregate = ref(false)
-const showDirModules = ref(false)
+const settings = reactive({
+  orientation: 'vertical',
+  height: 500,
+  labelMode: 'both',
+  chartType: 'bar',
+  tableWidth: 0,
+  activeView: 'charts'
+})
 
 onMounted(async () => {
   await loadProjects()
-  await loadModules()
-  await loadVersions()
+  await Promise.all([loadModules(), loadVersions()])
   await loadDashboardData()
 })
-
-onFilterChange(() => {
-  loadDashboardData()
-})
-
+onFilterChange(loadDashboardData)
 watch(
-  () => [filters.projectId, filters.moduleIds],
-  () => {
-    if (filters.projectId) loadModules()
-    loadVersions()
-  },
-  { deep: true }
+  () => filters.projectId,
+  async () => Promise.all([loadModules(), loadVersions()])
 )
 
-const stats = computed(() => {
-  const records = dashboard.records
-  return {
-    total: records.length,
-    modules: new Set(records.map(r => r.module_name).filter(Boolean)).size,
-    projects: new Set(records.map(r => r.module_id).filter(Boolean)).size,
-    latest: records.length > 0 ? records[records.length - 1].version : '-'
-  }
-})
+const stats = computed(() => ({
+  total: dashboard.pagination?.total ?? dashboard.records.length,
+  modules: new Set(dashboard.records.map(record => record.module_id).filter(Boolean)).size,
+  projects: new Set(dashboard.records.map(record => record.project_id).filter(Boolean)).size,
+  latest: dashboard.records.at(-1)?.version || '-'
+}))
 
-// 提供图表设置给子组件
 provide('chartSettings', {
-  orientation: chartOrientation,
-  height: chartHeight,
-  labelMode: chartLabelMode,
-  chartType,
-  tableWidth: globalTableWidth
+  orientation: computed(() => settings.orientation),
+  height: computed(() => settings.height),
+  labelMode: computed(() => settings.labelMode),
+  chartType: computed(() => settings.chartType),
+  tableWidth: computed(() => settings.tableWidth)
 })
 </script>
 
 <template>
-  <div class="dashboard-page">
+  <main class="dashboard-page">
+    <DashboardConfigBar
+      :model-value="settings"
+      @update:model-value="Object.assign(settings, $event)"
+    />
     <FilterBar />
-    <div class="grid-3 dashboard-stats">
-      <StatCard label="记录总数" :value="stats.total" icon="trending-up" />
-      <StatCard label="模块数" :value="stats.modules" icon="layers" />
-      <StatCard label="项目数" :value="stats.projects" icon="folder" />
-      <StatCard label="最新版本" :value="stats.latest" icon="tag" />
-    </div>
-    <LoadingSpinner v-if="dashboard.loading" text="正在加载数据..." />
-    <div v-else-if="error" class="error-state">
-      <p>{{ error }}</p>
-      <button class="btn" @click="loadDashboardData">重试</button>
-    </div>
+    <DashboardStats :stats="stats" />
+    <LoadingSpinner
+      v-if="dashboard.loading && !dashboard.records.length"
+      text="Loading QoR records…"
+    />
+    <section v-else-if="dashboard.loadError" class="error-state" role="alert">
+      <strong>Dashboard request failed</strong>
+      <p>{{ dashboard.loadError }}</p>
+      <button class="btn btn-sm" type="button" @click="loadDashboardData">Retry</button>
+    </section>
+    <section v-else-if="!dashboard.records.length" class="empty-state card">
+      <strong>No records match the current scope.</strong>
+      <p>Select a project or relax the module, version, and directory filters.</p>
+    </section>
     <template v-else>
-      <!-- 图表设置面板 -->
       <ChartSettingsPanel
-        v-model:orientation="chartOrientation"
-        v-model:height="chartHeight"
-        v-model:label-mode="chartLabelMode"
-        v-model:chart-type="chartType"
-        v-model:table-width="globalTableWidth"
-        v-model:show-combined="showCombinedTable"
-        v-model:show-transposed="showTransposedTable"
-        v-model:show-dir-aggregate="showDirAggregate"
-        v-model:show-dir-modules="showDirModules"
+        v-model:orientation="settings.orientation"
+        v-model:height="settings.height"
+        v-model:label-mode="settings.labelMode"
+        v-model:chart-type="settings.chartType"
+        v-model:table-width="settings.tableWidth"
+        v-model:active-view="settings.activeView"
       />
-
-      <!-- DC 报告数据对比导航 -->
       <DcReportPanel />
-
-      <!-- 视图区域 -->
-      <CombinedTableView v-if="showCombinedTable" />
-      <TransposedTableView v-else-if="showTransposedTable" />
-      <DirAggregateView v-else-if="showDirAggregate" />
-      <DirModulesView v-else-if="showDirModules" />
-
-      <!-- 图表区域 -->
-      <template v-if="!showCombinedTable && !showTransposedTable && !showDirAggregate && !showDirModules">
-        <div class="grid-2">
-          <AreaChart />
-          <TimingChart />
-        </div>
-        <div class="grid-2">
-          <PowerChart />
-          <CellChart />
-        </div>
-        <div class="grid-2">
+      <Suspense>
+        <CombinedTableView v-if="settings.activeView === 'combined'" />
+        <TransposedTableView v-else-if="settings.activeView === 'transposed'" />
+        <DirAggregateView v-else-if="settings.activeView === 'aggregate'" />
+        <DirModulesView v-else-if="settings.activeView === 'directory-modules'" />
+        <div v-else class="charts-grid">
+          <AreaChart /><TimingChart /><PowerChart /><CellChart />
           <PhysicalMetricChart
             metric="mbb_ratio"
-            title="MBB 合并率 (%)"
+            title="MBB merge ratio (%)"
             unit="%"
             :color-idx="5"
             :scale-to-percent="true"
           />
           <PhysicalMetricChart
             metric="clock_gating_ratio"
-            title="时钟门控覆盖率 (%)"
+            title="Clock gating coverage (%)"
             unit="%"
             :color-idx="6"
             :scale-to-percent="true"
           />
-        </div>
-        <div class="grid-2">
           <PhysicalMetricChart
             metric="utilization"
-            title="布局利用率 (%)"
+            title="Placement utilization (%)"
             unit="%"
             :color-idx="7"
             :scale-to-percent="true"
           />
           <PhysicalMetricChart
             metric="congestion"
-            title="拥塞指数"
+            title="Congestion index"
             :multi-metrics="[
-              { key: 'congestion_h', label: '水平 (H)' },
-              { key: 'congestion_v', label: '垂直 (V)' },
-              { key: 'congestion_b', label: '综合 (B)' }
+              { key: 'congestion_h', label: 'Horizontal' },
+              { key: 'congestion_v', label: 'Vertical' },
+              { key: 'congestion_b', label: 'Combined' }
             ]"
-            :color-idx="0"
+          />
+          <PieChart class="span-2" /><ViolationPanel class="span-2" /><RunNotesPanel
+            class="span-2"
           />
         </div>
-        <PieChart />
-        <ViolationPanel />
-        <RunNotesPanel />
-      </template>
+        <template #fallback><LoadingSpinner text="Loading visualization module…" /></template>
+      </Suspense>
     </template>
-  </div>
+  </main>
 </template>
 
 <style scoped>
 .dashboard-page {
-  padding: 16px 0;
+  padding: 8px 0 18px;
 }
-.dashboard-stats {
-  margin-bottom: 24px;
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.span-2 {
+  grid-column: span 2;
 }
 .error-state {
+  padding: 24px;
   text-align: center;
-  padding: 40px;
+  border: 1px solid #9c3434;
+  background: var(--color-surface);
+}
+.error-state p,
+.empty-state p {
+  margin: 6px 0 12px;
   color: var(--color-text-secondary);
+}
+@media (max-width: 980px) {
+  .charts-grid {
+    grid-template-columns: 1fr;
+  }
+  .span-2 {
+    grid-column: span 1;
+  }
 }
 </style>

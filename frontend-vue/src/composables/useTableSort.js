@@ -1,13 +1,14 @@
 import { ref, computed } from 'vue'
 
-export function useTableSort(initialSortKey = null, initialSortOrder = 'asc') {
+export function useTableSort(initialSortKey = null, initialSortOrder = 'original') {
   const sortKey = ref(initialSortKey)
   const sortOrder = ref(initialSortOrder) // 'asc' | 'desc'
 
   function sortBy(key) {
     if (sortKey.value === key) {
-      // Toggle order
-      sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+      sortOrder.value =
+        sortOrder.value === 'original' ? 'asc' : sortOrder.value === 'asc' ? 'desc' : 'original'
+      if (sortOrder.value === 'original') sortKey.value = null
     } else {
       sortKey.value = key
       sortOrder.value = 'asc'
@@ -38,8 +39,18 @@ export function useTableSort(initialSortKey = null, initialSortOrder = 'asc') {
     if (valB == null) return -1
 
     // Number comparison
-    const numA = typeof valA === 'number' ? valA : (typeof valA === 'string' && !isNaN(Number(valA)) ? Number(valA) : null)
-    const numB = typeof valB === 'number' ? valB : (typeof valB === 'string' && !isNaN(Number(valB)) ? Number(valB) : null)
+    const numA =
+      typeof valA === 'number'
+        ? valA
+        : typeof valA === 'string' && !isNaN(Number(valA))
+          ? Number(valA)
+          : null
+    const numB =
+      typeof valB === 'number'
+        ? valB
+        : typeof valB === 'string' && !isNaN(Number(valB))
+          ? Number(valB)
+          : null
     if (numA !== null && numB !== null) {
       return numA - numB
     }
@@ -61,11 +72,17 @@ export function useTableSort(initialSortKey = null, initialSortOrder = 'asc') {
     return 0
   }
 
-  function sortedData(data) {
-    if (!sortKey.value || !Array.isArray(data)) return data
+  function sortedData(data, valueGetter = null) {
+    if (!sortKey.value || sortOrder.value === 'original' || !Array.isArray(data)) return data
 
     return [...data].sort((a, b) => {
-      const comparison = compareValues(a, b, sortKey.value)
+      const comparison = valueGetter
+        ? compareValues(
+            { value: valueGetter(a, sortKey.value) },
+            { value: valueGetter(b, sortKey.value) },
+            'value'
+          )
+        : compareValues(a, b, sortKey.value)
       return sortOrder.value === 'asc' ? comparison : -comparison
     })
   }

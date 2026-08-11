@@ -1,14 +1,15 @@
 # QoR Recorder - Python 依赖 (Package) 管理方案
 
-> 本文档是 **Python 项目** 的依赖管理规范. 项目现状:
-> - 后端: Python 3.9+ / Flask / SQLAlchemy / pandas
+> 本文档是 **Python 项目** 的依赖管理背景资料. 当前项目现状:
+> - 后端: Python 3.11+ / Django / Gunicorn / pandas
 > - 数据库驱动: PyMySQL (MySQL) / 内置 sqlite3 (SQLite) / pymongo (MongoDB, 切换后端时)
-> - 前端: 仅 `static/vendor/echarts.min.js` (本地化, 零 npm 依赖)
+> - 前端: 仓库根目录 `frontend-vue/`, npm lockfile 管理并构建进 Nginx 镜像
 > - 当前 `requirements.txt` 是松散版本 (`>=`), **缺少 lockfile / 哈希校验 / 拆分**
 >
 > 文档版本: 1.0 | 最后更新: 2026-07-30
 >
-> **本项目无 Node.js 依赖, 因此不涉及 npm/yarn/pnpm.** 文末附录对比了 Python 与 Node 生态工具, 方便有前端扩展时参考.
+> 当前生产入口是 `django_app.wsgi:application`; 下文 Flask 示例仅为历史
+> 背景，不可作为启动/部署命令。生产步骤以 `deploy/README.md` 为准。
 
 ---
 
@@ -334,9 +335,9 @@ RUN mkdir -p data uploads logs backups \
 
 USER qor
 
-EXPOSE 5000
+EXPOSE 8000
 ENTRYPOINT ["/usr/bin/tini","--"]
-CMD ["gunicorn", "-c", "deploy/gunicorn.conf.py", "app:app"]
+CMD ["gunicorn", "django_app.wsgi:application", "--bind", "0.0.0.0:8000"]
 ```
 
 **体积对比**:
@@ -753,13 +754,13 @@ pip-compile --output-file=requirements/dev.txt \
 python -m venv /tmp/test_venv
 source /tmp/test_venv/bin/activate
 pip install --require-hashes -r requirements/prod.txt
-python -c "import flask, pandas, pymysql; print('OK')"
+python -c "import django, gunicorn, pandas, pymysql; print('OK')"
 ```
 
 ### 步骤 6: 更新 deploy/README.md 与 systemd 服务
 ```ini
 # /etc/systemd/system/qor_recorder.service 中 ExecStart 改为
-ExecStart=/opt/qor_recorder/venv/bin/gunicorn -c deploy/gunicorn.conf.py app:app
+ExecStart=/bin/bash /opt/qor_recorder/start.sh
 ```
 
 ### 步骤 7: 更新 .gitignore

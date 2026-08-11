@@ -22,9 +22,9 @@ from django.http import (
 )
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
 
 from django.contrib.auth import update_session_auth_hash, login
+from django.views.decorators.csrf import csrf_exempt
 from django_app.core.decorators import login_required, api_auth_required
 from django_app.core.security import generate_csrf_token
 from django_app.core.db_routing import (
@@ -1402,7 +1402,6 @@ def get_user_theme(request):
 # Admin API - 项目管理
 # =========================================================================
 
-@csrf_exempt
 @login_required
 def admin_create_project(request):
     """创建项目"""
@@ -1419,7 +1418,6 @@ def admin_create_project(request):
     return JsonResponse(p.to_dict())
 
 
-@csrf_exempt
 @login_required
 def admin_delete_project(request, project_id):
     """软删除项目 (隐藏)"""
@@ -1465,7 +1463,6 @@ def admin_list_hidden_projects(request):
     return JsonResponse(result, safe=False)
 
 
-@csrf_exempt
 @login_required
 def admin_restore_project(request, project_id):
     """恢复已隐藏项目"""
@@ -1485,7 +1482,6 @@ def admin_restore_project(request, project_id):
     })
 
 
-@csrf_exempt
 @login_required
 def admin_hard_delete_project(request, project_id):
     """彻底删除项目"""
@@ -1511,7 +1507,6 @@ def admin_hard_delete_project(request, project_id):
     })
 
 
-@csrf_exempt
 @login_required
 def admin_lock_project(request, project_id):
     """锁定项目"""
@@ -1527,7 +1522,6 @@ def admin_lock_project(request, project_id):
     return JsonResponse(p.to_dict())
 
 
-@csrf_exempt
 @login_required
 def admin_unlock_project(request, project_id):
     """解锁项目"""
@@ -1720,7 +1714,6 @@ def admin_verify_all_backups(request):
 # Admin API - 模块管理
 # =========================================================================
 
-@csrf_exempt
 @login_required
 def admin_create_module(request):
     """创建模块"""
@@ -1754,7 +1747,6 @@ def admin_create_module(request):
     return JsonResponse({'id': m.id, 'name': m.name, 'owner_id': m.owner_id})
 
 
-@csrf_exempt
 @login_required
 def admin_delete_module(request, module_id):
     """删除模块"""
@@ -1773,7 +1765,6 @@ def admin_delete_module(request, module_id):
     return JsonResponse({'ok': True})
 
 
-@csrf_exempt
 @login_required
 def admin_batch_create_modules(request):
     """批量创建模块"""
@@ -1823,7 +1814,6 @@ def admin_batch_create_modules(request):
 
 # ---- 模块协作者管理 ----
 
-@csrf_exempt
 @login_required
 def admin_module_collaborators(request, module_id):
     """列出模块协作者 (GET) / 添加协作者 (POST)"""
@@ -1886,7 +1876,6 @@ def admin_module_collaborators(request, module_id):
     })
 
 
-@csrf_exempt
 @login_required
 def admin_remove_module_collaborator(request, module_id, user_id):
     """移除模块协作者"""
@@ -1927,7 +1916,6 @@ def admin_list_owner_users(request):
     } for u in users], safe=False)
 
 
-@csrf_exempt
 @login_required
 def admin_delete_record(request, record_id):
     """删除记录"""
@@ -1979,7 +1967,6 @@ def admin_list_record_owners(request):
 # Admin API - CSV 上传
 # =========================================================================
 
-@csrf_exempt
 @login_required
 def admin_upload_csv(request):
     """上传 CSV 导入 QoR 数据 (支持多文件批量导入)"""
@@ -2132,7 +2119,6 @@ def admin_upload_csv(request):
     })
 
 
-@csrf_exempt
 @login_required
 def admin_upload_block_qor(request):
     """上传 Block QoR CSV"""
@@ -2223,7 +2209,6 @@ def admin_upload_block_qor(request):
     })
 
 
-@csrf_exempt
 @login_required
 def admin_upload_csv_preview(request):
     """预览 CSV 上传内容"""
@@ -2281,7 +2266,6 @@ def _safe_int(val):
 # Admin API - QoR 发布管理
 # =========================================================================
 
-@csrf_exempt
 @login_required
 def admin_toggle_release(request, record_id):
     """切换记录发布状态"""
@@ -2324,7 +2308,6 @@ def admin_toggle_release(request, record_id):
     })
 
 
-@csrf_exempt
 @login_required
 def admin_update_release_dir(request, record_id):
     """更新记录 release_dir"""
@@ -2359,7 +2342,6 @@ def admin_update_release_dir(request, record_id):
     })
 
 
-@csrf_exempt
 @login_required
 def admin_update_version_description(request, record_id):
     """更新版本描述"""
@@ -2385,7 +2367,6 @@ def admin_update_version_description(request, record_id):
     })
 
 
-@csrf_exempt
 @login_required
 def admin_batch_release(request):
     """批量发布/取消发布"""
@@ -2462,7 +2443,6 @@ def admin_batch_release(request):
 # Admin API - 用户管理
 # =========================================================================
 
-@csrf_exempt
 @login_required
 def admin_list_users(request):
     """列出所有用户 (GET) / 创建单个用户 (POST)"""
@@ -2503,7 +2483,6 @@ def admin_list_users(request):
     } for u in users], safe=False)
 
 
-@csrf_exempt
 @login_required
 def admin_batch_create_users(request):
     """批量创建用户"""
@@ -2550,7 +2529,6 @@ def admin_batch_create_users(request):
     })
 
 
-@csrf_exempt
 @login_required
 def admin_reset_user_password(request, user_id):
     """重置用户密码"""

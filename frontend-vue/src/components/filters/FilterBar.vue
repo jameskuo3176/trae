@@ -1,129 +1,167 @@
 <script setup>
+import { computed, ref } from 'vue'
 import { useFiltersStore } from '@/stores/filters'
-import { useDashboardStore } from '@/stores/dashboard'
 import { useDashboardData } from '@/composables/useDashboardData'
 
 const filters = useFiltersStore()
-const dashboard = useDashboardStore()
-const { loadProjects, loadModules, loadVersions, loadDashboardData } = useDashboardData()
+const { loadModules, loadVersions, loadDashboardData } = useDashboardData()
+const moduleQuery = ref('')
+const versionQuery = ref('')
+const visibleModules = computed(() =>
+  filters.modules.filter(item => item.name.toLowerCase().includes(moduleQuery.value.toLowerCase()))
+)
+const visibleVersions = computed(() =>
+  filters.versions.filter(item =>
+    String(item).toLowerCase().includes(versionQuery.value.toLowerCase())
+  )
+)
 
-function handleProjectChange() {
+async function projectChanged() {
   filters.moduleIds = []
-  loadModules()
-  loadVersions()
-  loadDashboardData()
-}
-
-function handleModuleSelectAll() {
-  filters.moduleIds = filters.modules.map(m => m.id)
-  loadDashboardData()
-}
-
-function handleModuleClear() {
-  filters.moduleIds = []
-  loadDashboardData()
-}
-
-function handleVersionSelectAll() {
-  filters.versionIds = filters.versions.map(v => v.id || v)
-  loadDashboardData()
-}
-
-function handleVersionClear() {
   filters.versionIds = []
+  await Promise.all([loadModules(), loadVersions()])
   loadDashboardData()
+}
+function toggle(key, id) {
+  const value = String(id)
+  const list = filters[key]
+  filters[key] = list.includes(value) ? list.filter(item => item !== value) : [...list, value]
+  loadDashboardData()
+}
+function resetFilters() {
+  filters.reset()
+  projectChanged()
 }
 </script>
 
 <template>
-  <div class="filter-bar card">
-    <div class="filter-group">
-      <label>项目</label>
-      <select v-model="filters.projectId" @change="handleProjectChange">
-        <option value="">全部项目</option>
-        <option
-          v-for="p in filters.projects"
-          :key="p.id"
-          :value="p.id"
-        >
-          {{ p.name }}
+  <section class="filter-bar" aria-label="Dashboard filters">
+    <label class="project-filter"
+      ><span>Project</span>
+      <select v-model="filters.projectId" @change="projectChanged">
+        <option value="">All projects · compatibility view</option>
+        <option v-for="project in filters.projects" :key="project.id" :value="project.id">
+          {{ project.name }}
         </option>
       </select>
-    </div>
-    <div class="filter-group">
-      <label>模块</label>
-      <select v-model="filters.moduleIds" multiple @change="loadDashboardData">
-        <option
-          v-for="m in filters.modules"
-          :key="m.id"
-          :value="m.id"
+    </label>
+    <div class="chip-filter">
+      <label
+        ><span>Global modules</span
+        ><input v-model="moduleQuery" type="search" placeholder="Search modules"
+      /></label>
+      <div class="chips" role="group" aria-label="Global module filters">
+        <button
+          v-for="module in visibleModules"
+          :key="module.id"
+          type="button"
+          :aria-pressed="filters.moduleIds.includes(String(module.id))"
+          @click="toggle('moduleIds', module.id)"
         >
-          {{ m.name }}
-        </option>
-      </select>
-      <div class="version-actions">
-        <button class="btn btn-sm btn-default" @click="handleModuleSelectAll">全选</button>
-        <button class="btn btn-sm btn-default" @click="handleModuleClear">清空</button>
+          {{ module.name }}
+        </button>
+        <span v-if="filters.projectId && !visibleModules.length">No modules</span>
       </div>
     </div>
-    <div class="filter-group">
-      <label>版本</label>
-      <select v-model="filters.versionIds" multiple @change="loadDashboardData">
-        <option
-          v-for="v in filters.versions"
-          :key="v"
-          :value="v"
+    <div class="chip-filter">
+      <label
+        ><span>Path-derived versions</span
+        ><input v-model="versionQuery" type="search" placeholder="Search regr_*"
+      /></label>
+      <div class="chips" role="group" aria-label="Version filters">
+        <button
+          v-for="version in visibleVersions"
+          :key="version"
+          type="button"
+          :aria-pressed="filters.versionIds.includes(String(version))"
+          @click="toggle('versionIds', version)"
         >
-          {{ v }}
-        </option>
-      </select>
-      <div class="version-actions">
-        <button class="btn btn-sm btn-default" @click="handleVersionSelectAll">全选</button>
-        <button class="btn btn-sm btn-default" @click="handleVersionClear">清空</button>
+          {{ version }}
+        </button>
+        <span v-if="filters.projectId && !visibleVersions.length">No path-derived versions</span>
       </div>
     </div>
-    <div class="filter-group">
-      <label>目录前缀</label>
+    <label class="path-filter"
+      ><span>Directory prefix</span>
       <input
-        v-model="filters.dirPrefix"
+        v-model.trim="filters.dirPrefix"
         type="text"
-        placeholder="筛选目录"
-        @change="loadDashboardData"
+        placeholder="/workspace/regr_…/main"
+        @keyup.enter="loadDashboardData"
       />
-    </div>
-  </div>
+    </label>
+    <button class="btn btn-sm" type="button" @click="loadDashboardData">Apply</button>
+    <button class="btn btn-sm btn-default" type="button" @click="resetFilters">Reset</button>
+  </section>
 </template>
 
 <style scoped>
 .filter-bar {
-  padding: 16px 20px;
-  display: flex;
-  gap: 16px;
-  align-items: flex-end;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 190px minmax(230px, 1fr) minmax(230px, 1fr) minmax(210px, 1fr) auto auto;
+  align-items: end;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
 }
-.filter-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.filter-group label {
-  font-size: 12px;
+label span {
+  display: block;
+  margin-bottom: 3px;
   color: var(--color-text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
-.filter-group select {
-  min-width: 160px;
-  max-width: 240px;
+select,
+input {
+  width: 100%;
+  min-height: 31px;
+  font-size: 11px;
+  font-family: inherit;
 }
-.filter-group select[multiple] {
-  height: 100px;
+.chip-filter {
+  min-width: 0;
 }
-.filter-group input {
-  min-width: 140px;
+.chip-filter label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 6px;
 }
-.version-actions {
+.chip-filter label span {
+  margin: 0;
+  white-space: nowrap;
+}
+.chips {
   display: flex;
-  gap: 4px;
-  margin-top: 4px;
+  gap: 3px;
+  overflow: auto;
+  min-height: 27px;
+  padding-top: 3px;
+}
+.chips button {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+.chips button[aria-pressed='true'] {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-surface-hover);
+}
+.chips span {
+  padding: 4px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+@media (max-width: 1100px) {
+  .filter-bar {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 </style>

@@ -18,8 +18,15 @@ const chartOption = computed(() => {
 
   return {
     tooltip: { trigger: 'axis' },
-    legend: { data: ['Total', 'Internal', 'Switching', 'Leakage'], textStyle: { color: '#8b9bb4' } },
-    xAxis: { type: 'category', data: cats, axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 } },
+    legend: {
+      data: ['Total', 'Internal', 'Switching', 'Leakage'],
+      textStyle: { color: '#8b9bb4' }
+    },
+    xAxis: {
+      type: 'category',
+      data: cats,
+      axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
+    },
     yAxis: { type: 'value', name: 'mW', axisLabel: { color: '#8b9bb4' } },
     series: [
       { name: 'Total', type: 'bar', data: records.map(r => r.power_total ?? null) },
