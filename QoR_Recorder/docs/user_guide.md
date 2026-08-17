@@ -15,18 +15,23 @@ QoR Recorder 是一款面向 IC 设计团队的综合质量数据管理系统。
 
 ### 2.1 访问系统
 
-1. 打开浏览器，访问 `http://<服务器IP>:5000`（生产为 `https://qor.example.com`）
+1. 打开浏览器，访问 `http://<服务器IP>:8000`（Django 默认端口；生产为 `https://qor.example.com`）
 2. 使用管理员分配的账号登录
 
-**默认账号**（仅演示，生产环境**必须**修改）：
+**出厂默认账号**（系统首次初始化时创建；生产环境**必须**修改，登录后强制改密）：
 
-| 角色        | 用户名     | 初始密码       | 权限                                                                  |
+| 角色        | 用户名     | 出厂默认密码   | 权限                                                                  |
 | --------- | ------ | -------- | ------------------------------------------------------------------- |
-| 管理员       | admin  | admin@2026 | 所有功能，含数据上传/管理                                                       |
-| 数据 owner | release | release@2026 | 上传/管理自己+协作模块数据 + 发布/撤回 + 看见所有数据（v5.0 起等同于 owner）             |
+| 管理员       | admin  | admin@2026 | 所有功能，含数据上传/管理、用户/项目/模块管理                                            |
+| 数据 owner | user   | user@2026 | 上传/管理自己+协作模块数据 + 发布/撤回（v5.0 起与 owner 角色一致）                           |
+| 数据 owner | release | release@2026 | 上传/管理自己+协作模块数据 + 发布/撤回 + 看见所有数据（历史 release，已自动迁移为 owner）        |
 | **只读用户** | **viewer** | **viewer@2026** | **v5.0 新增, 只能查看已发布数据, 不能上传/管理**                                 |
 
-> 首次登录后请立即修改默认密码. 改密之前, 任何上传/管理操作都会被 403 拦截. 弱密码黑名单: `12345678` / `password` / `password1` / `admin123` / `qwerty123` / `11111111` / `00000000`.
+> **当前部署状态（2026-08-17）**：出厂默认密码均已失效。
+> - admin 密码已被重置为随机强密码（见管理员通知），登录后强制改密
+> - user / release / viewer 三个账号均被管理员通过「重置密码」重置为 **`Reset@123`**，均处于强制改密状态，首次登录后必须修改
+> - 若账号被标记为强制改密，改密之前任何上传/管理操作都会被 403 拦截
+> - 弱密码黑名单：`12345678` / `password` / `password1` / `admin123` / `qwerty123` / `11111111` / `00000000`
 
 ### 2.2 首页概览
 
@@ -258,9 +263,13 @@ Makefile 自动用 `$(PWD)` 作为 notes 的 `full_dir`，再次 `make` 会覆�
 - 仅能查看 `is_released=True` 的数据
 - 未发布数据 → 详情页返回 404
 
-### 4.8 一键生成 Demo 数据（v3.0 新增）
+### 4.8 一键生成 Demo 数据（v3.0 新增，Flask 时代脚本）
 
-需要快速体验 Dashboard / 对比 / Review 等功能时，可使用 demo 数据生成脚本：
+> **注意（2026-08-17）**：`seed_demo_data.py` 为 Flask 时代的脚本，在 Django 迁移后**不再随仓库提供**。
+> 如需体验数据，可使用 `demo_batch_upload/` 目录下的示例 CSV，通过管理页面或
+> `scripts/upload_qor.sh`（配合 `demo_batch_upload/*.csv`）上传，即可快速搭建演示环境。
+
+历史用法（v3.0 / Flask 版本）如下，仅供回顾：
 
 ```bash
 # 完整重置 + 重新生成 (推荐, 干净状态)
@@ -552,17 +561,30 @@ POST /api/user/theme                 # 保存主题
 
 ### Q5: 忘记管理员密码怎么办？
 
-**A**: 联系系统管理员。若需重置，可在服务器上执行：
+**A**: 联系系统管理员。若需重置，可在服务器上通过 Django shell 执行：
+
+```bash
+cd QoR_Recorder
+python manage.py shell
+```
 
 ```python
-from app import app, db
-from models import User
-app.app_context().push()
-admin = User.query.filter_by(username='admin').first()
-admin.set_password('new_password')
-admin.must_change_password = True   # 强制用户下次登录必须改密
-db.session.commit()
+from django_app.core.models import User
+admin = User.objects.get(username='admin')
+admin.set_password('新密码')          # 满足密码强度要求 (≥8位 + 字母 + 数字)
+admin.must_change_password = True    # 强制用户下次登录必须改密
+admin.password_changed_at = None
+admin.save()
 ```
+
+**紧急模式**：若连 shell 都不想进入，可设置环境变量后重启：
+
+```bash
+EMERGENCY_RESET_ADMIN_PASSWORD=1 python manage.py init_default_data
+# 脚本会生成一个 16 位随机强密码并打印到终端
+```
+
+管理员在管理页面「用户管理」中使用「重置密码」功能（未填自定义密码时默认密码为 `Reset@123`，账号会被标记为强制改密）也可重置任意账号。
 
 ### Q6: 密码强度要求是什么？
 
@@ -587,7 +609,7 @@ db.session.commit()
 
 ### Q9: 多人能同时使用吗？
 
-**A**: 可以。Flask 支持多线程并发，多用户可同时查看。但建议避免多人同时上传大量数据，SQLite 的写入并发有限。
+**A**: 可以。Django/Gunicorn 支持多进程并发，多用户可同时查看。但建议避免多人同时上传大量数据，SQLite 的写入并发有限（系统已启用 WAL 模式 + busy_timeout 缓解，团队级 < 20 人足够）。
 
 ## 10. 最佳实践
 
@@ -637,30 +659,33 @@ db.session.commit()
 
 ### 11.2 迁移历史数据到分库结构
 
-从旧版（v3.x 单库）升级到 v4.0 时，运行迁移脚本：
+从旧版（v3.x 单库 / Flask 时代）升级到 v4.0+ 分库结构时，使用 Django 管理命令：
 
 ```bash
 # 1. 备份旧主库
 cp qor_recorder.db qor_recorder.db.bak.$(date +%Y%m%d)
 
-# 2. 升级代码 + 跑 alembic 迁移（增加 projects.db_path 字段）
-flask db upgrade
+# 2. 应用 Django 迁移（含 projects.db_path 等字段）
+python manage.py migrate
 
-# 3. 按项目分库数据迁移（默认 dry-run 模式，先看看会迁什么）
-python migrate_to_per_project_db.py --dry-run
+# 3. 按项目分库数据迁移（默认 dry-run，先看会迁什么）
+python manage.py migrate_project_databases --dry-run
+python manage.py migrate_project_databases --execute
 
-# 4. 实际迁移
-python migrate_to_per_project_db.py
+# 4.（可选）项目库文件名从 qor_p_<id>.db 重命名为 <项目名>_syn_qor.db
+python manage.py migrate_project_db_names --dry-run
+python manage.py migrate_project_db_names --execute
 
-# 5. 迁移后从主库清理已迁数据（可选，节省主库空间）
-python migrate_to_per_project_db.py --clean
+# 5. 全局模块规范化（v2 API 使用 global_modules）
+python manage.py migrate_global_modules --execute
 ```
 
 **注意**：
 
-- 迁移脚本使用直接 SQL 操作（不走 ORM bind 路由），避免分库逻辑干扰
-- 迁移后主库中 `modules` / `qor_records` 等业务表为 0 条，所有数据都在 `qor_p_<id>.db`
-- 单库结构的回滚：删除所有 `qor_p_*.db` 后将主库 `modules` 等表的内容恢复即可（请用 `--clean` 前的备份）
+- 迁移脚本使用直接 SQL 操作（不走 ORM 路由），避免分库逻辑干扰
+- 迁移后主库中 `modules` / `qor_records` 等业务表为 0 条，所有数据都在各项目库中
+- 单库结构的回滚：删除所有项目库文件后将主库 `modules` 等表的内容恢复即可（请用 `--execute` 前的备份）
+- 完整运行手册见 [`FINAL_MIGRATION_RUNBOOK.md`](FINAL_MIGRATION_RUNBOOK.md)
 
 ### 11.3 锁定项目（status=locked）
 
@@ -709,9 +734,9 @@ MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB=qor_recorder
 ```
 
-切换后端后执行 `python db_init.py` 自动建库/迁移。
+切换后端后执行 `python manage.py migrate` 自动建库/迁移（Django 5.2 配置需包含 `CONN_HEALTH_CHECKS`）。
 
-**注意**：MongoDB 模式下，主库走 SQLite（只读回退），业务库走 Mongo + 双写架构。详见 `docs/MIGRATION_V4.md`（如存在）。
+**注意**：MongoDB 模式下，主库走 SQLite（只读回退），业务库走 Mongo + 双写架构（`PERSISTENCE_MODE=hybrid`）。详见 `docs/MIGRATION_V4.md`（如存在）。
 
 ### 11.6 角色权限（v5.0）
 
@@ -725,13 +750,27 @@ MONGODB_DB=qor_recorder
 
 **关键行为**:
 
-- **强制改密**: admin / release / viewer 三个默认账户首次登录后强制改密, 改密前任何写操作返回 403
+- **强制改密**: admin / user / release / viewer 四个默认账户首次登录后强制改密, 改密前任何写操作返回 403
 - **scope 切换**: Dashboard 顶部 "scope" 按钮 (mine / all) 仅 owner 可见, 默认 `mine`
-- **跨项目查询**: API 自动按 project 路由到对应 `qor_p_<id>.db`, 跨项目通过 `query_records_by_projects()` 合并
+- **跨项目查询**: API 自动按 project 路由到对应项目库（`*_syn_qor.db` 或 legacy `qor_p_<id>.db`）, 跨项目通过 `query_records_by_projects()` 合并
+
+## 12. 周评审、星标与源文件打开
+
+1. 打开 **Review → Group / Project**。本周数据默认读取冻结快照；有权限的用户可先冻结再创建评审。
+2. Release owner 可从该 Module 本周上传的全部 Run 中选择一个评审版本。选中版本显示金色
+   `★`，同一 Module/周只能有一个；未手动选择时显示灰色 implicit star（本周最后上传 Run）。
+3. 风险等级对比上周 star（或缺基线时显示 `unrated`），不会伪造低风险。
+4. 源文件路径默认是可点击的 `gvim://` 链接。Windows 工作站请先运行
+   `scripts/register_gvim_protocol.ps1`；若协议未安装，使用路径旁的「复制」。
+5. 管理员在 Admin → Snapshot & Backup 可创建/校验备份，并复制安全恢复命令。
+   真正恢复必须在维护窗口执行 `python manage.py restore_backup … --verify --apply`，
+   Web 请求不会在线覆盖数据库。
+
+详见 [`WEEKLY_REVIEW_AND_RECOVERY.md`](WEEKLY_REVIEW_AND_RECOVERY.md)。
 
 ---
 
-## 12. 联系与支持
+## 13. 联系与支持
 
 - 系统管理员：请联系您的团队管理员
 - 数据问题：检查 CSV 格式与编码
@@ -740,4 +779,4 @@ MONGODB_DB=qor_recorder
 
 ***
 
-*文档版本：5.0 | 最后更新：2026-07-30（v5.0: 三级角色 + 模块协作 + 时钟多选）*
+*文档版本：6.0 | 最后更新：2026-08-17（同步 Django 架构 / 账号密码现状）*

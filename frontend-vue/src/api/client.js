@@ -11,12 +11,38 @@ const apiClient = axios.create({
   withCredentials: true
 })
 
+const SAFE_METHODS = new Set(['get', 'head', 'options'])
+
+export function isUnsafeSameOriginRequest(config) {
+  if (SAFE_METHODS.has((config.method || 'get').toLowerCase())) return false
+  try {
+    const base = new URL(config.baseURL || '/', window.location.origin)
+    return new URL(config.url || '', base).origin === window.location.origin
+  } catch {
+    return false
+  }
+}
+
+export function extractErrorMessage(data) {
+  if (!data) return ''
+  if (typeof data === 'string') return data.trim().startsWith('<') ? '' : data
+  const error = data.error
+  if (typeof error === 'string') return error
+  if (error?.message) return error.message
+  if (typeof data.detail === 'string') return data.detail
+  if (typeof data.message === 'string') return data.message
+  const fieldError = Object.values(data).find(value => typeof value === 'string')
+  if (fieldError) return fieldError
+  const listError = Object.values(data).find(value => Array.isArray(value) && value.length)
+  return listError ? String(listError[0]) : ''
+}
+
 apiClient.interceptors.request.use(config => {
   const auth = useAuthStore()
   const headers = auth.getAuthHeaders()
   Object.assign(config.headers, headers)
   const csrfToken = getCsrfToken()
-  if (csrfToken && !['get', 'head', 'options'].includes(config.method?.toLowerCase())) {
+  if (csrfToken && isUnsafeSameOriginRequest(config)) {
     config.headers['X-CSRFToken'] = csrfToken
   }
   return config
@@ -32,9 +58,10 @@ apiClient.interceptors.response.use(
         window.location.href = '/login'
       }
     }
-    const payload = error.response?.data?.error
+    const responseData = error.response?.data
+    const payload = responseData?.error
     const normalized = new Error(
-      payload?.message || error.response?.data?.message || error.message || 'Request failed'
+      extractErrorMessage(responseData) || error.message || 'Request failed'
     )
     normalized.code = payload?.code || error.code
     normalized.status = error.response?.status

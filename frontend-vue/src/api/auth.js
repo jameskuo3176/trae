@@ -9,6 +9,10 @@ export const authApi = {
     return apiClient.get('/v1/auth/me').then(r => r.data)
   },
 
+  logout() {
+    return apiClient.post('/v1/auth/logout').then(r => r.data)
+  },
+
   changePassword(oldPassword, newPassword) {
     return apiClient
       .post('/user/password', { old_password: oldPassword, new_password: newPassword })

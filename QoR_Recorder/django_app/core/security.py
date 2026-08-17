@@ -23,7 +23,7 @@ from django.http import JsonResponse
 # =========================================================================
 
 _CSRF_FIELD = 'csrf_token'
-_CSRF_HEADER = 'X-CSRF-Token'
+_CSRF_HEADER = 'X-CSRFToken'
 _CSRF_SESSION_KEY = '_csrf_token'
 _SAFE_METHODS = frozenset(['GET', 'HEAD', 'OPTIONS', 'TRACE'])
 
@@ -101,6 +101,8 @@ def csrf_protect(request):
     token = (
         request.POST.get(_CSRF_FIELD)
         or request.META.get(f'HTTP_{_CSRF_HEADER.replace("-", "_").upper()}')
+        # Backward compatibility for old clients.
+        or request.META.get('HTTP_X_CSRF_TOKEN')
         or request.META.get(f'HTTP_{_CSRF_FIELD.upper()}')
     )
     expected = request.session.get(_CSRF_SESSION_KEY)

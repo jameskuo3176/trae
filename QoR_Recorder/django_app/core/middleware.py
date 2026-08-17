@@ -41,6 +41,7 @@ class SecurityMiddleware:
     # must_change_password=True 的用户唯一可访问的端点
     MUST_CHANGE_ALLOWED_NAMES = {
         'user_change_own_password',
+        'admin_user_change_own_password_legacy',
         'change_password_page',
         'logout',
         # API 端点（允许 GET 请求加载数据，写操作仍被拦截）
@@ -62,6 +63,7 @@ class SecurityMiddleware:
         'api_get_dashboard_config',
         'api_v1_login',
         'api_v1_me',
+        'api_v1_logout',
         'api_v1_projects',
         'api_v1_project_detail',
         'api_v1_upload',
@@ -84,10 +86,19 @@ class SecurityMiddleware:
     # viewer 角色允许的写操作端点
     VIEWER_ALLOWED_WRITE_NAMES = {
         'user_change_own_password',
-        'save_dashboard_config',
-        'delete_dashboard_config',
+        'admin_user_change_own_password_legacy',
+        # POST transport, but semantically a read-only batch lookup.
+        'api_v2_annotation_batch',
         'save_user_theme',
         'get_user_theme',
+        # 允许 viewer 登出 / 切换账号, 否则会被只读拦截卡死 (无法退出也无法登录其他账号)
+        'api_v1_login',
+        'api_v1_logout',
+    }
+
+    PASSWORD_CHANGE_PATHS = {
+        '/api/user/password',
+        '/api/admin/user/password',
     }
 
     def __init__(self, get_response):
@@ -115,6 +126,9 @@ class SecurityMiddleware:
 
     def _handle_must_change_password(self, request):
         """处理强制改密逻辑"""
+        if request.path_info.rstrip('/') in self.PASSWORD_CHANGE_PATHS:
+            return None
+
         try:
             url_name = resolve(request.path_info).url_name
         except Exception:
@@ -139,6 +153,9 @@ class SecurityMiddleware:
     def _handle_viewer_restriction(self, request):
         """处理 viewer 角色只读限制"""
         if request.method not in ('POST', 'PUT', 'DELETE', 'PATCH'):
+            return None
+
+        if request.path_info.rstrip('/') in self.PASSWORD_CHANGE_PATHS:
             return None
 
         try:
@@ -283,7 +300,7 @@ class CSRFMiddleware:
       - API Key 请求 (Authorization/X-API-Key 头) 跳过
       - 登录/登出/静态文件端点跳过
       - 其余 POST/PUT/DELETE/PATCH 必须带有效 token
-      - Token 来源: form 字段 'csrf_token', header 'X-CSRF-Token' 或 'csrf_token'
+      - Token 来源: form 字段 'csrf_token', header 'X-CSRFToken' 或 'csrf_token'
     """
 
     _CSRF_SESSION_KEY = '_csrf_token'
@@ -324,6 +341,8 @@ class CSRFMiddleware:
         # 验证 CSRF token
         token = (
             request.POST.get('csrf_token')
+            or request.META.get('HTTP_X_CSRFTOKEN')
+            # Backward compatibility for old clients.
             or request.META.get('HTTP_X_CSRF_TOKEN')
             or request.META.get('HTTP_CSRF_TOKEN')
         )

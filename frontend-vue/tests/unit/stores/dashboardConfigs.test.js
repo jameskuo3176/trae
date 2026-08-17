@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { dashboardApi } from '@/api/dashboard'
 import { useDashboardConfigsStore } from '@/stores/dashboardConfigs'
+import { useAuthStore } from '@/stores/auth'
 
 vi.mock('@/api/dashboard', () => ({
   dashboardApi: {
@@ -45,5 +46,44 @@ describe('dashboard configuration store', () => {
       config: { height: 640 },
       is_default: false
     })
+  })
+
+  it('falls back to defaults when an optional saved configuration is missing', async () => {
+    dashboardApi.listConfigs.mockResolvedValue([{ id: 9, name: 'Removed', is_default: true }])
+    dashboardApi.getConfig.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 404'), { status: 404 })
+    )
+    const store = useDashboardConfigsStore()
+
+    await store.load()
+    const detail = await store.loadConfig()
+
+    expect(detail).toBeNull()
+    expect(store.activeId).toBe('')
+    expect(store.configs).toEqual([])
+    expect(store.error).toBe('Saved configuration was not found; using dashboard defaults.')
+  })
+
+  it('does not request a previous account configuration after the list changes', async () => {
+    dashboardApi.listConfigs.mockResolvedValue([])
+    const store = useDashboardConfigsStore()
+    store.activeId = '9'
+
+    await store.load()
+
+    expect(store.activeId).toBe('')
+    expect(dashboardApi.getConfig).not.toHaveBeenCalled()
+  })
+
+  it('rejects viewer configuration saves without server or local fallback', async () => {
+    useAuthStore().user = { id: 2, username: 'viewer', is_viewer: true }
+    const store = useDashboardConfigsStore()
+
+    const result = await store.save('Forbidden', { activeView: 'combined' })
+
+    expect(result).toBeNull()
+    expect(store.error).toContain('cannot save')
+    expect(dashboardApi.saveConfig).not.toHaveBeenCalled()
+    expect(localStorage.setItem).not.toHaveBeenCalled()
   })
 })

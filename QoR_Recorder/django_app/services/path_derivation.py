@@ -6,6 +6,14 @@ from dataclasses import dataclass
 
 
 _REGR_SEGMENT = re.compile(r"^regr_[A-Za-z0-9][A-Za-z0-9._-]*$", re.IGNORECASE)
+_QUARTER_WEEK_SEGMENT = re.compile(r"^\d{4}Q[1-4]_w\d+$", re.IGNORECASE)
+
+
+def _is_version_segment(value: str) -> bool:
+    return bool(
+        _REGR_SEGMENT.fullmatch(value)
+        or _QUARTER_WEEK_SEGMENT.fullmatch(value)
+    )
 
 
 @dataclass(frozen=True)
@@ -47,20 +55,29 @@ def normalize_full_dir(full_dir: str) -> str:
 def derive_version(full_dir: str) -> str:
     """Derive version only from full_dir.
 
-    If ``main`` is present, the nearest valid ``regr_*`` segment directly before
-    it wins. Otherwise the last valid ``regr_*`` segment is used.
+    Supported version segments are ``regr_*`` and release-train names such as
+    ``2026Q3_w3``. If ``main`` is present, the nearest valid version segment
+    directly before it wins. Otherwise the last valid version segment is used.
     """
     normalized = normalize_full_dir(full_dir)
     segments = [segment for segment in normalized.split("/") if segment]
-    candidates = [index for index, segment in enumerate(segments) if _REGR_SEGMENT.fullmatch(segment)]
+    candidates = [
+        index for index, segment in enumerate(segments)
+        if _is_version_segment(segment)
+    ]
     for index, segment in enumerate(segments):
-        if segment.lower() == "main" and index > 0 and _REGR_SEGMENT.fullmatch(segments[index - 1]):
+        if (
+            segment.lower() == "main"
+            and index > 0
+            and _is_version_segment(segments[index - 1])
+        ):
             return segments[index - 1]
     if candidates:
         return segments[candidates[-1]]
     raise PathDerivationError(
         "version_not_in_path",
-        "full_dir must contain a valid regr_* segment; new imports have no version fallback",
+        "full_dir must contain a valid regr_* or YYYYQn_wN version segment; "
+        "new imports have no version fallback",
         full_dir,
     )
 

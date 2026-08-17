@@ -1,52 +1,56 @@
 import { ref } from 'vue'
-import apiClient from '@/api/client'
 
 const SAFE_PATH = /^(?:[a-zA-Z]:[\\/]|\/)[^<>"|?*]+$/
 
 export function useGvim() {
-  const opening = ref(false)
-  const error = ref('')
+  const copied = ref(false)
+  let copyTimer
 
-  function href(path) {
+  function href(path, line = null) {
     const value = String(path || '')
     if ([...value].some(character => character.charCodeAt(0) < 32) || !SAFE_PATH.test(value))
       return null
-    return `gvim://open?path=${encodeURIComponent(path)}`
+    const params = new URLSearchParams({ path: value })
+    if (line != null && Number.isInteger(Number(line)) && Number(line) > 0) {
+      params.set('line', String(Number(line)))
+    }
+    return `gvim://open?${params.toString()}`
   }
 
-  function open(path) {
-    const url = href(path)
+  function open(path, line = null) {
+    const url = href(path, line)
     if (!url) return false
     window.location.assign(url)
     return true
   }
 
-  async function openServer(path, line = null) {
-    if (!href(path)) throw new Error('Unsafe or unrecognized path')
-    opening.value = true
-    error.value = ''
+  async function copy(path) {
+    const value = String(path || '')
+    if (!value) return false
+    copied.value = true
     try {
-      const response = await apiClient.post('/tools/source-files/gvim', {
-        path: String(path),
-        ...(line == null ? {} : { line })
-      })
-      if (response.data?.ok === false) throw new Error(response.data.error || 'Could not open path')
-      return response.data
-    } catch (requestError) {
-      error.value = requestError.message || 'Could not open path'
-      throw requestError
-    } finally {
-      opening.value = false
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = value
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        textarea.remove()
+      }
+    } catch (error) {
+      copied.value = false
+      throw error
     }
+    window.clearTimeout(copyTimer)
+    copyTimer = window.setTimeout(() => {
+      copied.value = false
+    }, 1400)
+    return true
   }
 
-  function handleClick(event, path, line = null) {
-    if (!event.altKey) return true
-    event.preventDefault()
-    event.stopPropagation()
-    openServer(path, line).catch(() => {})
-    return false
-  }
-
-  return { href, open, openServer, handleClick, opening, error }
+  return { href, open, copy, copied }
 }

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { dashboardApi } from '@/api/dashboard'
+import { useAuthStore } from '@/stores/auth'
 
 const LOCAL_KEY = 'qor_dashboard_configs_v2'
 
@@ -30,10 +31,19 @@ export const useDashboardConfigsStore = defineStore('dashboard-configs', () => {
     } finally {
       loading.value = false
     }
-    activeId.value ||= String(defaultConfig.value?.id || configs.value[0]?.id || '')
+    const activeStillExists = configs.value.some(
+      config => String(config.id) === String(activeId.value)
+    )
+    if (!activeStillExists) {
+      activeId.value = String(defaultConfig.value?.id || configs.value[0]?.id || '')
+    }
   }
 
   async function save(name, payload, isDefault = false) {
+    if (useAuthStore().isViewer) {
+      error.value = 'Viewer accounts cannot save dashboard configurations.'
+      return null
+    }
     const entry = { id: activeId.value || undefined, name, config: payload, is_default: isDefault }
     try {
       await dashboardApi.saveConfig(entry)
@@ -70,12 +80,25 @@ export const useDashboardConfigsStore = defineStore('dashboard-configs', () => {
       )
       return detail
     } catch (requestError) {
-      error.value = requestError.message || 'Unable to load dashboard configuration.'
+      if (requestError.status === 404) {
+        configs.value = configs.value.filter(config => String(config.id) !== String(id))
+        activeId.value = ''
+        error.value = 'Saved configuration was not found; using dashboard defaults.'
+      } else {
+        error.value = requestError.message || 'Unable to load dashboard configuration.'
+      }
       return null
     } finally {
       loading.value = false
     }
   }
 
-  return { configs, activeId, loading, error, defaultConfig, load, loadConfig, save }
+  function reset() {
+    configs.value = []
+    activeId.value = ''
+    loading.value = false
+    error.value = ''
+  }
+
+  return { configs, activeId, loading, error, defaultConfig, load, loadConfig, save, reset }
 })

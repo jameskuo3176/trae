@@ -3,8 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
     <title>QoR Recorder</title>
     <link rel="icon" href="/favicon.ico" />
+    <script>
+      ;(() => {
+        try {
+          const stored = JSON.parse(localStorage.getItem('qor_theme') || 'null')
+          const name = typeof stored === 'string' ? stored : stored?.name
+          const theme = ['classic', 'slate', 'light'].includes(String(name || '').toLowerCase())
+            ? 'light'
+            : 'dark'
+          document.documentElement.dataset.theme = theme
+        } catch {
+          document.documentElement.dataset.theme = 'dark'
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

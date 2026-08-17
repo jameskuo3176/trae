@@ -1,0 +1,122 @@
+{
+  "scheme_version": 1,
+  "generated_at": "2026-08-12T14:06:00+08:00",
+  "stage": "Synthesis",
+  "top_module": "demoB",
+  "run": {
+    "directory": "/demo/newproject/regr_demo_20260812/main/demoB"
+  },
+  "errors": [],
+  "timing": {
+    "default": {
+      "source": "/demo/newproject/regr_demo_20260812/main/demoB/rpts/Synthesis.rpt",
+      "status": "ok",
+      "metadata": {
+        "report": "qor",
+        "design": "demoB",
+        "version": "demo",
+        "date": "Wed Aug 12 14:06:00 2026"
+      },
+      "scenarios": {
+        "ss0p72v_125c": {
+          "path_groups": {
+            "CORECLK": {
+              "LoL": 52,
+              "WNS": -15.75,
+              "Clk_Period": 900,
+              "TNS": -220.5,
+              "NVP": 16
+            },
+            "BUSCLK": {
+              "LoL": 27,
+              "WNS": -6.2,
+              "Clk_Period": 1100,
+              "TNS": -44.8,
+              "NVP": 5
+            },
+            "DBGCLK": {
+              "LoL": 12,
+              "WNS": 1.4,
+              "Clk_Period": 2000,
+              "TNS": 0,
+              "NVP": 0
+            }
+          }
+        }
+      },
+      "warnings": []
+    },
+    "final": {
+      "source": "/demo/newproject/regr_demo_20260812/main/demoB/rpts/Synthesis_final.rpt",
+      "status": "ok",
+      "scenarios": {
+        "ss0p72v_125c": {
+          "path_groups": {
+            "CORECLK": {
+              "LoL": 48,
+              "WNS": -11.5,
+              "Clk_Period": 900,
+              "TNS": -145.25,
+              "NVP": 11
+            },
+            "BUSCLK": {
+              "LoL": 24,
+              "WNS": -2.8,
+              "Clk_Period": 1100,
+              "TNS": -16.4,
+              "NVP": 2
+            },
+            "DBGCLK": {
+              "LoL": 10,
+              "WNS": 2.25,
+              "Clk_Period": 2000,
+              "TNS": 0,
+              "NVP": 0
+            }
+          }
+        }
+      },
+      "warnings": []
+    }
+  },
+  "area": {
+    "status": "ok",
+    "tile": {
+      "cell_count": {
+        "total": 96520,
+        "sequential": 30840,
+        "combinational": 64850,
+        "ram": 16,
+        "macro": 6
+      },
+      "area": {
+        "total": 187432.68,
+        "combinational": 93450.35,
+        "sequential": 76220.8,
+        "memory": 16000.4,
+        "macro": 1761.13
+      }
+    }
+  },
+  "misc": {
+    "utilization": 72.25,
+    "mbb_ratio": "9.75%",
+    "fgcg": {
+      "total_flops": 30840,
+      "gated_flops": {
+        "count": 21280,
+        "percentage": "69.0%"
+      }
+    },
+    "flop_count": {
+      "total_sequential_cells": 30840
+    },
+    "congestion": {
+      "both_dirs_percentage": "0.65%",
+      "summary_lines": [
+        "H routing: Overflow = 45 Max = 6 (1 GRCs) GRCs = 75 (0.20%)",
+        "V routing: Overflow = 110 Max = 12 (1 GRCs) GRCs = 160 (0.45%)"
+      ]
+    }
+  }
+}

@@ -19,33 +19,31 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
-    path: '/compare',
-    name: 'Compare',
-    component: () => import('@/views/CompareView.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
     path: '/admin',
     name: 'Admin',
     component: () => import('@/views/AdminView.vue'),
-    meta: { requiresAuth: true, roles: ['admin', 'owner', 'release'] }
+    meta: { requiresAuth: true, roles: ['admin', 'owner'] }
   },
   {
     path: '/review',
+    redirect: '/review/group'
+  },
+  {
+    path: '/review/group',
     name: 'Review',
     component: () => import('@/views/ReviewView.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, roles: ['admin', 'owner'], reviewType: 'group' }
+  },
+  {
+    path: '/review/project',
+    name: 'ProjectReview',
+    component: () => import('@/views/ReviewView.vue'),
+    meta: { requiresAuth: true, roles: ['admin', 'owner'], reviewType: 'project' }
   },
   {
     path: '/record/:id',
     name: 'RecordDetail',
     component: () => import('@/views/RecordDetailView.vue'),
-    meta: { requiresAuth: true }
-  },
-  {
-    path: '/source-files',
-    name: 'SourceFilesCheck',
-    component: () => import('@/views/SourceFilesCheckView.vue'),
     meta: { requiresAuth: true }
   },
   {

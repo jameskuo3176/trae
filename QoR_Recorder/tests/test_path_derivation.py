@@ -14,6 +14,11 @@ def test_last_regr_is_used_without_direct_main_predecessor():
     assert derive_version('/runs/regr_a/foo/regr_b/cpu') == 'regr_b'
 
 
+def test_quarter_week_release_train_is_path_derived():
+    assert derive_version('/workspace/2026Q3_w3/main/cpu') == '2026Q3_w3'
+    assert derive_version('2026Q3_w3/variant_c/cpu_cfg1') == '2026Q3_w3'
+
+
 def test_no_v1_fallback_and_structured_error():
     with pytest.raises(PathDerivationError) as raised:
         derive_version('/runs/main/cpu')

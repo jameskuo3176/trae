@@ -120,15 +120,17 @@ const columns = computed(() => {
   border: 1px solid currentColor;
 }
 .legend .worse {
-  background: #a93838;
+  background: var(--color-danger);
 }
 .legend .better {
-  background: #257c55;
+  background: var(--color-success);
 }
 :deep(.cell-worse) {
-  background: color-mix(in srgb, #d84a4a 25%, var(--color-surface));
+  background: var(--color-danger-background);
+  color: var(--color-danger);
 }
 :deep(.cell-better) {
-  background: color-mix(in srgb, #2ca66f 24%, var(--color-surface));
+  background: var(--color-success-background);
+  color: var(--color-success);
 }
 </style>

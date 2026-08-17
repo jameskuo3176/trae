@@ -43,9 +43,9 @@ defineProps({
   margin-top: 4px;
 }
 .stat-trend.up {
-  color: #66bb6a;
+  color: var(--color-success);
 }
 .stat-trend.down {
-  color: #ff5252;
+  color: var(--color-danger);
 }
 </style>

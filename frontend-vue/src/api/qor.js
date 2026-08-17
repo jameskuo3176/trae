@@ -17,15 +17,12 @@ export const qorApi = {
     return apiClient.get('/qor/dir_modules', { params }).then(r => r.data)
   },
 
-  getRecordDetail(recordId) {
-    return apiClient.get(`/qor/record/${recordId}/`).then(r => r.data)
+  getRecordDetail(recordId, projectId = null) {
+    const params = projectId ? { project_id: projectId } : undefined
+    return apiClient.get(`/qor/record/${recordId}/`, { params }).then(r => r.data)
   },
 
   getRunNotes(params) {
     return apiClient.get('/run_notes', { params }).then(r => r.data)
-  },
-
-  compare(params) {
-    return apiClient.get('/compare', { params }).then(r => r.data)
   }
 }

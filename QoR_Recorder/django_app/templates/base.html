@@ -2017,14 +2017,14 @@
     </script>
     {% endif %}
 
-    <!-- CSRF: 全局 fetch/XHR 拦截器, 自动注入 X-CSRF-Token -->
+    <!-- CSRF: 全局 fetch/XHR 拦截器, 自动注入 Django 标准 X-CSRFToken -->
     <script>
         (function () {
             function getCsrfToken() {
                 const meta = document.querySelector('meta[name="csrf-token"]');
                 return meta ? meta.getAttribute('content') : '';
             }
-            const CSRF_HEADER = 'X-CSRF-Token';
+            const CSRF_HEADER = 'X-CSRFToken';
 
             // 拦截 fetch
             const origFetch = window.fetch;
@@ -2218,8 +2218,8 @@
                 }, options.headers || {});
                 if (['POST', 'PUT', 'DELETE', 'PATCH'].includes((options.method || 'GET').toUpperCase())) {
                     const meta = document.querySelector('meta[name="csrf-token"]');
-                    if (meta && !options.headers['X-CSRF-Token']) {
-                        options.headers['X-CSRF-Token'] = meta.getAttribute('content');
+                    if (meta && !options.headers['X-CSRFToken']) {
+                        options.headers['X-CSRFToken'] = meta.getAttribute('content');
                     }
                 }
                 return fetch(url, options).then(function (resp) {

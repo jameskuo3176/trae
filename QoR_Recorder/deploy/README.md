@@ -151,6 +151,37 @@ docker compose exec django python manage.py check --deploy
 docker compose ps
 ```
 
+Project SQLite databases must be migrated with the reconciliation command:
+
+```bash
+python manage.py migrate_project_databases --check
+python manage.py migrate_project_databases
+```
+
+The command audits every configured project schema before writing, refuses
+incompatible existing columns/constraints, closes Django connections, and
+creates verified SQLite online-backup copies under
+`DATA_DIR/migration-backups/project-migration-<timestamp>/` before any pending
+change. It validates historical project tables before recording legacy
+migration history, creates only missing compatible tables, applies normal
+pending migrations, and verifies that pre-existing row counts are unchanged.
+Rerunning it with no pending work is read-only and does not create another
+backup.
+
+Flask-era databases may contain `NULL` in the otherwise non-nullable
+`qor_records.source_file`, `release_dir`, and `version_description` columns.
+After reviewing the reported counts and semantics, explicitly opt into the
+targeted normalization:
+
+```bash
+python manage.py migrate_project_databases \
+  --normalize-legacy-nulls
+```
+
+Normalization runs after all selected project databases have been backed up,
+updates only `NULL` values in those three columns to empty strings inside one
+transaction per database, and aborts if the counts changed after the audit.
+
 Rollback by restoring the prior image tags and, if schema/data changed,
 restoring the coordinated backup. Nginx configuration can be checked with
 `nginx -t`; Compose healthchecks use Python, `mongosh`, and `nginx` binaries

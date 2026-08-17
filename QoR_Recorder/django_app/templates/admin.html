@@ -673,6 +673,9 @@
                 switchTab('upload');
             }
         }
+        if (window.CURRENT_USER.is_admin) {
+            loadHiddenProjects();
+        }
     });
 
     function switchTab(tab) {
@@ -686,6 +689,9 @@
         if (tab === 'records') {
             loadOwnerFilter();
             loadRecords();
+        }
+        if (tab === 'projects' && window.CURRENT_USER.is_admin) {
+            loadHiddenProjects();
         }
     }
 
@@ -709,10 +715,17 @@
         recordFilter.innerHTML = '<option value="">全部</option>';
 
         allProjects.forEach(p => {
-            uploadProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
-            if (batchProj) batchProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
-            if (blockProj) blockProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
-            recordFilter.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+            const writable = p.is_writable !== false && p.status === 'active';
+            const lockLabel = p.status === 'locked'
+                ? ` [锁定${p.lock_reason ? ': ' + p.lock_reason : ''}]`
+                : '';
+            if (writable) {
+                uploadProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+                if (batchProj) batchProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+                if (blockProj) blockProj.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+            }
+            // 记录筛选仍保留锁定项目，便于查看历史数据
+            recordFilter.innerHTML += `<option value="${p.id}">${p.name}${lockLabel}</option>`;
         });
 
         uploadProj.onchange = () => updateUploadModules();
@@ -773,6 +786,15 @@
                     `;
                 });
             }
+            const status = p.status || 'active';
+            const statusColor = status === 'locked' ? '#f0ad4e' : (status === 'active' ? '#4caf50' : '#999');
+            const statusTag = `<span class="tag" style="background:${statusColor}; color:#fff; margin-left:6px;">${status}</span>`;
+            const lockHint = status === 'locked'
+                ? `<span style="font-size:12px; color:var(--color-text-secondary); margin-left:6px;">禁上传，可查看${p.lock_reason ? ' · ' + escapeHtml(p.lock_reason) : ''}</span>`
+                : '';
+            const lockBtn = status === 'locked'
+                ? `<button class="btn btn-success btn-sm" onclick="unlockProject(${p.id}, '${escapeAttr(p.name)}')">解锁</button>`
+                : `<button class="btn btn-default btn-sm" onclick="lockProject(${p.id}, '${escapeAttr(p.name)}')">锁定</button>`;
             const html = `
                 <div class="project-item">
                     <div class="project-item-header">
@@ -780,10 +802,11 @@
                             <span class="tree-toggle" data-target="${projModulesId}" onclick="toggleProject(${projId}, this)">
                                 <strong>${escapeHtml(p.name)}</strong>
                             </span>
-                            ${projDesc}${projTag}
+                            ${projDesc}${projTag}${statusTag}${lockHint}
                         </div>
                         <div style="display:flex; gap:8px;">
-                            <button class="btn btn-default btn-sm" onclick="showAddModule(${p.id})">+ 模块</button>
+                            ${lockBtn}
+                            <button class="btn btn-default btn-sm" onclick="showAddModule(${p.id})" ${status === 'locked' ? 'disabled title="项目已锁定"' : ''}>+ 模块</button>
                             <button class="btn btn-danger btn-sm" onclick="deleteProject(${p.id})">删除项目</button>
                         </div>
                     </div>
@@ -977,6 +1000,41 @@
         }
     }
 
+    async function lockProject(id, name) {
+        const reason = prompt(`锁定项目 "${name}"？\n锁定后禁止上传，但仍可查看历史数据。\n可选填写锁定原因:`, '');
+        if (reason === null) return;
+        try {
+            const resp = await fetch(`/api/admin/projects/${id}/lock`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                await loadProjects();
+            } else {
+                alert('锁定失败: ' + (data.error || resp.status));
+            }
+        } catch (err) {
+            alert('锁定出错: ' + err.message);
+        }
+    }
+
+    async function unlockProject(id, name) {
+        if (!confirm(`解锁项目 "${name}"？\n解锁后可继续上传数据。`)) return;
+        try {
+            const resp = await fetch(`/api/admin/projects/${id}/unlock`, { method: 'POST' });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                await loadProjects();
+            } else {
+                alert('解锁失败: ' + (data.error || resp.status));
+            }
+        } catch (err) {
+            alert('解锁出错: ' + err.message);
+        }
+    }
+
     async function hardDeleteProject(id, name, moduleCount, recordCount) {
         const msg = `⚠️ 警告: 即将彻底删除项目 "${name}"!\n\n` +
                     `此操作:\n` +
@@ -990,7 +1048,11 @@
         if (!confirm('再次确认: 真的要彻底删除吗? 此操作无法撤销!')) return;
 
         try {
-            const resp = await fetch(`/api/admin/projects/${id}/hard_delete?confirm=true`, { method: 'DELETE' });
+            const resp = await fetch(`/api/admin/projects/${id}/hard_delete`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirm: true }),
+            });
             const data = await resp.json().catch(() => ({}));
             if (resp.ok) {
                 alert(data.message || '已彻底删除');
@@ -2125,7 +2187,7 @@
         try {
             const resp = await fetch(`/api/admin/modules/${sel.value}/collaborators`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
                 body: JSON.stringify({ user_id: parseInt(userSel.value) }),
             });
             const data = await resp.json();
@@ -2145,7 +2207,7 @@
         try {
             const resp = await fetch(`/api/admin/modules/${moduleId}/collaborators/${userId}`, {
                 method: 'DELETE',
-                headers: { 'X-CSRF-Token': csrf },
+                headers: { 'X-CSRFToken': csrf },
             });
             const data = await resp.json();
             if (!resp.ok) {

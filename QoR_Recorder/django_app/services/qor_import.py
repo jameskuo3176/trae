@@ -315,7 +315,8 @@ def _validate_extra_fields_scenario_rules(extra: dict, record_id: str = '') -> N
                 if _SCENARIO_LOWER in key.lower():
                     # 检查父路径是否在允许列表中
                     parent_key = path.split('.')[-1] if '.' in path else path
-                    if parent_key not in _ALLOWED_KEYS:
+                    is_root_scenarios = path == 'extra' and key == 'scenarios'
+                    if not is_root_scenarios and parent_key not in _ALLOWED_KEYS:
                         violations.append(
                             f'{current_path}: 非时序字段包含 "scenarios" 字样'
                         )

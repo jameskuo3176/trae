@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, inject, ref } from 'vue'
 import { useTableSort } from '@/composables/useTableSort'
 import { useClipboard } from '@/composables/useClipboard'
 
@@ -12,6 +12,16 @@ const props = defineProps({
   copyOnClick: Boolean,
   maxHeight: { type: String, default: '60vh' }
 })
+
+// Prefer dashboard chartSettings; otherwise inherit global --table-font-size.
+const chartSettings = inject('chartSettings', null)
+const tableFontSize = computed(() => {
+  const size = chartSettings?.tableFontSize?.value
+  return Number.isFinite(Number(size)) ? Number(size) : null
+})
+const tableFontStyle = computed(() =>
+  tableFontSize.value == null ? undefined : { fontSize: `${tableFontSize.value}px` }
+)
 
 const widths = ref({})
 const { sortKey, sortOrder, sortBy, computeSorted } = useTableSort()
@@ -97,7 +107,7 @@ defineExpose({ exportText, download })
       <button class="btn btn-sm btn-default" type="button" @click="download">Export CSV</button>
     </div>
     <div class="data-table-scroll" :style="{ maxHeight }">
-      <table class="table data-table">
+      <table class="table data-table" :style="tableFontStyle">
         <thead>
           <tr>
             <th
@@ -164,8 +174,9 @@ defineExpose({ exportText, download })
   overflow: auto;
 }
 .data-table {
+  width: auto;
   table-layout: auto;
-  font-size: 11px;
+  font-size: var(--table-font-size, 12px);
   font-family: Consolas, Monaco, monospace;
 }
 .data-table th {
@@ -183,6 +194,20 @@ defineExpose({ exportText, download })
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 420px;
+}
+.data-table tbody tr:hover > td {
+  background: var(--color-surface-hover);
+  color: var(--color-text-on-hover);
+}
+.data-table tbody tr:hover > td.color-good,
+.data-table tbody tr:hover > td.cell-better {
+  background: var(--color-success-background);
+  color: var(--color-success);
+}
+.data-table tbody tr:hover > td.color-bad,
+.data-table tbody tr:hover > td.cell-worse {
+  background: var(--color-danger-background);
+  color: var(--color-danger);
 }
 .sort-button {
   width: 100%;
@@ -204,8 +229,8 @@ defineExpose({ exportText, download })
 .resize-handle:hover {
   background: var(--color-primary);
 }
-.numeric {
-  text-align: right;
+.data-table td.numeric {
+  text-align: center;
   font-variant-numeric: tabular-nums;
 }
 .copyable {

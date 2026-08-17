@@ -1,295 +1,249 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { adminApi } from '@/api/admin'
+import { reviewApi } from '@/api/review'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
-import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
+const props = defineProps({
+  projectId: { type: [String, Number], default: '' }
+})
 const activeTab = ref('snapshots')
 const snapshots = ref([])
 const backups = ref([])
 const loading = ref(false)
-const showConfirm = ref(null)
-const confirmConfig = ref(null)
+const error = ref('')
+const verifySummary = ref(null)
+const copiedId = ref(null)
+
+onMounted(loadData)
+watch(
+  () => props.projectId,
+  () => activeTab.value === 'snapshots' && loadData()
+)
 
 async function loadData() {
   loading.value = true
+  error.value = ''
   try {
     if (activeTab.value === 'snapshots') {
-      const data = await adminApi.getDashboardConfigs()
-      snapshots.value = data || []
+      snapshots.value = props.projectId
+        ? await reviewApi.listSnapshots({ project_id: props.projectId })
+        : []
     } else {
-      await adminApi.getDashboardConfigs() // 使用同接口
-      backups.value = [
-        { id: 1, created_at: '2026-08-09 14:30', status: 'OK', size: '2.4MB' },
-        { id: 2, created_at: '2026-08-08 00:00', status: 'OK', size: '2.3MB' }
-      ]
+      backups.value = await adminApi.listBackups()
     }
   } catch (e) {
-    console.error('Load failed:', e)
+    error.value = e.message || '加载失败'
   } finally {
     loading.value = false
   }
 }
 
-onMounted(() => loadData())
-function selectTab(tab) {
+async function selectTab(tab) {
   activeTab.value = tab
-  loadData()
+  await loadData()
 }
-
-const pendingConfirm = ref(null)
 
 async function createSnapshot() {
-  confirmConfig.value = {
-    title: '创建快照',
-    message: '确定要创建当前数据的快照吗？',
-    confirmText: '创建',
-    isDanger: false
+  if (!props.projectId) {
+    error.value = '请先在记录管理中选择一个项目'
+    return
   }
-  pendingConfirm.value = async () => {
-    try {
-      const newSnap = await adminApi.saveDashboardConfig({ name: 'Manual Snapshot' })
-      snapshots.value.unshift(newSnap)
-    } catch (e) {
-      console.error('Failed:', e)
-    }
-  }
-  showConfirm.value = true
-}
-
-async function verifySnapshot(snap) {
   try {
-    await adminApi.saveDashboardConfig({ id: snap.id, verify: true })
-    alert('验证成功！')
+    await reviewApi.createSnapshot({ project_id: Number(props.projectId) })
+    await loadData()
   } catch (e) {
-    alert('验证失败')
+    error.value = e.message || '创建快照失败'
   }
-}
-
-async function rollbackSnapshot(snap) {
-  confirmConfig.value = {
-    title: '回滚快照',
-    message: '确定要回滚到此快照吗？当前数据将被覆盖。',
-    confirmText: '确认回滚',
-    isDanger: true
-  }
-  pendingConfirm.value = async () => {
-    try {
-      await adminApi.saveDashboardConfig({ id: snap.id, rollback: true })
-      alert('回滚成功！')
-    } catch (e) {
-      alert('回滚失败')
-    }
-  }
-  showConfirm.value = true
 }
 
 async function createBackup() {
-  confirmConfig.value = {
-    title: '创建备份',
-    message: '确定要创建完整备份吗？',
-    confirmText: '创建',
-    isDanger: false
+  try {
+    await adminApi.createBackup()
+    await loadData()
+  } catch (e) {
+    error.value = e.message || '创建备份失败'
   }
-  pendingConfirm.value = async () => {
-    backups.value.unshift({
-      id: Date.now(),
-      created_at: new Date().toLocaleString(),
-      status: 'OK',
-      size: '2.5MB'
-    })
-    alert('备份成功！')
-  }
-  showConfirm.value = true
 }
 
-async function handleConfirm() {
-  showConfirm.value = false
-  if (pendingConfirm.value) {
-    await pendingConfirm.value()
-    pendingConfirm.value = null
+async function verifyBackups() {
+  try {
+    verifySummary.value = await adminApi.verifyBackups()
+  } catch (e) {
+    error.value = e.message || '备份校验失败'
   }
+}
+
+function restoreCommand(backup) {
+  return (
+    backup.restore_apply_command ||
+    `python manage.py restore_backup "${backup.file_path}" --verify --apply`
+  )
+}
+
+function verificationLabel(backup) {
+  const verified = verifySummary.value?.details?.find(item => item.id === backup.id)
+  if (verified?.status) {
+    return (
+      {
+        ok: '校验通过',
+        corrupted: '校验失败',
+        missing: '文件缺失',
+        error: '校验异常'
+      }[verified.status] || verified.status
+    )
+  }
+  return (
+    {
+      ok: '校验通过',
+      corrupted: '校验失败',
+      missing: '文件缺失',
+      present: '文件存在（未跑全量校验）',
+      error: '校验异常',
+      unknown: '未校验'
+    }[backup.verification_status] ||
+    backup.verification_status ||
+    '未校验'
+  )
+}
+
+function schemaLabel(backup) {
+  const schema = backup.manifest?.schema
+  if (!schema) return backup.manifest?.legacy ? 'legacy（无 manifest）' : '—'
+  const apps = schema.migration_apps || Object.keys(schema.django_migrations || {})
+  const core = schema.django_migrations?.core
+  return core
+    ? `core=${core}${apps.length > 1 ? ` · ${apps.length} apps` : ''}`
+    : `apps=${apps.join(',') || '—'}`
+}
+
+async function copyRestoreCommand(backup) {
+  await navigator.clipboard.writeText(restoreCommand(backup))
+  copiedId.value = backup.id
+  window.setTimeout(() => {
+    if (copiedId.value === backup.id) copiedId.value = null
+  }, 1400)
 }
 </script>
 
 <template>
-  <div class="snapshot-backup-section">
-    <div class="card">
-      <div class="card-header">
-        <div class="header-left">
-          <span>📸 Snapshot & Backup</span>
-        </div>
-        <div class="header-actions">
-          <button v-if="activeTab === 'snapshots'" class="btn btn-sm" @click="createSnapshot">
-            + 创建快照
-          </button>
-          <button v-else class="btn btn-sm" @click="createBackup">+ 创建备份</button>
-        </div>
-      </div>
-
-      <div class="tabs">
-        <button
-          :class="['tab-btn', { active: activeTab === 'snapshots' }]"
-          @click="selectTab('snapshots')"
-        >
-          Snapshots
+  <section class="snapshot-backup-section card">
+    <div class="card-header">
+      <span>Snapshot & Backup</span>
+      <div class="actions">
+        <button v-if="activeTab === 'snapshots'" class="btn btn-sm" @click="createSnapshot">
+          冻结本周快照
         </button>
-        <button
-          :class="['tab-btn', { active: activeTab === 'backups' }]"
-          @click="selectTab('backups')"
-        >
-          Backups
-        </button>
-      </div>
-
-      <div class="card-body content-body">
-        <LoadingSpinner v-if="loading" text="加载中..." />
-
-        <div v-else-if="activeTab === 'snapshots'">
-          <div v-if="snapshots.length === 0" class="empty-state">暂无快照</div>
-          <div v-else class="list-container">
-            <div v-for="snap in snapshots" :key="snap.id" class="list-item">
-              <div class="item-main">
-                <span class="item-title">📸 {{ snap.name || 'Snapshot ' + snap.id }}</span>
-                <span class="item-meta">{{ snap.created_at }}</span>
-              </div>
-              <div class="item-actions">
-                <button class="btn btn-sm btn-default" @click="verifySnapshot(snap)">✓ 验证</button>
-                <button class="btn btn-sm btn-danger" @click="rollbackSnapshot(snap)">
-                  ↩ 回滚
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div v-else>
-          <div v-if="backups.length === 0" class="empty-state">暂无备份</div>
-          <div v-else class="list-container">
-            <div v-for="bk in backups" :key="bk.id" class="list-item">
-              <div class="item-main">
-                <span class="item-title">💾 Backup</span>
-                <span class="item-meta">{{ bk.created_at }}</span>
-              </div>
-              <div class="item-right">
-                <span
-                  class="tag"
-                  :style="{ background: bk.status === 'OK' ? '#4caf50' : '#ff9800' }"
-                >
-                  {{ bk.status }}
-                </span>
-                <span class="item-meta">{{ bk.size }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <template v-else>
+          <button class="btn btn-sm" @click="verifyBackups">校验全部</button>
+          <button class="btn btn-sm" @click="createBackup">创建完整备份</button>
+        </template>
       </div>
     </div>
-
-    <ConfirmDialog
-      v-if="showConfirm"
-      v-model="showConfirm"
-      :title="confirmConfig.title"
-      :message="confirmConfig.message"
-      :confirm-text="confirmConfig.confirmText"
-      :is-danger="confirmConfig.isDanger"
-      @confirm="handleConfirm"
-    />
-  </div>
+    <div class="tabs">
+      <button :class="{ active: activeTab === 'snapshots' }" @click="selectTab('snapshots')">
+        周快照
+      </button>
+      <button :class="{ active: activeTab === 'backups' }" @click="selectTab('backups')">
+        数据库备份
+      </button>
+    </div>
+    <div class="card-body">
+      <p v-if="error" class="error-text">{{ error }}</p>
+      <LoadingSpinner v-if="loading" text="加载中..." />
+      <template v-else-if="activeTab === 'snapshots'">
+        <p v-if="!projectId" class="muted">选择具体项目后可查看和冻结本周评审数据。</p>
+        <div v-for="snapshot in snapshots" :key="snapshot.id" class="list-row">
+          <div>
+            <strong>{{ snapshot.name }}</strong>
+            <div class="muted">{{ snapshot.created_at }} · {{ snapshot.record_count }} records</div>
+          </div>
+          <span>{{ snapshot.verified ? '校验通过' : '校验失败' }}</span>
+        </div>
+      </template>
+      <template v-else>
+        <p v-if="verifySummary" class="muted">
+          校验：{{ verifySummary.ok }}/{{ verifySummary.total }} 正常，
+          {{ verifySummary.corrupted }} 损坏，{{ verifySummary.missing }} 缺失
+        </p>
+        <div v-for="backup in backups" :key="backup.id" class="list-row backup-row">
+          <div>
+            <strong>{{ backup.created_at }}</strong>
+            <div class="muted">
+              {{ backup.file_size_mb }} MB · {{ backup.record_count }} records · {{ backup.status }}
+            </div>
+            <div class="muted">校验状态：{{ verificationLabel(backup) }}</div>
+            <div class="muted">schema / migration：{{ schemaLabel(backup) }}</div>
+            <code class="restore-cmd" :title="restoreCommand(backup)">{{
+              restoreCommand(backup)
+            }}</code>
+          </div>
+          <button
+            class="btn btn-sm"
+            :title="restoreCommand(backup)"
+            @click="copyRestoreCommand(backup)"
+          >
+            {{ copiedId === backup.id ? '已复制' : '复制安全恢复命令' }}
+          </button>
+        </div>
+        <p class="muted">
+          恢复会替换数据库文件，必须通过管理命令在维护窗口执行；Web
+          请求不会在线覆盖正在使用的数据库。 Mongo/hybrid 模式会拒绝自动 --apply。
+        </p>
+      </template>
+    </div>
+  </section>
 </template>
 
 <style scoped>
 .snapshot-backup-section {
   margin-top: 16px;
 }
-
-.header-left {
-  flex: 1;
-}
-
-.header-actions {
+.actions,
+.tabs,
+.list-row {
   display: flex;
+  align-items: center;
+}
+.actions {
   gap: 8px;
 }
-
 .tabs {
-  display: flex;
-  gap: 4px;
-  padding: 0 16px;
   border-bottom: 1px solid var(--color-border);
-  margin: 0 -16px 16px -16px;
 }
-
-.tab-btn {
+.tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
   padding: 10px 16px;
   background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
   color: var(--color-text-secondary);
-  font-size: 14px;
   cursor: pointer;
-  margin-bottom: -1px;
 }
-
-.tab-btn.active {
+.tabs button.active {
   color: var(--color-primary);
   border-bottom-color: var(--color-primary);
 }
-
-.content-body {
-  padding-top: 0;
-}
-
-.list-container {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.list-item {
-  display: flex;
+.list-row {
   justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  transition: all 0.2s;
-}
-
-.list-item:hover {
-  background: var(--color-surface-hover);
-  border-color: var(--color-primary);
-}
-
-.item-main {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.item-title {
-  font-weight: 500;
-}
-
-.item-meta {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-}
-
-.item-right {
-  display: flex;
-  align-items: center;
   gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-border);
 }
-
-.item-actions {
-  display: flex;
-  gap: 8px;
+.backup-row {
+  align-items: flex-start;
 }
-
-.empty-state {
-  padding: 48px;
-  text-align: center;
+.restore-cmd {
+  display: block;
+  margin-top: 6px;
+  max-width: 52rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
   color: var(--color-text-secondary);
+}
+.muted {
+  color: var(--color-text-secondary);
+  font-size: 12px;
 }
 </style>

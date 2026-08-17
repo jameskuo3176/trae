@@ -13,6 +13,7 @@
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import re
 import unicodedata
@@ -353,6 +354,81 @@ class ProjectModule(models.Model):
         ]
 
 
+class ReviewGroup(models.Model):
+    """YAML-managed review group within one project."""
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='review_groups')
+    name = models.CharField(max_length=200)
+    owner = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name='owned_review_groups',
+    )
+    description = models.TextField(blank=True, default='')
+    config_version = models.CharField(max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'review_groups'
+        constraints = [
+            models.UniqueConstraint(fields=('project', 'name'), name='uq_project_review_group'),
+        ]
+
+
+class ReviewGroupModule(models.Model):
+    """Assign a project/global module pair to exactly one review group."""
+    group = models.ForeignKey(ReviewGroup, on_delete=models.CASCADE, related_name='module_links')
+    project_module = models.OneToOneField(
+        ProjectModule, on_delete=models.CASCADE, related_name='review_group_link',
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'review_group_modules'
+
+
+class ReviewHierarchySyncState(models.Model):
+    """Singleton audit record for the last applied hierarchy configuration."""
+    singleton = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    config_path = models.TextField(blank=True, default='')
+    config_version = models.CharField(max_length=64, blank=True, default='')
+    config_checksum = models.CharField(max_length=64, blank=True, default='')
+    applied_at = models.DateTimeField(null=True, blank=True)
+    summary = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = 'review_hierarchy_sync_state'
+
+
+class WeeklyRunSelection(models.Model):
+    """Central identity record for a project-scoped official weekly run.
+
+    This intentionally remains in the main database: its project/global-module/
+    user relationships are all central identities. The selected project-local
+    QoR row is represented only by ``record_id``; no cross-database FK exists.
+    """
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='weekly_run_selections')
+    module = models.ForeignKey(
+        GlobalModule, on_delete=models.CASCADE, related_name='weekly_run_selections',
+    )
+    week_start = models.DateField(db_index=True)
+    record_id = models.CharField(max_length=64)
+    source = models.CharField(max_length=40, default='weekly_release')
+    selected_by = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name='weekly_run_selections',
+    )
+    explicit = models.BooleanField(default=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'weekly_run_selections'
+        constraints = [
+            models.UniqueConstraint(
+                fields=('project', 'module', 'week_start'),
+                name='uq_project_module_weekly_run',
+            ),
+        ]
+
+
 class LegacyModuleMapping(models.Model):
     """Rollback-safe mapping; no legacy project row is modified automatically."""
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='legacy_module_mappings')
@@ -472,18 +548,34 @@ class BackupRecord(models.Model):
         verbose_name_plural = '备份记录'
 
     def to_dict(self):
-        return {
+        payload = {
             'id': self.id,
             'backup_type': self.backup_type,
             'file_path': self.file_path,
             'file_size': self.file_size,
             'file_size_mb': round(self.file_size / 1024 / 1024, 2) if self.file_size else 0,
             'checksum': self.checksum[:12] if self.checksum else None,
+            'checksum_full': self.checksum or None,
             'record_count': self.record_count,
             'status': self.status,
             'message': self.message,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'restore_command': (
+                f'python manage.py restore_backup "{self.file_path}" --verify'
+            ),
+            'restore_apply_command': (
+                f'python manage.py restore_backup "{self.file_path}" --verify --apply'
+            ),
+            'manifest': None,
+            'verification_status': 'unknown',
         }
+        if self.file_path and os.path.exists(self.file_path):
+            from django_app.services.backup_service import read_backup_manifest_summary
+            payload['manifest'] = read_backup_manifest_summary(self.file_path)
+            payload['verification_status'] = 'present'
+        elif self.file_path:
+            payload['verification_status'] = 'missing'
+        return payload
 
 
 class UserDashboard(models.Model):
@@ -729,6 +821,7 @@ class QorRecord(models.Model):
             'recorded_at': self.recorded_at.isoformat() if self.recorded_at else None,
             'is_released': bool(self.is_released),
             'released_at': self.released_at.isoformat() if self.released_at else None,
+            'released_by': self.released_by,
             'extra_fields': extra,
         }
         return result
@@ -810,6 +903,39 @@ class RunNote(models.Model):
             'full_dir': self.full_dir,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class RecordAnnotation(models.Model):
+    """One review annotation document per QoR record in its project database."""
+    qor_record = models.OneToOneField(
+        QorRecord, on_delete=models.CASCADE, related_name='annotation'
+    )
+    text = models.TextField(blank=True, default='')
+    author_id = models.IntegerField()
+    editor_id = models.IntegerField()
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'record_annotations'
+
+
+class RecordAnnotationImage(models.Model):
+    """Validated image bytes retained inside the project database."""
+    annotation = models.ForeignKey(
+        RecordAnnotation, on_delete=models.CASCADE, related_name='images'
+    )
+    filename = models.CharField(max_length=180)
+    content_type = models.CharField(max_length=32)
+    byte_size = models.PositiveIntegerField()
+    checksum = models.CharField(max_length=64)
+    content = models.BinaryField()
+    uploaded_by = models.IntegerField()
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'record_annotation_images'
+        ordering = ('id',)
 
 
 class DashboardGroup(models.Model):
@@ -1081,6 +1207,14 @@ class GroupReview(models.Model):
     reviewed_by = models.IntegerField(null=True, blank=True)
     reviewed_at = models.DateTimeField(null=True, blank=True)
     review_comment = models.TextField(null=True, blank=True)
+    snapshot_id = models.IntegerField(null=True, blank=True, db_index=True)
+    snapshot_checksum = models.CharField(max_length=64, blank=True, default='')
+    snapshot_week_start = models.DateField(null=True, blank=True, db_index=True)
+    snapshot_schema_version = models.PositiveSmallIntegerField(null=True, blank=True)
+    snapshot_config_version = models.CharField(max_length=64, blank=True, default='')
+    snapshot_data = models.TextField(null=True, blank=True)
+    submission_count = models.PositiveIntegerField(default=0)
+    resubmitted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(default=timezone.now)
 
@@ -1110,8 +1244,11 @@ class GroupReview(models.Model):
             'reviewed_by': self.reviewed_by,
             'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
             'review_comment': self.review_comment,
+            'submission_count': self.submission_count,
+            'resubmitted_at': self.resubmitted_at.isoformat() if self.resubmitted_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'snapshot_provenance': self.snapshot_provenance(),
         }
         if self.aggregate:
             try:
@@ -1119,6 +1256,33 @@ class GroupReview(models.Model):
             except (json.JSONDecodeError, TypeError):
                 result['aggregate'] = None
         return result
+
+    def snapshot_provenance(self):
+        if not self.snapshot_id:
+            return {
+                'binding': 'legacy_live_unbound',
+                'label': 'Legacy / live-unbound',
+                'verified': None,
+            }
+        copy_checksum = (
+            hashlib.sha256(self.snapshot_data.encode('utf-8')).hexdigest()
+            if self.snapshot_data else ''
+        )
+        return {
+            'binding': 'frozen',
+            'label': 'Frozen snapshot',
+            'id': self.snapshot_id,
+            'checksum': self.snapshot_checksum,
+            'week_start': (
+                self.snapshot_week_start.isoformat()
+                if self.snapshot_week_start else None
+            ),
+            'schema_version': self.snapshot_schema_version,
+            'config_version': self.snapshot_config_version,
+            'copy_verified': bool(
+                self.snapshot_data and copy_checksum == self.snapshot_checksum
+            ),
+        }
 
 
 class SubsystemReview(models.Model):
@@ -1142,6 +1306,14 @@ class SubsystemReview(models.Model):
     reviewed_by = models.IntegerField(null=True, blank=True)
     reviewed_at = models.DateTimeField(null=True, blank=True)
     review_comment = models.TextField(null=True, blank=True)
+    snapshot_id = models.IntegerField(null=True, blank=True, db_index=True)
+    snapshot_checksum = models.CharField(max_length=64, blank=True, default='')
+    snapshot_week_start = models.DateField(null=True, blank=True, db_index=True)
+    snapshot_schema_version = models.PositiveSmallIntegerField(null=True, blank=True)
+    snapshot_config_version = models.CharField(max_length=64, blank=True, default='')
+    snapshot_data = models.TextField(null=True, blank=True)
+    submission_count = models.PositiveIntegerField(default=0)
+    resubmitted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(default=timezone.now)
 
@@ -1154,6 +1326,7 @@ class SubsystemReview(models.Model):
         result = {
             'id': self.id,
             'project_id': self.project_id,
+            'project_name': self.subsystem,
             'subsystem': self.subsystem,
             'period': self.period,
             'title': self.title,
@@ -1171,8 +1344,11 @@ class SubsystemReview(models.Model):
             'reviewed_by': self.reviewed_by,
             'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
             'review_comment': self.review_comment,
+            'submission_count': self.submission_count,
+            'resubmitted_at': self.resubmitted_at.isoformat() if self.resubmitted_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'snapshot_provenance': self.snapshot_provenance(),
         }
         if self.aggregate:
             try:
@@ -1181,11 +1357,44 @@ class SubsystemReview(models.Model):
                 result['aggregate'] = None
         return result
 
+    def snapshot_provenance(self):
+        if not self.snapshot_id:
+            return {
+                'binding': 'legacy_live_unbound',
+                'label': 'Legacy / live-unbound',
+                'verified': None,
+            }
+        copy_checksum = (
+            hashlib.sha256(self.snapshot_data.encode('utf-8')).hexdigest()
+            if self.snapshot_data else ''
+        )
+        return {
+            'binding': 'frozen',
+            'label': 'Frozen snapshot',
+            'id': self.snapshot_id,
+            'checksum': self.snapshot_checksum,
+            'week_start': (
+                self.snapshot_week_start.isoformat()
+                if self.snapshot_week_start else None
+            ),
+            'schema_version': self.snapshot_schema_version,
+            'config_version': self.snapshot_config_version,
+            'copy_verified': bool(
+                self.snapshot_data and copy_checksum == self.snapshot_checksum
+            ),
+        }
+
 
 class ReviewSnapshot(models.Model):
-    """Review 快照 - 项目库"""
+    """Immutable review-input snapshot in the project's database.
+
+    This is distinct from ``DataSnapshot``, which is an operational rollback
+    artifact, and from ``ReviewFile``, which stores attachment metadata.
+    """
     project_id = models.IntegerField(db_index=True)
     subsystem_review = models.ForeignKey(SubsystemReview, on_delete=models.SET_NULL, null=True, blank=True, related_name='snapshots')
+    week_start = models.DateField(null=True, blank=True, db_index=True)
+    schema_version = models.PositiveSmallIntegerField(default=1)
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True, default='')
     snapshot_type = models.CharField(max_length=20, default='milestone')
@@ -1200,6 +1409,27 @@ class ReviewSnapshot(models.Model):
         db_table = 'review_snapshots'
         verbose_name = 'Review 快照'
         verbose_name_plural = 'Review 快照'
+        constraints = [
+            models.UniqueConstraint(
+                fields=('project_id', 'snapshot_type', 'week_start'),
+                name='uq_review_snapshot_project_type_week',
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk and not self._state.adding:
+            database = kwargs.get('using') or self._state.db
+            original = type(self).objects.using(database).get(pk=self.pk)
+            immutable_fields = (
+                'project_id', 'week_start', 'schema_version', 'snapshot_type',
+                'frozen_data', 'checksum', 'created_by', 'created_at',
+            )
+            if any(
+                getattr(self, field) != getattr(original, field)
+                for field in immutable_fields
+            ):
+                raise ValueError('review snapshot frozen input is immutable')
+        return super().save(*args, **kwargs)
 
     def verify_integrity(self):
         return self.checksum == DataSnapshot.compute_checksum(self.frozen_data)
@@ -1207,14 +1437,17 @@ class ReviewSnapshot(models.Model):
     def to_dict(self, include_data=False):
         result = {
             'id': self.id,
+            'kind': 'review_input_snapshot',
             'project_id': self.project_id,
             'subsystem_review_id': self.subsystem_review_id,
+            'week_start': self.week_start.isoformat() if self.week_start else None,
+            'schema_version': self.schema_version,
             'name': self.name,
             'description': self.description,
             'snapshot_type': self.snapshot_type,
             'record_count': self.record_count,
             'file_count': self.file_count,
-            'checksum': self.checksum[:12] if self.checksum else None,
+            'checksum': self.checksum,
             'verified': self.verify_integrity(),
             'created_by': self.created_by,
             'created_at': self.created_at.isoformat() if self.created_at else None,

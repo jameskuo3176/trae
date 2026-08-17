@@ -9,23 +9,24 @@ describe('Filters Store', () => {
 
   it('initial state has empty filters', () => {
     const filters = useFiltersStore()
-    expect(filters.projectId).toBeNull()
+    expect(filters.projectIds).toEqual([])
     expect(filters.moduleIds).toEqual([])
     expect(filters.versionIds).toEqual([])
+    expect(filters.versionFilterApplied).toBe(false)
     expect(filters.dirPrefix).toBe('')
   })
 
   it('fingerprint changes when filters change', () => {
     const filters = useFiltersStore()
     const fp1 = filters.fingerprint
-    filters.projectId = '1'
+    filters.projectIds = ['1']
     const fp2 = filters.fingerprint
     expect(fp1).not.toBe(fp2)
   })
 
   it('fingerprint is stable for same filter values', () => {
     const filters = useFiltersStore()
-    filters.projectId = '1'
+    filters.projectIds = ['1']
     filters.moduleIds = ['3', '5']
     const fp1 = filters.fingerprint
     filters.moduleIds = ['5', '3']
@@ -42,14 +43,16 @@ describe('Filters Store', () => {
 
   it('reset clears all filters', () => {
     const filters = useFiltersStore()
-    filters.projectId = '1'
+    filters.projectIds = ['1']
     filters.moduleIds = ['3']
     filters.versionIds = ['v1']
+    filters.versionFilterApplied = true
     filters.dirPrefix = 'dir'
     filters.reset()
-    expect(filters.projectId).toBeNull()
+    expect(filters.projectIds).toEqual([])
     expect(filters.moduleIds).toEqual([])
     expect(filters.versionIds).toEqual([])
+    expect(filters.versionFilterApplied).toBe(false)
     expect(filters.dirPrefix).toBe('')
   })
 })

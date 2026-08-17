@@ -1,20 +1,63 @@
 :root {
-  --color-primary: #00d4ff;
-  --color-on-primary: #00131a;
-  --color-primary-gradient-end: #7b2ff7;
-  --color-background: #0a0e1a;
-  --color-surface: #131829;
-  --color-surface-hover: #1a2138;
-  --color-text: #e6f1ff;
-  --color-text-secondary: #8b9bb4;
-  --color-border: #1f2a44;
-  --color-navbar-text: rgba(230, 241, 255, 0.75);
-  --color-navbar-text-active: #00d4ff;
-  --glow-primary: 0 0 20px rgba(0, 212, 255, 0.35);
-  --glass-bg: rgba(19, 24, 41, 0.72);
-  --glass-border: rgba(0, 212, 255, 0.18);
-  --grid-line: rgba(0, 212, 255, 0.04);
-  --neon-cyan: #00d4ff;
-  --neon-purple: #7b2ff7;
-  --neon-pink: #ff2d95;
+  --color-primary: #6cb6ff;
+  --color-primary-rgb: 108, 182, 255;
+  --color-primary-hover: #92c9ff;
+  --color-on-primary: #071321;
+  --color-background: #0b1220;
+  --color-surface: #111c2e;
+  --color-surface-elevated: #18263b;
+  --color-surface-hover: #20324b;
+  --color-surface-selected: #173a61;
+  --color-surface-active: #28425f;
+  --color-text: #f4f7fb;
+  --color-text-secondary: #c3cfdd;
+  --color-text-muted: #9eafc2;
+  --color-text-on-hover: #ffffff;
+  --color-text-on-selected: #ffffff;
+  --color-border: #3a4d65;
+  --color-border-strong: #62758d;
+  --color-input-background: #0d1727;
+  --color-input-text: #f4f7fb;
+  --color-input-border: #526780;
+  --color-placeholder: #95a6ba;
+  --color-focus-ring: #8bc4ff;
+  --color-overlay: rgba(2, 8, 18, 0.78);
+  --color-shadow: rgba(0, 0, 0, 0.42);
+  --color-success: #75d59b;
+  --color-success-background: #102c20;
+  --color-success-border: #3f8f61;
+  --color-warning: #ffd166;
+  --color-warning-background: #33280d;
+  --color-warning-border: #9f7b27;
+  --color-danger: #ff9a9a;
+  --color-danger-background: #351719;
+  --color-danger-border: #a74c52;
+  --color-info: #91caff;
+  --color-info-background: #102943;
+  --color-info-border: #3f78aa;
+  --color-disabled-background: #1a2637;
+  --color-disabled-text: #8493a5;
+  --color-scrollbar-thumb: #526780;
+  --color-scrollbar-track: #111c2e;
+  --color-table-stripe: #152238;
+  --color-selection-background: #245d94;
+  --color-selection-text: #ffffff;
+  --color-navbar-text: #c3cfdd;
+  --color-navbar-text-active: #92c9ff;
+
+  /* Compatibility aliases for existing components. */
+  --color-error: var(--color-danger);
+  --glow-primary: none;
+  --glass-bg: var(--color-surface-elevated);
+  --glass-border: var(--color-border);
+  --grid-line: var(--color-border);
+}
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
 }

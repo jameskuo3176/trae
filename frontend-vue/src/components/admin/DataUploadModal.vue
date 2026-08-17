@@ -191,7 +191,7 @@ function close() {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--color-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -217,17 +217,16 @@ function close() {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  color: var(--color-text-secondary);
-  opacity: 0.5;
-}
-
-.step-item.active,
-.step-item.done {
+  color: var(--color-text-muted);
   opacity: 1;
 }
 
 .step-item.active {
   color: var(--color-primary);
+}
+
+.step-item.done {
+  color: var(--color-success);
 }
 
 .step-number {
@@ -249,7 +248,11 @@ function close() {
 
 .drop-zone:hover {
   border-color: var(--color-primary);
-  background: rgba(0, 212, 255, 0.05);
+  background: var(--color-surface-hover);
+  color: var(--color-text-on-hover);
+}
+.drop-zone:hover :is(.drop-text, .drop-hint) {
+  color: inherit;
 }
 
 .drop-icon {

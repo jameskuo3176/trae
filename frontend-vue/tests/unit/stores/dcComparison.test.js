@@ -16,6 +16,7 @@ describe('DC comparison store', () => {
     store.draft.showChange = false
     store.draft.vsMode = true
     store.cancel()
+    expect(store.applyVersion).toBe(0)
     expect(store.preferences.runIds).toEqual([])
     expect(store.preferences.sortMetric).toBe('WNS')
     expect(store.preferences.showChange).toBe(true)
@@ -26,12 +27,17 @@ describe('DC comparison store', () => {
     const store = useDcComparisonStore()
     store.open(['record-a'])
     store.draft.metricIds = ['timing.WNS']
+    store.draft.scenarioIds = ['slow']
+    store.draft.pathGroupIds = ['FUNCclk']
     store.draft.sortMetric = 'NVP'
     store.draft.showChange = false
     store.draft.vsMode = true
     store.apply()
+    expect(store.applyVersion).toBe(1)
     expect(store.preferences.runIds).toEqual(['record-a'])
     expect(store.preferences.metricIds).toEqual(['timing.WNS'])
+    expect(store.preferences.scenarioIds).toEqual(['slow'])
+    expect(store.preferences.pathGroupIds).toEqual(['FUNCclk'])
     expect(store.preferences.sortMetric).toBe('NVP')
     expect(store.preferences.showChange).toBe(false)
     expect(store.preferences.vsMode).toBe(true)

@@ -6,6 +6,7 @@ QoR Recorder 所有 API 端点视图函数。
 import csv as _csv
 import io as _io
 import json
+import logging
 import os
 import platform
 import re
@@ -23,8 +24,10 @@ from django.http import (
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 
-from django.contrib.auth import update_session_auth_hash, login
+from django.contrib.auth import update_session_auth_hash, login, logout
+from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 from django_app.core.decorators import login_required, api_auth_required
 from django_app.core.security import generate_csrf_token
 from django_app.core.db_routing import (
@@ -44,10 +47,31 @@ from django_app.core.models import (
     UserDashboard, DashboardGroup,
     TileReview, GroupReview, SubsystemReview,
     ReviewSnapshot, ReviewFile,
+    ProjectModule, ReviewGroup, ReviewGroupModule, LegacyModuleMapping,
+    WeeklyRunSelection,
     REVIEW_STATUS_DRAFT, REVIEW_STATUS_SUBMITTED,
     REVIEW_STATUS_APPROVED, REVIEW_STATUS_REJECTED,
 )
 from django_app.services import qor_import, json_upload, backup_service
+from django_app.services.weekly_review import (
+    create_weekly_snapshot,
+    get_authoritative_weekly_snapshot,
+    get_weekly_review_input,
+    clear_weekly_star,
+    select_weekly_star,
+    SnapshotIntegrityError,
+)
+from django_app.services.review_hierarchy import (
+    HierarchyConfigError,
+    HierarchyWriteError,
+    hierarchy_status,
+    update_module_release_owner,
+)
+from django_app.services.timing_normalization import normalize_timing_sections
+from django_app.services.risk_rating import shanghai_week_window
+
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================================
@@ -60,13 +84,36 @@ def _get_project_db(project_id):
 
 
 def _resolve_project_ids(project_ids_str=''):
-    """解析查询参数中的 project_ids, 兜底到所有非隐藏项目"""
-    return db_resolve_project_ids(project_ids_str)
+    """Resolve project IDs while consistently excluding offline projects."""
+    requested = db_resolve_project_ids(project_ids_str)
+    visible = set(
+        Project.objects.exclude(status='hidden').values_list('id', flat=True)
+    )
+    return [project_id for project_id in requested if project_id in visible]
 
 
 def _find_qor_record_project(record_id):
-    """跨项目库查找 QorRecord 所在 project_id"""
-    return db_find_qor_record_project(record_id)
+    """Locate a record only within the canonical non-hidden Dashboard scope."""
+    project_id = db_find_qor_record_project(record_id)
+    if project_id is None:
+        return None
+    if not Project.objects.exclude(status='hidden').filter(pk=project_id).exists():
+        return None
+    return project_id
+
+
+def _find_qor_record_projects(record_id):
+    """Return every project containing a local record ID."""
+    project_ids = []
+    for item in list_all_project_dbs():
+        project_id = item['project_id']
+        try:
+            get_project_engine(project_id)
+            if QorRecord.objects.using(_get_project_db(project_id)).filter(pk=record_id).exists():
+                project_ids.append(project_id)
+        except Exception:
+            continue
+    return project_ids
 
 
 def _find_module_project_id(module_id):
@@ -86,6 +133,21 @@ def _project_module_record_counts(project_id):
         return module_count, record_count, True
     except Exception:
         return 0, 0, False
+
+
+def _project_not_writable_response(project):
+    """Reject writes while still allowing historical reads of locked projects."""
+    return JsonResponse({
+        'error': f'项目当前不可写 (status={project.status})',
+        'status': project.status,
+        'is_writable': False,
+    }, status=403)
+
+
+def _require_writable_project(project):
+    if not getattr(project, 'is_writable', False):
+        return _project_not_writable_response(project)
+    return None
 
 
 def query_records_by_projects(
@@ -125,6 +187,128 @@ def parse_full_dir(full_dir):
     }
 
 
+def _display_minute(value):
+    if not value:
+        return None
+    try:
+        return timezone.localtime(value).isoformat(timespec='minutes')
+    except (ValueError, TypeError):
+        return value.isoformat(timespec='minutes')
+
+
+def _serialize_qor_records(records, user=None):
+    """Serialize cross-database rows without losing project/uploader context."""
+    records = list(records)
+    rows = []
+    owner_ids = {r.owner_id for r in records if r.owner_id}
+    users = {
+        user.id: user
+        for user in User.objects.filter(id__in=owner_ids)
+    }
+    project_ids = {
+        getattr(r, '_qor_project_id', None)
+        or getattr(getattr(r, 'module', None), 'project_id', None)
+        for r in records
+    }
+    projects = {
+        project.id: project
+        for project in Project.objects.filter(id__in=[pid for pid in project_ids if pid])
+    }
+    record_context = {}
+    mapping_query = Q(pk__in=[])
+    for record in records:
+        project_id = (
+            getattr(record, '_qor_project_id', None)
+            or getattr(getattr(record, 'module', None), 'project_id', None)
+        )
+        week_start = (
+            shanghai_week_window(record.recorded_at)[0].date()
+            if record.recorded_at else None
+        )
+        record_context[id(record)] = (project_id, week_start)
+        if project_id and record.module_id:
+            mapping_query |= Q(
+                project_id=project_id,
+                legacy_module_id=record.module_id,
+            )
+    identity_map = {
+        (mapping.project_id, mapping.legacy_module_id): mapping.module_id
+        for mapping in LegacyModuleMapping.objects.filter(mapping_query)
+    }
+    selection_keys = {
+        (project_id, identity_map.get((project_id, record.module_id)), week_start)
+        for record in records
+        for project_id, week_start in [record_context[id(record)]]
+        if project_id and week_start and identity_map.get((project_id, record.module_id))
+    }
+    selections = {
+        (selection.project_id, selection.module_id, selection.week_start): selection
+        for selection in WeeklyRunSelection.objects.filter(
+            project_id__in={key[0] for key in selection_keys},
+            module_id__in={key[1] for key in selection_keys},
+            week_start__in={key[2] for key in selection_keys},
+        )
+    } if selection_keys else {}
+    owner_map = {
+        (row.project_id, row.module_id): row.owner_id
+        for row in ProjectModule.objects.filter(
+            project_id__in={key[0] for key in selection_keys},
+            module_id__in={key[1] for key in selection_keys},
+        )
+    } if selection_keys else {}
+    for record in records:
+        value = record.to_dict()
+        project_id, week_start = record_context[id(record)]
+        value['project_id'] = project_id
+        value['project_name'] = projects[project_id].name if project_id in projects else None
+        if not value.get('module_name'):
+            value['module_name'] = LegacyModuleMapping.objects.filter(
+                project_id=project_id,
+                legacy_module_id=record.module_id,
+            ).values_list('legacy_name', flat=True).first() or f'#{record.module_id}'
+        owner = users.get(record.owner_id)
+        value['uploader_id'] = record.owner_id
+        value['uploader_username'] = owner.username if owner else None
+        value['uploader_display_name'] = owner.display_name if owner else None
+        # Compatibility for existing clients while the label changes to uploader.
+        value['owner_username'] = owner.username if owner else None
+        value['release_sort_at'] = (
+            record.released_at or record.recorded_at
+        ).isoformat() if (record.released_at or record.recorded_at) else None
+        value['recorded_at_display'] = _display_minute(record.recorded_at)
+        value['released_at_display'] = _display_minute(record.released_at)
+        value['release_sort_at_display'] = _display_minute(
+            record.released_at or record.recorded_at
+        )
+        value['can_manage'] = bool(
+            user and not user.is_viewer
+            and (user.is_admin or record.module.can_be_managed_by(user))
+        )
+        value['can_edit_description'] = bool(user and user.is_admin)
+        global_module_id = identity_map.get((project_id, record.module_id))
+        selection = selections.get((project_id, global_module_id, week_start))
+        value['global_module_id'] = global_module_id
+        value['review_week_start'] = week_start.isoformat() if week_start else None
+        value['review_star'] = bool(
+            selection and selection.record_id == str(record.id)
+        )
+        value['review_star_selected_by'] = (
+            selection.selected_by_id if value['review_star'] else None
+        )
+        value['can_select_review_star'] = bool(
+            user
+            and not user.is_viewer
+            and global_module_id
+            and week_start
+            and (
+                user.is_admin
+                or owner_map.get((project_id, global_module_id)) == user.id
+            )
+        )
+        rows.append(value)
+    return rows
+
+
 # 数字电路 QoR 评选指标的方向
 QOR_METRIC_DIRECTION = {
     'area_total': 'min', 'area_combinational': 'min', 'area_sequential': 'min',
@@ -158,12 +342,9 @@ def tools_source_files_check_page(request):
 
 @login_required
 def api_get_projects(request):
-    """获取项目列表 (默认排除已隐藏项目)"""
+    """Return the role-independent Dashboard project scope."""
     try:
-        include_hidden = request.GET.get('include_hidden', '').lower() in ('1', 'true', 'yes')
-        query = Project.objects.all()
-        if not (include_hidden and request.user.is_admin):
-            query = query.exclude(status='hidden')
+        query = Project.objects.exclude(status='hidden')
         projects = query.order_by('name')
 
         result = []
@@ -203,7 +384,7 @@ def api_get_projects(request):
 @login_required
 def api_get_modules(request, project_id):
     """获取指定项目的模块列表"""
-    get_object_or_404(Project, pk=project_id)
+    get_object_or_404(Project.objects.exclude(status='hidden'), pk=project_id)
     db_name = _get_project_db(project_id)
     try:
         get_project_engine(project_id)
@@ -224,7 +405,7 @@ def api_get_modules(request, project_id):
 @login_required
 def api_get_module_records(request, project_id, module_id):
     """获取指定模块下的记录摘要"""
-    get_object_or_404(Project, pk=project_id)
+    get_object_or_404(Project.objects.exclude(status='hidden'), pk=project_id)
     db_name = _get_project_db(project_id)
     try:
         get_project_engine(project_id)
@@ -233,8 +414,6 @@ def api_get_module_records(request, project_id, module_id):
             pk=module_id, project_id=project_id,
         )
         q = QorRecord.objects.using(db_name).filter(module_id=module_id)
-        if request.user.is_viewer:
-            q = q.filter(is_released=True)
         records = q.order_by('version', '-recorded_at')[:500]
         result = []
         for r in records:
@@ -268,6 +447,12 @@ def api_get_qor_data(request):
         owner_id = request.GET.get('owner_id', '').strip()
         owner_username = request.GET.get('owner_username', '').strip()
         dir_prefix = request.GET.get('dir_prefix', '').strip() or None
+        paginated = 'page' in request.GET or 'page_size' in request.GET
+        try:
+            page = max(1, int(request.GET.get('page', 1)))
+            page_size = min(200, max(1, int(request.GET.get('page_size', 50))))
+        except (TypeError, ValueError):
+            return JsonResponse({'error': 'page 和 page_size 必须为整数'}, status=400)
 
         owner_user_id = None
         if owner_id and owner_id.isdigit():
@@ -279,19 +464,31 @@ def api_get_qor_data(request):
             except User.DoesNotExist:
                 return JsonResponse([], safe=False)
 
-        proj_id_list = _resolve_project_ids(project_ids) or None
-        release_only = request.user.is_viewer
+        proj_id_list = _resolve_project_ids(project_ids)
         records = query_records_by_projects(
             proj_id_list=proj_id_list,
             module_ids_str=module_ids,
             versions_str=versions,
             owner_id=owner_user_id,
-            release_only=release_only,
+            release_only=False,
             dir_prefix=dir_prefix,
             order_desc=True,
             limit=5000,
         )
-        return JsonResponse([r.to_dict() for r in records], safe=False)
+        rows = _serialize_qor_records(records, request.user)
+        if not paginated:
+            return JsonResponse(rows, safe=False)
+        total = len(rows)
+        start = (page - 1) * page_size
+        return JsonResponse({
+            'records': rows[start:start + page_size],
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total': total,
+                'pages': (total + page_size - 1) // page_size,
+            },
+        })
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -301,8 +498,11 @@ def api_get_qor_data(request):
 @login_required
 def api_qor_record_detail(request, record_id):
     """单条 QoR 记录详情 + 同 module+version 横向对比"""
-    pid = _find_qor_record_project(record_id)
+    explicit_pid = request.GET.get('project_id', '').strip()
+    pid = int(explicit_pid) if explicit_pid.isdigit() else _find_qor_record_project(record_id)
     if pid is None:
+        return JsonResponse({'error': '记录不存在'}, status=404)
+    if not Project.objects.exclude(status='hidden').filter(pk=pid).exists():
         return JsonResponse({'error': '记录不存在'}, status=404)
     db_name = _get_project_db(pid)
     try:
@@ -311,10 +511,7 @@ def api_qor_record_detail(request, record_id):
     except QorRecord.DoesNotExist:
         return JsonResponse({'error': '记录不存在'}, status=404)
 
-    if request.user.is_viewer:
-        if not rec.is_released:
-            return JsonResponse({'error': '记录不存在'}, status=404)
-    elif not request.user.is_admin and not request.user.is_owner:
+    if not request.user.is_admin and not request.user.is_owner and not request.user.is_viewer:
         member = ProjectMember.objects.filter(
             project_id=rec.module.project_id, user=request.user,
         ).first()
@@ -341,8 +538,11 @@ def api_qor_record_detail(request, record_id):
             'recorded_at': s.recorded_at.isoformat() if s.recorded_at else None,
         })
 
+    rec._qor_project_id = pid
+    serialized_record = _serialize_qor_records([rec], request.user)[0]
+    serialized_record['timing_sections'] = normalize_timing_sections(serialized_record)
     return JsonResponse({
-        'record': rec.to_dict(),
+        'record': serialized_record,
         'siblings': sibling_summaries,
         'sibling_count': len(sibling_summaries),
     })
@@ -475,13 +675,12 @@ def api_dir_modules(request):
         return JsonResponse({'ok': False, 'error': '缺少 base_dir 参数'}, status=400)
 
     project_ids = request.GET.get('project_ids', '')
-    proj_id_list = _resolve_project_ids(project_ids) or None
-    release_only = request.user.is_viewer
+    proj_id_list = _resolve_project_ids(project_ids)
 
     records = query_records_by_projects(
         proj_id_list=proj_id_list,
         dir_prefix=base_dir,
-        release_only=release_only,
+        release_only=False,
         order_desc=True,
         limit=10000,
     )
@@ -560,7 +759,7 @@ def api_get_versions(request):
     module_ids = request.GET.get('module_ids', '')
 
     records = query_records_by_projects(
-        proj_id_list=_resolve_project_ids(project_ids) or None,
+        proj_id_list=_resolve_project_ids(project_ids),
         module_ids_str=module_ids,
         release_only=False,
         order_desc=True,
@@ -752,9 +951,42 @@ def reviews_options(request):
 
 @login_required
 def list_tile_reviews(request):
-    """列出 Tile Review"""
+    """List or create a module-level weekly review."""
     if request.user.is_viewer:
-        return JsonResponse([], safe=False)
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body) if request.body else {}
+            pid = int(data.get('project_id'))
+            module_id = int(data.get('module_id'))
+            db_name = _get_project_db(pid)
+            get_project_engine(pid)
+            module = Module.objects.using(db_name).get(pk=module_id, project_id=pid)
+            if not module.can_be_managed_by(request.user):
+                return JsonResponse({'error': 'forbidden'}, status=403)
+            record_id = data.get('record_id')
+            record = None
+            if record_id:
+                record = QorRecord.objects.using(db_name).get(
+                    pk=record_id, module_id=module_id,
+                )
+            row = TileReview(
+                project_id=pid,
+                module_id=module_id,
+                record=record,
+                title=data.get('title') or f'{module.name} weekly review',
+                period=data.get('period', 'weekly'),
+                summary=data.get('summary', ''),
+                verdict=data.get('verdict'),
+                created_by=request.user.id,
+            )
+            for key in ('key_metrics', 'findings', 'decisions', 'next_steps', 'risks'):
+                if data.get(key) is not None:
+                    setattr(row, key, json.dumps(data[key], ensure_ascii=False))
+            row.save(using=db_name)
+            return JsonResponse(row.to_dict(include_detail=True), status=201)
+        except (ValueError, TypeError, Module.DoesNotExist, QorRecord.DoesNotExist) as exc:
+            return JsonResponse({'error': f'invalid review: {exc}'}, status=400)
     pid = request.GET.get('project_id')
     if pid:
         try:
@@ -805,6 +1037,13 @@ def tile_review_detail(request, rid):
         try:
             get_project_engine(pid)
             r = TileReview.objects.using(db_name).get(pk=rid)
+            if request.method == 'DELETE':
+                if not request.user.is_admin and r.created_by != request.user.id:
+                    return JsonResponse({'error': 'forbidden'}, status=403)
+                if r.status not in (REVIEW_STATUS_DRAFT, REVIEW_STATUS_REJECTED):
+                    return JsonResponse({'error': 'only draft/rejected reviews can be deleted'}, status=400)
+                r.delete(using=db_name)
+                return JsonResponse({'ok': True})
             if r.status not in (REVIEW_STATUS_DRAFT, REVIEW_STATUS_REJECTED):
                 return JsonResponse({'error': f'当前状态 {r.status} 不可修改'}, status=400)
             for k in ('title', 'period', 'summary', 'verdict'):
@@ -831,6 +1070,8 @@ def submit_tile_review(request, rid):
         try:
             get_project_engine(pid)
             r = TileReview.objects.using(db_name).get(pk=rid)
+            if not request.user.is_admin and r.created_by != request.user.id:
+                return JsonResponse({'error': 'forbidden'}, status=403)
             if r.status not in (REVIEW_STATUS_DRAFT, REVIEW_STATUS_REJECTED):
                 return JsonResponse({'error': f'当前状态 {r.status} 不可提交'}, status=400)
             r.status = REVIEW_STATUS_SUBMITTED
@@ -854,10 +1095,16 @@ def review_tile_review(request, rid):
             if r.status != REVIEW_STATUS_SUBMITTED:
                 return JsonResponse({'error': f'当前状态 {r.status} 不可审批'}, status=400)
             if not request.user.is_admin:
-                member = ProjectMember.objects.filter(
-                    project_id=r.project_id, user=request.user,
-                ).first()
-                if not member or member.role not in ('owner', 'editor'):
+                global_module_id = LegacyModuleMapping.objects.filter(
+                    project_id=r.project_id,
+                    legacy_module_id=r.module_id,
+                ).values_list('module_id', flat=True).first()
+                is_group_owner = ReviewGroupModule.objects.filter(
+                    project_module__project_id=r.project_id,
+                    project_module__module_id=global_module_id,
+                    group__owner_id=request.user.id,
+                ).exists()
+                if not is_group_owner:
                     return JsonResponse({'error': 'forbidden'}, status=403)
             data = json.loads(request.body) if request.body else {}
             action = data.get('action')
@@ -876,11 +1123,181 @@ def review_tile_review(request, rid):
 
 # ---- Group Reviews ----
 
+def _is_project_owner(user, project_id):
+    return ProjectMember.objects.filter(
+        project_id=project_id, user=user, role='owner',
+    ).exists()
+
+
+def _review_capabilities(
+    row, user, creator_field, is_project_owner=None, allow_owner_self_review=False,
+):
+    if is_project_owner is None:
+        is_project_owner = _is_project_owner(user, row.project_id)
+    creator_id = getattr(row, creator_field)
+    can_manage = bool(user.is_admin or creator_id == user.id)
+    can_review = bool(
+        row.status == REVIEW_STATUS_SUBMITTED
+        and (
+            user.is_admin
+            or (
+                is_project_owner
+                and (allow_owner_self_review or creator_id != user.id)
+            )
+        )
+    )
+    editable = row.status in (REVIEW_STATUS_DRAFT, REVIEW_STATUS_REJECTED)
+    return {
+        'can_view': True,
+        'can_edit': can_manage and editable,
+        'can_delete': can_manage and editable,
+        'can_submit': can_manage and editable,
+        'can_review': can_review,
+    }
+
+
+def _review_identity_payload(value, creator_id, creator_label):
+    user_ids = [creator_id]
+    if value.get('reviewed_by'):
+        user_ids.append(value['reviewed_by'])
+    usernames = dict(
+        User.objects.filter(id__in=user_ids).values_list('id', 'username')
+    )
+    value[creator_label] = usernames.get(creator_id)
+    value['reviewer_name'] = usernames.get(value.get('reviewed_by'))
+    return value
+
+
+def _group_review_payload(row, user, is_project_owner=None):
+    value = row.to_dict(include_detail=True)
+    value.update(
+        _review_capabilities(row, user, 'leader_id', is_project_owner)
+    )
+    value['review_type'] = 'group'
+    value['snapshot_provenance'] = _verified_snapshot_provenance(row)
+    return _review_identity_payload(value, row.leader_id, 'leader_name')
+
+
+def _project_review_payload(row, user, is_project_owner=None):
+    value = row.to_dict(include_detail=True)
+    value.pop('subsystem', None)
+    value.update(
+        _review_capabilities(
+            row, user, 'manager_id', is_project_owner,
+            allow_owner_self_review=True,
+        )
+    )
+    value['review_type'] = 'project'
+    value['snapshot_provenance'] = _verified_snapshot_provenance(row)
+    return _review_identity_payload(value, row.manager_id, 'manager_name')
+
+
+class ReviewSnapshotRequired(ValueError):
+    pass
+
+
+def _snapshot_binding(data, project_id, db_name):
+    week_value = data.get('week_start')
+    if not week_value:
+        raise ValueError('week_start is required')
+    week_start = datetime.fromisoformat(str(week_value)).date()
+    snapshot = get_authoritative_weekly_snapshot(project_id, week_start)
+    if not snapshot:
+        raise ReviewSnapshotRequired(
+            'freeze the requested project week before creating a review'
+        )
+    frozen = json.loads(snapshot.frozen_data)
+    return {
+        'snapshot_id': snapshot.id,
+        'snapshot_checksum': snapshot.checksum,
+        'snapshot_week_start': snapshot.week_start,
+        'snapshot_schema_version': snapshot.schema_version,
+        'snapshot_config_version': str(frozen.get('config_version', '')),
+        'snapshot_data': snapshot.frozen_data,
+    }
+
+
+def _verified_snapshot_provenance(row):
+    value = row.snapshot_provenance()
+    if not row.snapshot_id:
+        return value
+    alias = row._state.db or _get_project_db(row.project_id)
+    snapshot = ReviewSnapshot.objects.using(alias).filter(
+        pk=row.snapshot_id,
+        project_id=row.project_id,
+        snapshot_type='weekly_review',
+        week_start=row.snapshot_week_start,
+    ).first()
+    authoritative_verified = bool(
+        snapshot
+        and snapshot.checksum == row.snapshot_checksum
+        and snapshot.verify_integrity()
+    )
+    value['authoritative_snapshot_found'] = bool(snapshot)
+    value['authoritative_verified'] = authoritative_verified
+    value['verified'] = bool(value.get('copy_verified') and authoritative_verified)
+    return value
+
+
+def _review_project_id(request, data=None):
+    raw_value = request.GET.get('project_id')
+    if raw_value in (None, '') and data is not None:
+        raw_value = data.get('project_id')
+    if raw_value in (None, ''):
+        raise ValueError('project_id is required')
+    return int(raw_value)
+
+
+def _project_scoped_review(model, project_id, rid):
+    get_project_engine(project_id)
+    db_name = _get_project_db(project_id)
+    row = model.objects.using(db_name).get(pk=rid, project_id=project_id)
+    return row, db_name
+
+
 @login_required
 def list_group_reviews(request):
-    """列出 Group Review"""
+    """List or create a YAML-defined group review."""
     if request.user.is_viewer:
-        return JsonResponse([], safe=False)
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body) if request.body else {}
+            pid = int(data.get('project_id'))
+            group = ReviewGroup.objects.get(project_id=pid, name=data.get('group_name'))
+            if not request.user.is_admin and group.owner_id != request.user.id:
+                return JsonResponse({'error': 'forbidden'}, status=403)
+            db_name = _get_project_db(pid)
+            get_project_engine(pid)
+            binding = _snapshot_binding(data, pid, db_name)
+            with transaction.atomic(using=db_name):
+                row = GroupReview(
+                    project_id=pid,
+                    group_name=group.name,
+                    period='weekly',
+                    title=data.get('title') or f'{group.name} weekly review',
+                    summary=data.get('summary', ''),
+                    verdict=data.get('verdict'),
+                    leader_id=request.user.id,
+                    **binding,
+                )
+                for key in ('tile_review_ids', 'key_metrics', 'findings', 'decisions', 'next_steps', 'risks'):
+                    if data.get(key) is not None:
+                        setattr(row, key, json.dumps(data[key], ensure_ascii=False))
+                row.save(using=db_name)
+            return JsonResponse(_group_review_payload(row, request.user), status=201)
+        except ReviewSnapshotRequired as exc:
+            return JsonResponse(
+                {'error': str(exc), 'code': 'review_snapshot_required'},
+                status=409,
+            )
+        except SnapshotIntegrityError as exc:
+            return JsonResponse(
+                {'error': str(exc), 'code': 'snapshot_integrity_failed'},
+                status=409,
+            )
+        except (ValueError, TypeError, ReviewGroup.DoesNotExist) as exc:
+            return JsonResponse({'error': f'invalid review: {exc}'}, status=400)
     pid = request.GET.get('project_id')
     if pid:
         try:
@@ -892,8 +1309,18 @@ def list_group_reviews(request):
         db_name = _get_project_db(pid)
         try:
             get_project_engine(pid)
-            rows = GroupReview.objects.using(db_name).filter(project_id=pid).order_by('-created_at')[:500]
-            return JsonResponse({'items': [r.to_dict(include_detail=True) for r in rows]})
+            rows = GroupReview.objects.using(db_name).filter(project_id=pid)
+            group_name = request.GET.get('group_name', '').strip()
+            if group_name:
+                rows = rows.filter(group_name=group_name)
+            rows = rows.order_by('-created_at')[:500]
+            is_project_owner = _is_project_owner(request.user, pid)
+            return JsonResponse({
+                'items': [
+                    _group_review_payload(r, request.user, is_project_owner)
+                    for r in rows
+                ],
+            })
         except Exception:
             return JsonResponse({'items': []})
     else:
@@ -903,7 +1330,11 @@ def list_group_reviews(request):
             try:
                 get_project_engine(p)
                 rows = GroupReview.objects.using(db_name).order_by('-created_at')[:500]
-                items.extend([r.to_dict(include_detail=True) for r in rows])
+                is_project_owner = _is_project_owner(request.user, p)
+                items.extend([
+                    _group_review_payload(r, request.user, is_project_owner)
+                    for r in rows
+                ])
             except Exception:
                 continue
         return JsonResponse({'items': items})
@@ -912,39 +1343,33 @@ def list_group_reviews(request):
 @login_required
 def group_review_detail(request, rid):
     """Group Review 详情 (GET) / 更新 (PUT)"""
-    if request.method == 'GET':
-        for pid in _resolve_project_ids():
-            db_name = _get_project_db(pid)
-            try:
-                get_project_engine(pid)
-                r = GroupReview.objects.using(db_name).get(pk=rid)
-                return JsonResponse(r.to_dict(include_detail=True))
-            except GroupReview.DoesNotExist:
-                continue
+    try:
+        data = json.loads(request.body) if request.body else {}
+        pid = _review_project_id(request, data)
+        r, db_name = _project_scoped_review(GroupReview, pid, rid)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except GroupReview.DoesNotExist:
         return JsonResponse({'error': '不存在'}, status=404)
 
-    if request.user.is_viewer:
+    capabilities = _review_capabilities(r, request.user, 'leader_id')
+    if request.method == 'GET':
+        return JsonResponse(_group_review_payload(r, request.user))
+    if request.user.is_viewer or not capabilities['can_edit']:
         return JsonResponse({'error': 'forbidden'}, status=403)
-    data = json.loads(request.body) if request.body else {}
-    for pid in _resolve_project_ids():
-        db_name = _get_project_db(pid)
-        try:
-            get_project_engine(pid)
-            r = GroupReview.objects.using(db_name).get(pk=rid)
-            if r.status not in (REVIEW_STATUS_DRAFT, REVIEW_STATUS_REJECTED):
-                return JsonResponse({'error': f'当前状态 {r.status} 不可修改'}, status=400)
-            for k in ('title', 'period', 'summary', 'verdict', 'group_name', 'subsystem'):
-                if k in data:
-                    setattr(r, k, data[k])
-            for k in ('tile_review_ids', 'key_metrics', 'findings', 'decisions', 'next_steps', 'risks'):
-                if k in data:
-                    val = json.dumps(data[k], ensure_ascii=False) if data[k] else None
-                    setattr(r, k, val)
-            r.save(using=db_name)
-            return JsonResponse(r.to_dict())
-        except GroupReview.DoesNotExist:
-            continue
-    return JsonResponse({'error': '不存在'}, status=404)
+    if request.method == 'DELETE':
+        r.delete(using=db_name)
+        return JsonResponse({'ok': True})
+    for k in ('title', 'summary', 'verdict'):
+        if k in data:
+            setattr(r, k, data[k])
+    for k in ('tile_review_ids', 'key_metrics', 'findings', 'decisions', 'next_steps', 'risks'):
+        if k in data:
+            val = json.dumps(data[k], ensure_ascii=False) if data[k] else None
+            setattr(r, k, val)
+    r.updated_at = timezone.now()
+    r.save(using=db_name)
+    return JsonResponse(_group_review_payload(r, request.user))
 
 
 @login_required
@@ -952,62 +1377,108 @@ def submit_group_review(request, rid):
     """提交 Group Review"""
     if request.user.is_viewer:
         return JsonResponse({'error': 'forbidden'}, status=403)
-    for pid in _resolve_project_ids():
-        db_name = _get_project_db(pid)
-        try:
-            get_project_engine(pid)
-            r = GroupReview.objects.using(db_name).get(pk=rid)
-            if r.status != REVIEW_STATUS_DRAFT:
-                return JsonResponse({'error': f'当前状态 {r.status} 不可提交'}, status=400)
-            r.status = REVIEW_STATUS_SUBMITTED
-            r.submitted_at = timezone.now()
-            r.save(using=db_name)
-            return JsonResponse(r.to_dict())
-        except GroupReview.DoesNotExist:
-            continue
-    return JsonResponse({'error': '不存在'}, status=404)
+    try:
+        data = json.loads(request.body) if request.body else {}
+        pid = _review_project_id(request, data)
+        r, db_name = _project_scoped_review(GroupReview, pid, rid)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except GroupReview.DoesNotExist:
+        return JsonResponse({'error': '不存在'}, status=404)
+    if not _review_capabilities(r, request.user, 'leader_id')['can_submit']:
+        if r.status not in (REVIEW_STATUS_DRAFT, REVIEW_STATUS_REJECTED):
+            return JsonResponse({'error': f'当前状态 {r.status} 不可提交'}, status=400)
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    was_rejected = r.status == REVIEW_STATUS_REJECTED
+    r.status = REVIEW_STATUS_SUBMITTED
+    r.submitted_at = timezone.now()
+    r.submission_count = (r.submission_count or 0) + 1
+    if was_rejected:
+        r.resubmitted_at = r.submitted_at
+    r.updated_at = timezone.now()
+    r.save(using=db_name)
+    return JsonResponse(_group_review_payload(r, request.user))
 
 
 @login_required
 def review_group_review(request, rid):
     """审批 Group Review"""
-    for pid in _resolve_project_ids():
-        db_name = _get_project_db(pid)
-        try:
-            get_project_engine(pid)
-            r = GroupReview.objects.using(db_name).get(pk=rid)
-            if r.status != REVIEW_STATUS_SUBMITTED:
-                return JsonResponse({'error': f'当前状态 {r.status} 不可审批'}, status=400)
-            if r.leader_id == request.user.id:
-                return JsonResponse({'error': '不能审核自己创建的 review'}, status=400)
-            if not request.user.is_admin:
-                member = ProjectMember.objects.filter(
-                    project_id=r.project_id, user=request.user,
-                ).first()
-                if not member or member.role not in ('owner', 'editor'):
-                    return JsonResponse({'error': 'forbidden'}, status=403)
-            data = json.loads(request.body) if request.body else {}
-            action = data.get('action')
-            if action not in ('approve', 'reject'):
-                return JsonResponse({'error': 'action 必须是 approve 或 reject'}, status=400)
-            r.status = REVIEW_STATUS_APPROVED if action == 'approve' else REVIEW_STATUS_REJECTED
-            r.reviewed_by = request.user.id
-            r.reviewed_at = timezone.now()
-            r.review_comment = data.get('comment', '')
-            r.save(using=db_name)
-            return JsonResponse(r.to_dict(include_detail=True))
-        except GroupReview.DoesNotExist:
-            continue
-    return JsonResponse({'error': '不存在'}, status=404)
+    try:
+        data = json.loads(request.body) if request.body else {}
+        pid = _review_project_id(request, data)
+        r, db_name = _project_scoped_review(GroupReview, pid, rid)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except GroupReview.DoesNotExist:
+        return JsonResponse({'error': '不存在'}, status=404)
+    if r.status != REVIEW_STATUS_SUBMITTED:
+        return JsonResponse({'error': f'当前状态 {r.status} 不可审批'}, status=400)
+    if not request.user.is_admin and r.leader_id == request.user.id:
+        return JsonResponse({'error': '不能审核自己创建的 review'}, status=400)
+    if not _review_capabilities(r, request.user, 'leader_id')['can_review']:
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    action = data.get('action')
+    if action not in ('approve', 'reject'):
+        return JsonResponse({'error': 'action 必须是 approve 或 reject'}, status=400)
+    r.status = REVIEW_STATUS_APPROVED if action == 'approve' else REVIEW_STATUS_REJECTED
+    r.reviewed_by = request.user.id
+    r.reviewed_at = timezone.now()
+    r.review_comment = data.get('comment', '')
+    r.updated_at = timezone.now()
+    r.save(using=db_name)
+    return JsonResponse(_group_review_payload(r, request.user))
 
 
 # ---- Subsystem Reviews ----
 
 @login_required
 def list_subsystem_reviews(request):
-    """列出 Subsystem Review"""
+    """List or create project reviews (legacy model name: SubsystemReview)."""
     if request.user.is_viewer:
-        return JsonResponse([], safe=False)
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body) if request.body else {}
+            pid = int(data.get('project_id'))
+            project = Project.objects.get(pk=pid)
+            membership = ProjectMember.objects.filter(
+                project=project, user=request.user, role='owner',
+            ).exists()
+            if not request.user.is_admin and not membership:
+                return JsonResponse({'error': 'forbidden'}, status=403)
+            db_name = _get_project_db(pid)
+            get_project_engine(pid)
+            binding = _snapshot_binding(data, pid, db_name)
+            with transaction.atomic(using=db_name):
+                row = SubsystemReview(
+                    project_id=pid,
+                    subsystem=project.name,
+                    period='weekly',
+                    title=data.get('title') or f'{project.name} weekly review',
+                    summary=data.get('summary', ''),
+                    verdict=data.get('verdict'),
+                    manager_id=request.user.id,
+                    **binding,
+                )
+                for key in ('group_review_ids', 'key_metrics', 'findings', 'decisions', 'next_steps', 'risks'):
+                    if data.get(key) is not None:
+                        setattr(row, key, json.dumps(data[key], ensure_ascii=False))
+                row.save(using=db_name)
+            value = _project_review_payload(row, request.user)
+            value['project_name'] = project.name
+            return JsonResponse(value, status=201)
+        except ReviewSnapshotRequired as exc:
+            return JsonResponse(
+                {'error': str(exc), 'code': 'review_snapshot_required'},
+                status=409,
+            )
+        except SnapshotIntegrityError as exc:
+            return JsonResponse(
+                {'error': str(exc), 'code': 'snapshot_integrity_failed'},
+                status=409,
+            )
+        except (ValueError, TypeError, Project.DoesNotExist) as exc:
+            return JsonResponse({'error': f'invalid review: {exc}'}, status=400)
     pid = request.GET.get('project_id')
     if pid:
         try:
@@ -1020,7 +1491,15 @@ def list_subsystem_reviews(request):
         try:
             get_project_engine(pid)
             rows = SubsystemReview.objects.using(db_name).filter(project_id=pid).order_by('-created_at')[:500]
-            return JsonResponse({'items': [r.to_dict(include_detail=True) for r in rows]})
+            project = Project.objects.filter(pk=pid).first()
+            items = []
+            is_project_owner = _is_project_owner(request.user, pid)
+            for row in rows:
+                value = _project_review_payload(row, request.user, is_project_owner)
+                value['project_name'] = project.name if project else row.subsystem
+                value['review_type'] = 'project'
+                items.append(value)
+            return JsonResponse({'items': items})
         except Exception:
             return JsonResponse({'items': []})
     else:
@@ -1030,7 +1509,17 @@ def list_subsystem_reviews(request):
             try:
                 get_project_engine(p)
                 rows = SubsystemReview.objects.using(db_name).order_by('-created_at')[:500]
-                items.extend([r.to_dict(include_detail=True) for r in rows])
+                project = Project.objects.filter(pk=p).first()
+                is_project_owner = _is_project_owner(request.user, p)
+                for row in rows:
+                    value = _project_review_payload(
+                        row, request.user, is_project_owner,
+                    )
+                    value['project_name'] = (
+                        project.name if project else row.subsystem
+                    )
+                    value['review_type'] = 'project'
+                    items.append(value)
             except Exception:
                 continue
         return JsonResponse({'items': items})
@@ -1039,39 +1528,38 @@ def list_subsystem_reviews(request):
 @login_required
 def subsystem_review_detail(request, rid):
     """Subsystem Review 详情 (GET) / 更新 (PUT)"""
-    if request.method == 'GET':
-        for pid in _resolve_project_ids():
-            db_name = _get_project_db(pid)
-            try:
-                get_project_engine(pid)
-                r = SubsystemReview.objects.using(db_name).get(pk=rid)
-                return JsonResponse(r.to_dict(include_detail=True))
-            except SubsystemReview.DoesNotExist:
-                continue
+    try:
+        data = json.loads(request.body) if request.body else {}
+        pid = _review_project_id(request, data)
+        r, db_name = _project_scoped_review(SubsystemReview, pid, rid)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except SubsystemReview.DoesNotExist:
         return JsonResponse({'error': '不存在'}, status=404)
 
-    if request.user.is_viewer:
+    capabilities = _review_capabilities(r, request.user, 'manager_id')
+    project = Project.objects.filter(pk=pid).first()
+    if request.method == 'GET':
+        value = _project_review_payload(r, request.user)
+        value['project_name'] = project.name if project else r.subsystem
+        return JsonResponse(value)
+    if request.user.is_viewer or not capabilities['can_edit']:
         return JsonResponse({'error': 'forbidden'}, status=403)
-    data = json.loads(request.body) if request.body else {}
-    for pid in _resolve_project_ids():
-        db_name = _get_project_db(pid)
-        try:
-            get_project_engine(pid)
-            r = SubsystemReview.objects.using(db_name).get(pk=rid)
-            if r.status not in (REVIEW_STATUS_DRAFT, REVIEW_STATUS_REJECTED):
-                return JsonResponse({'error': f'当前状态 {r.status} 不可修改'}, status=400)
-            for k in ('title', 'period', 'summary', 'verdict', 'subsystem'):
-                if k in data:
-                    setattr(r, k, data[k])
-            for k in ('group_review_ids', 'key_metrics', 'findings', 'decisions', 'next_steps'):
-                if k in data:
-                    val = json.dumps(data[k], ensure_ascii=False) if data[k] else None
-                    setattr(r, k, val)
-            r.save(using=db_name)
-            return JsonResponse(r.to_dict())
-        except SubsystemReview.DoesNotExist:
-            continue
-    return JsonResponse({'error': '不存在'}, status=404)
+    if request.method == 'DELETE':
+        r.delete(using=db_name)
+        return JsonResponse({'ok': True})
+    for k in ('title', 'summary', 'verdict'):
+        if k in data:
+            setattr(r, k, data[k])
+    for k in ('group_review_ids', 'key_metrics', 'findings', 'decisions', 'next_steps', 'risks'):
+        if k in data:
+            val = json.dumps(data[k], ensure_ascii=False) if data[k] else None
+            setattr(r, k, val)
+    r.updated_at = timezone.now()
+    r.save(using=db_name)
+    value = _project_review_payload(r, request.user)
+    value['project_name'] = project.name if project else r.subsystem
+    return JsonResponse(value)
 
 
 @login_required
@@ -1079,60 +1567,190 @@ def submit_subsystem_review(request, rid):
     """提交 Subsystem Review"""
     if request.user.is_viewer:
         return JsonResponse({'error': 'forbidden'}, status=403)
-    for pid in _resolve_project_ids():
-        db_name = _get_project_db(pid)
-        try:
-            get_project_engine(pid)
-            r = SubsystemReview.objects.using(db_name).get(pk=rid)
-            if r.status != REVIEW_STATUS_DRAFT:
-                return JsonResponse({'error': f'当前状态 {r.status} 不可提交'}, status=400)
-            r.status = REVIEW_STATUS_SUBMITTED
-            r.submitted_at = timezone.now()
-            r.save(using=db_name)
-            return JsonResponse(r.to_dict())
-        except SubsystemReview.DoesNotExist:
-            continue
-    return JsonResponse({'error': '不存在'}, status=404)
+    try:
+        data = json.loads(request.body) if request.body else {}
+        pid = _review_project_id(request, data)
+        r, db_name = _project_scoped_review(SubsystemReview, pid, rid)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except SubsystemReview.DoesNotExist:
+        return JsonResponse({'error': '不存在'}, status=404)
+    if not _review_capabilities(
+        r, request.user, 'manager_id', allow_owner_self_review=True,
+    )['can_submit']:
+        if r.status not in (REVIEW_STATUS_DRAFT, REVIEW_STATUS_REJECTED):
+            return JsonResponse({'error': f'当前状态 {r.status} 不可提交'}, status=400)
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    was_rejected = r.status == REVIEW_STATUS_REJECTED
+    r.status = REVIEW_STATUS_SUBMITTED
+    r.submitted_at = timezone.now()
+    r.submission_count = (r.submission_count or 0) + 1
+    if was_rejected:
+        r.resubmitted_at = r.submitted_at
+    r.updated_at = timezone.now()
+    r.save(using=db_name)
+    return JsonResponse(_project_review_payload(r, request.user))
 
 
 @login_required
 def review_subsystem_review(request, rid):
     """审批 Subsystem Review"""
-    for pid in _resolve_project_ids():
-        db_name = _get_project_db(pid)
-        try:
-            get_project_engine(pid)
-            r = SubsystemReview.objects.using(db_name).get(pk=rid)
-            if r.status != REVIEW_STATUS_SUBMITTED:
-                return JsonResponse({'error': f'当前状态 {r.status} 不可审批'}, status=400)
-            if r.manager_id == request.user.id:
-                return JsonResponse({'error': '不能审核自己创建的 review'}, status=400)
-            if not request.user.is_admin:
-                member = ProjectMember.objects.filter(
-                    project_id=r.project_id, user=request.user,
-                ).first()
-                if not member or member.role not in ('owner', 'editor'):
-                    return JsonResponse({'error': 'forbidden'}, status=403)
-            data = json.loads(request.body) if request.body else {}
-            action = data.get('action')
-            if action not in ('approve', 'reject'):
-                return JsonResponse({'error': 'action 必须是 approve 或 reject'}, status=400)
-            r.status = REVIEW_STATUS_APPROVED if action == 'approve' else REVIEW_STATUS_REJECTED
-            r.reviewed_by = request.user.id
-            r.reviewed_at = timezone.now()
-            r.review_comment = data.get('comment', '')
-            r.save(using=db_name)
-            return JsonResponse(r.to_dict(include_detail=True))
-        except SubsystemReview.DoesNotExist:
-            continue
-    return JsonResponse({'error': '不存在'}, status=404)
+    try:
+        data = json.loads(request.body) if request.body else {}
+        pid = _review_project_id(request, data)
+        r, db_name = _project_scoped_review(SubsystemReview, pid, rid)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except SubsystemReview.DoesNotExist:
+        return JsonResponse({'error': '不存在'}, status=404)
+    if r.status != REVIEW_STATUS_SUBMITTED:
+        return JsonResponse({'error': f'当前状态 {r.status} 不可审批'}, status=400)
+    if not _review_capabilities(
+        r, request.user, 'manager_id', allow_owner_self_review=True,
+    )['can_review']:
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    action = data.get('action')
+    if action not in ('approve', 'reject'):
+        return JsonResponse({'error': 'action 必须是 approve 或 reject'}, status=400)
+    r.status = REVIEW_STATUS_APPROVED if action == 'approve' else REVIEW_STATUS_REJECTED
+    r.reviewed_by = request.user.id
+    r.reviewed_at = timezone.now()
+    r.review_comment = data.get('comment', '')
+    r.updated_at = timezone.now()
+    r.save(using=db_name)
+    return JsonResponse(_project_review_payload(r, request.user))
 
 
 # ---- Review Snapshots ----
 
 @login_required
+def weekly_review_overview(request):
+    """Return frozen review input, or an explicitly requested live preview."""
+    if request.user.is_viewer:
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    try:
+        pid = int(request.GET.get('project_id'))
+        week_value = request.GET.get('week_start')
+        week_start = datetime.fromisoformat(week_value).date() if week_value else None
+        live_value = request.GET.get('live_preview', '').strip().lower()
+        if live_value not in ('', '0', '1', 'false', 'true'):
+            raise ValueError('live_preview must be true or false')
+        live_preview = live_value in ('1', 'true')
+        payload = get_weekly_review_input(
+            request.user, pid, week_start, live_preview=live_preview,
+        )
+        is_project_owner = _is_project_owner(request.user, pid)
+        is_authoritative = payload.get('input_mode') == 'frozen'
+        payload['capabilities'] = {
+            'can_freeze': bool(
+                (request.user.is_admin or is_project_owner)
+                and not payload.get('is_frozen')
+                and not payload.get('frozen_snapshot')
+            ),
+            'can_create_project_review': bool(
+                is_authoritative and (request.user.is_admin or is_project_owner)
+            ),
+            'can_view_live_preview': bool(payload.get('can_live_preview')),
+        }
+        for group in payload.get('groups', []):
+            group['can_create_review'] = bool(
+                is_authoritative
+                and (
+                    request.user.is_admin
+                    or group.get('owner_id') == request.user.id
+                )
+            )
+            for module in group.get('modules', []):
+                module['can_select_star'] = bool(
+                    not payload.get('is_frozen')
+                    and not payload.get('frozen_snapshot')
+                    and (
+                        request.user.is_admin
+                        or module.get('release_owner_id') == request.user.id
+                    )
+                )
+        return JsonResponse(payload)
+    except PermissionError as exc:
+        return JsonResponse({'error': str(exc)}, status=403)
+    except SnapshotIntegrityError as exc:
+        return JsonResponse({'error': str(exc), 'code': 'snapshot_integrity_failed'}, status=409)
+    except (TypeError, ValueError, Project.DoesNotExist) as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+
+
+@login_required
+def weekly_review_star(request):
+    """Select or clear the explicit official run for a module/week."""
+    if request.method not in ('POST', 'DELETE'):
+        return JsonResponse({'error': 'method not allowed'}, status=405)
+    if request.user.is_viewer:
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    try:
+        data = json.loads(request.body) if request.body else {}
+        week_value = data.get('week_start')
+        week_start = datetime.fromisoformat(week_value).date() if week_value else None
+        project_id = int(data.get('project_id'))
+        module_id = int(data.get('module_id'))
+        record_id = str(data.get('record_id'))
+        if request.method == 'DELETE':
+            cleared = clear_weekly_star(
+                request.user, project_id, module_id, record_id, week_start,
+            )
+            return JsonResponse({
+                'ok': True,
+                'cleared': cleared,
+                'project_id': project_id,
+                'module_id': module_id,
+                'record_id': record_id,
+                'week_start': week_start.isoformat() if week_start else None,
+                'explicit': False,
+            })
+        selection = select_weekly_star(
+            request.user, project_id, module_id, record_id, week_start,
+        )
+        return JsonResponse({
+            'ok': True,
+            'project_id': selection.project_id,
+            'module_id': selection.module_id,
+            'record_id': selection.record_id,
+            'week_start': selection.week_start.isoformat(),
+            'explicit': True,
+            'source': selection.source,
+        })
+    except PermissionError as exc:
+        return JsonResponse({'error': str(exc)}, status=403)
+    except (TypeError, ValueError, ProjectModule.DoesNotExist, QorRecord.DoesNotExist) as exc:
+        return JsonResponse({'error': f'invalid star selection: {exc}'}, status=400)
+
+
+@login_required
 def list_snapshots(request):
-    """列出 Review Snapshots"""
+    """List snapshots or freeze an immutable weekly review snapshot."""
+    if request.method == 'POST':
+        if request.user.is_viewer:
+            return JsonResponse({'error': 'forbidden'}, status=403)
+        try:
+            data = json.loads(request.body) if request.body else {}
+            pid = int(data.get('project_id'))
+            week_value = data.get('week_start')
+            week_start = datetime.fromisoformat(week_value).date() if week_value else None
+            allowed = request.user.is_admin or ProjectMember.objects.filter(
+                project_id=pid, user=request.user, role='owner',
+            ).exists()
+            if not allowed:
+                return JsonResponse({'error': 'forbidden'}, status=403)
+            snapshot, created = create_weekly_snapshot(
+                request.user, pid, week_start, data.get('description', ''),
+            )
+            payload = snapshot.to_dict(include_data=True)
+            payload['created'] = created
+            return JsonResponse(payload, status=201 if created else 200)
+        except SnapshotIntegrityError as exc:
+            return JsonResponse(
+                {'error': str(exc), 'code': 'snapshot_integrity_failed'}, status=409,
+            )
+        except (TypeError, ValueError, Project.DoesNotExist) as exc:
+            return JsonResponse({'error': str(exc)}, status=400)
     pid = request.GET.get('project_id')
     if pid:
         try:
@@ -1267,6 +1885,7 @@ def download_review_file(request, fid):
 # =========================================================================
 
 @login_required
+@require_POST
 def save_dashboard_config(request):
     """保存 Dashboard 配置"""
     data = json.loads(request.body) if request.body else {}
@@ -1474,6 +2093,10 @@ def admin_restore_project(request, project_id):
     p.status = 'active'
     p.hidden_at = None
     p.hidden_by = None
+    # Clear any stale lock metadata left from before soft-delete.
+    p.locked_at = None
+    p.locked_by = None
+    p.lock_reason = ''
     p.save()
     return JsonResponse({
         'ok': True,
@@ -1492,7 +2115,8 @@ def admin_hard_delete_project(request, project_id):
         return JsonResponse({'error': '只能彻底删除已隐藏项目, 请先软删除'}, status=400)
 
     data = json.loads(request.body) if request.body else {}
-    if str(data.get('confirm', '')).lower() not in ('1', 'true', 'yes'):
+    confirm = data.get('confirm', request.GET.get('confirm', ''))
+    if str(confirm).lower() not in ('1', 'true', 'yes'):
         module_count, record_count, _ = _project_module_record_counts(p.id)
         return JsonResponse({
             'error': '此操作不可逆! 请传 confirm=true 二次确认',
@@ -1509,29 +2133,39 @@ def admin_hard_delete_project(request, project_id):
 
 @login_required
 def admin_lock_project(request, project_id):
-    """锁定项目"""
+    """锁定项目：禁止上传/写入，仍可查看历史数据。"""
     p = get_object_or_404(Project, pk=project_id)
     if not request.user.is_admin:
         return JsonResponse({'error': '无权限'}, status=403)
+    if p.status == 'hidden':
+        return JsonResponse({'error': '隐藏项目请先恢复再锁定'}, status=400)
+    if p.status == 'locked':
+        return JsonResponse(p.to_dict())
+    data = json.loads(request.body) if request.body else {}
     p.status = 'locked'
     p.locked_at = timezone.now()
     p.locked_by = request.user
-    data = json.loads(request.body) if request.body else {}
-    p.lock_reason = data.get('reason', '')
+    p.lock_reason = data.get('reason', '') or ''
     p.save()
     return JsonResponse(p.to_dict())
 
 
 @login_required
 def admin_unlock_project(request, project_id):
-    """解锁项目"""
+    """解锁项目，恢复可上传状态。"""
     p = get_object_or_404(Project, pk=project_id)
     if not request.user.is_admin:
         return JsonResponse({'error': '无权限'}, status=403)
+    if p.status == 'hidden':
+        return JsonResponse({'error': '隐藏项目请使用恢复接口'}, status=400)
+    if p.status != 'locked':
+        return JsonResponse({
+            'error': f'项目状态为 {p.status}, 无需解锁',
+        }, status=400)
     p.status = 'active'
     p.locked_at = None
     p.locked_by = None
-    p.lock_reason = None
+    p.lock_reason = ''
     p.save()
     return JsonResponse(p.to_dict())
 
@@ -1599,8 +2233,9 @@ def admin_rollback_snapshot(request, snap_id):
                 return JsonResponse({'error': '快照数据校验失败, 拒绝回滚'}, status=500)
 
             p = get_object_or_404(Project, pk=snap.project_id)
-            if p.status != 'active':
-                return JsonResponse({'error': '项目非活跃状态, 不可回滚'}, status=403)
+            blocked = _require_writable_project(p)
+            if blocked:
+                return blocked
 
             try:
                 snapshot_data = json.loads(snap.data)
@@ -1639,8 +2274,10 @@ def admin_rollback_snapshot(request, snap_id):
                     skipped += 1
                     continue
                 rec = QorRecord(
+                    id=item.get('id'),
                     module_id=module_map[module_name],
                     version=item.get('version', 'v1'),
+                    full_dir=item.get('full_dir', ''),
                     area_total=item.get('area_total'),
                     area_combinational=item.get('area_combinational'),
                     area_sequential=item.get('area_sequential'),
@@ -1660,6 +2297,9 @@ def admin_rollback_snapshot(request, snap_id):
                     instance_count=item.get('instance_count'),
                     net_count=item.get('net_count'),
                     sequential_cell_count=item.get('sequential_cell_count'),
+                    ram_cell_count=item.get('ram_cell_count'),
+                    macro_cell_count=item.get('macro_cell_count'),
+                    register_count=item.get('register_count'),
                     target_frequency=item.get('target_frequency'),
                     achieved_frequency=item.get('achieved_frequency'),
                     mbb_ratio=item.get('mbb_ratio'),
@@ -1669,8 +2309,21 @@ def admin_rollback_snapshot(request, snap_id):
                     congestion_h=item.get('congestion_h'),
                     congestion_v=item.get('congestion_v'),
                     congestion_b=item.get('congestion_b'),
-                    source_file=item.get('source_file'),
-                    full_dir=item.get('full_dir'),
+                    raw_dc_report=item.get('raw_dc_report'),
+                    source_file=item.get('source_file', ''),
+                    owner_id=item.get('owner_id'),
+                    is_released=bool(item.get('is_released')),
+                    released_at=(
+                        datetime.fromisoformat(item['released_at'])
+                        if item.get('released_at') else None
+                    ),
+                    released_by=item.get('released_by'),
+                    release_dir=item.get('release_dir', ''),
+                    version_description=item.get('version_description', ''),
+                    recorded_at=(
+                        datetime.fromisoformat(item['recorded_at'])
+                        if item.get('recorded_at') else timezone.now()
+                    ),
                     extra_fields=json.dumps(item.get('extra_fields', {}), ensure_ascii=False) if item.get('extra_fields') else None,
                 )
                 rec.save(using=db_name)
@@ -1693,10 +2346,93 @@ def admin_rollback_snapshot(request, snap_id):
 # =========================================================================
 
 @login_required
+def admin_review_hierarchy_status(request):
+    """Read-only hierarchy config validation and database reconciliation status."""
+    if not (request.user.is_admin or request.user.is_owner):
+        return JsonResponse({'error': '无权限'}, status=403)
+    if request.method != 'GET':
+        return JsonResponse({'error': '只读接口仅支持 GET'}, status=405)
+    payload = hierarchy_status()
+    payload['permissions'] = {'can_edit_module_owner': request.user.is_admin}
+    payload['owner_options'] = (
+        [
+            {
+                'id': user.id,
+                'username': user.username,
+                'display_name': user.display_name or user.username,
+            }
+            for user in User.objects.filter(
+                role=User.ROLE_OWNER,
+                is_active=True,
+            ).order_by('username')
+        ]
+        if request.user.is_admin
+        else []
+    )
+    return JsonResponse(payload)
+
+
+@login_required
+def admin_review_hierarchy_module_owner(request):
+    """Admin-only canonical DB + YAML release-owner update."""
+    if not request.user.is_admin:
+        return JsonResponse({'error': '仅管理员可修改评审层级 Owner'}, status=403)
+    if request.method != 'POST':
+        return JsonResponse({'error': '仅支持 POST'}, status=405)
+    try:
+        data = json.loads(request.body or '{}')
+    except (TypeError, json.JSONDecodeError):
+        return JsonResponse({'error': '请求体必须是有效 JSON'}, status=400)
+    try:
+        result = update_module_release_owner(
+            data.get('project'),
+            data.get('group'),
+            data.get('module'),
+            data.get('owner_id'),
+            expected_checksum=data.get('config_checksum'),
+        )
+    except HierarchyConfigError as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except HierarchyWriteError as exc:
+        return JsonResponse(
+            {'error': f'Owner 未保存：{exc}'},
+            status=500,
+        )
+    except Exception:
+        logger.exception('Unexpected review hierarchy owner update failure')
+        return JsonResponse(
+            {
+                'error': (
+                    'Owner 未保存：数据库或同步状态更新失败，'
+                    '请检查服务日志并刷新状态后重试'
+                )
+            },
+            status=500,
+        )
+    payload = hierarchy_status()
+    payload['permissions'] = {'can_edit_module_owner': True}
+    payload['owner_options'] = [
+        {
+            'id': user.id,
+            'username': user.username,
+            'display_name': user.display_name or user.username,
+        }
+        for user in User.objects.filter(
+            role=User.ROLE_OWNER,
+            is_active=True,
+        ).order_by('username')
+    ]
+    return JsonResponse({'ok': True, 'updated': result, 'status': payload})
+
+
+@login_required
 def admin_list_backups(request):
-    """列出备份记录"""
+    """List backups or create a verified manual backup."""
     if not request.user.is_admin:
         return JsonResponse({'error': '无权限'}, status=403)
+    if request.method == 'POST':
+        result = backup_service.perform_backup('manual', request.user)
+        return JsonResponse(result, status=201 if result.get('ok') else 500)
     backups = BackupRecord.objects.order_by('-created_at')[:100]
     return JsonResponse([b.to_dict() for b in backups], safe=False)
 
@@ -1922,28 +2658,36 @@ def admin_delete_record(request, record_id):
     if request.user.is_viewer:
         return JsonResponse({'error': '无权限 (viewer 角色不可删除)'}, status=403)
 
-    pid = _find_qor_record_project(record_id)
-    if pid is None:
-        return JsonResponse({'error': '记录不存在'}, status=404)
-    db_name = _get_project_db(pid)
+    explicit_project_id = request.GET.get('project_id', '').strip()
+    if not explicit_project_id.isdigit():
+        return JsonResponse({'error': 'project_id 必填且必须为整数'}, status=400)
+    pid = int(explicit_project_id)
+    if not Project.objects.filter(pk=pid).exists():
+        return JsonResponse({'error': '项目不存在'}, status=404)
     get_project_engine(pid)
-    r = get_object_or_404(QorRecord.objects.using(db_name), pk=record_id)
+    db_name = _get_project_db(pid)
+    r = QorRecord.objects.using(db_name).select_related('module').filter(
+        pk=record_id,
+        module__project_id=pid,
+    ).first()
+    if r is None:
+        return JsonResponse({'error': '记录不存在'}, status=404)
 
-    if not request.user.is_admin:
-        if r.owner_id != request.user.id:
-            return JsonResponse({'error': '无权限删除此记录'}, status=403)
+    if not request.user.is_admin and not r.module.can_be_managed_by(request.user):
+        return JsonResponse({'error': '无权限删除此记录'}, status=403)
 
-    r.delete()
-    return JsonResponse({'ok': True})
+    r.delete(using=db_name)
+    return JsonResponse({'ok': True, 'project_id': pid, 'record_id': record_id})
 
 
 @login_required
 def admin_list_record_owners(request):
-    """列出所有记录 owner"""
-    if not request.user.is_admin:
+    """List uploaders (record owner_id) available for record-management filters."""
+    if request.user.is_viewer:
         return JsonResponse({'error': '无权限'}, status=403)
     owner_ids = set()
-    for pid in _resolve_project_ids():
+    project_ids = _resolve_project_ids(request.GET.get('project_ids', ''))
+    for pid in project_ids:
         db_name = _get_project_db(pid)
         try:
             get_project_engine(pid)
@@ -1982,8 +2726,9 @@ def admin_upload_csv(request):
         return JsonResponse({'error': '无效的 project_id'}, status=400)
 
     project = get_object_or_404(Project, pk=pid)
-    if project.status != 'active':
-        return JsonResponse({'error': '项目当前不可写'}, status=403)
+    blocked = _require_writable_project(project)
+    if blocked:
+        return blocked
 
     # 前端发送 'files' (复数), 兼容 'file' (单数)
     uploaded_files = request.FILES.getlist('files') or request.FILES.getlist('file')
@@ -2134,6 +2879,9 @@ def admin_upload_block_qor(request):
         return JsonResponse({'error': '无效的 project_id'}, status=400)
 
     project = get_object_or_404(Project, pk=pid)
+    blocked = _require_writable_project(project)
+    if blocked:
+        return blocked
 
     # 前端发送 'files' (复数), 兼容 'file' (单数)
     uploaded_files = request.FILES.getlist('files') or request.FILES.getlist('file')
@@ -2269,20 +3017,27 @@ def _safe_int(val):
 @login_required
 def admin_toggle_release(request, record_id):
     """切换记录发布状态"""
-    project_id = _find_qor_record_project(record_id)
-    if project_id is None:
-        return JsonResponse({'error': '记录不存在'}, status=404)
-
     data = json.loads(request.body) if request.body else {}
+    explicit_project_id = data.get('project_id')
+    if not str(explicit_project_id or '').isdigit():
+        return JsonResponse({'error': 'project_id 必填且必须为整数'}, status=400)
+    project_id = int(explicit_project_id)
+    if not Project.objects.filter(pk=project_id).exists():
+        return JsonResponse({'error': '项目不存在'}, status=404)
+
     new_release_dir = data.get('release_dir', None)
 
     db_name = _get_project_db(project_id)
     get_project_engine(project_id)
-    r = get_object_or_404(QorRecord.objects.using(db_name), pk=record_id)
+    r = get_object_or_404(
+        QorRecord.objects.using(db_name).select_related('module'),
+        pk=record_id,
+        module__project_id=project_id,
+    )
 
     if request.user.is_viewer:
         return JsonResponse({'error': 'viewer 角色无发布权限'}, status=403)
-    if not request.user.is_admin and not request.user.is_owner:
+    if not request.user.is_admin and not r.module.can_be_managed_by(request.user):
         return JsonResponse({'error': '无权限'}, status=403)
 
     r.is_released = not r.is_released
@@ -2310,50 +3065,184 @@ def admin_toggle_release(request, record_id):
 
 @login_required
 def admin_update_release_dir(request, record_id):
-    """更新记录 release_dir"""
-    project_id = _find_qor_record_project(record_id)
-    if project_id is None:
-        return JsonResponse({'error': '记录不存在'}, status=404)
-
+    """更新项目库记录的规范 release_dir；full_dir 保留原始 run 目录。"""
     data = json.loads(request.body) if request.body else {}
+    explicit_project_id = data.get('project_id')
+    if not str(explicit_project_id or '').isdigit():
+        return JsonResponse({'error': 'project_id 必填且必须为整数'}, status=400)
+    project_id = int(explicit_project_id)
+
     new_release_dir = data.get('release_dir', None)
     if new_release_dir is None or not isinstance(new_release_dir, str):
         return JsonResponse({'error': 'release_dir 必填且为字符串'}, status=400)
     if len(new_release_dir) > 500:
         return JsonResponse({'error': 'release_dir 长度不能超过 500'}, status=400)
 
+    if not Project.objects.filter(pk=project_id).exists():
+        return JsonResponse({'error': '项目不存在'}, status=404)
     db_name = _get_project_db(project_id)
     get_project_engine(project_id)
-    r = get_object_or_404(QorRecord.objects.using(db_name), pk=record_id)
+    r = get_object_or_404(
+        QorRecord.objects.using(db_name).select_related('module'),
+        pk=record_id,
+        module__project_id=project_id,
+    )
 
     if request.user.is_viewer:
         return JsonResponse({'error': 'viewer 角色无发布权限'}, status=403)
-    if not request.user.is_admin and not request.user.is_owner:
+    if not request.user.is_admin and not r.module.can_be_managed_by(request.user):
         return JsonResponse({'error': '无权限'}, status=403)
 
-    cleaned = new_release_dir.strip()[:500] if new_release_dir.strip() else None
+    # release_dir 是可编辑的规范发布目录；full_dir 是上传时的原始 run 目录，
+    # 清空 release_dir 只恢复 full_dir fallback，不修改上传来源。
+    cleaned = new_release_dir.strip()
     r.release_dir = cleaned
-    r.save(using=db_name)
+    r.save(using=db_name, update_fields=['release_dir'])
     return JsonResponse({
         'ok': True,
         'id': r.id,
+        'project_id': project_id,
         'release_dir': r.release_dir or '',
         'release_dir_effective': r.release_dir or r.full_dir or '',
     })
 
 
 @login_required
+def admin_batch_update_release_dir(request):
+    """Update release_dir per explicitly identified record across projects."""
+    if request.user.is_viewer:
+        return JsonResponse({'error': 'viewer 角色无发布权限'}, status=403)
+
+    data = json.loads(request.body) if request.body else {}
+    items = data.get('items')
+    shared_release_dir = data.get('release_dir')
+    if not isinstance(items, list):
+        return JsonResponse({'error': 'items 必须为数组'}, status=400)
+    if not items:
+        return JsonResponse({'error': '至少选择一条记录'}, status=400)
+    if len(items) > 1000:
+        return JsonResponse({'error': f'单次最多 1000 条, 当前 {len(items)} 条'}, status=400)
+    if shared_release_dir is not None and not isinstance(shared_release_dir, str):
+        return JsonResponse({'error': 'release_dir 必须为字符串'}, status=400)
+    if isinstance(shared_release_dir, str) and len(shared_release_dir) > 500:
+        return JsonResponse({'error': 'release_dir 长度不能超过 500'}, status=400)
+
+    by_project = {}
+    seen = set()
+    for item in items:
+        try:
+            project_id = int(item['project_id'])
+            record_id = int(item['record_id'])
+        except (KeyError, TypeError, ValueError):
+            return JsonResponse({
+                'error': '每个 item 都必须包含整数 project_id 和 record_id',
+            }, status=400)
+        item_release_dir = item.get('release_dir', shared_release_dir)
+        if not isinstance(item_release_dir, str):
+            return JsonResponse({
+                'error': '每个 item 必须包含字符串 release_dir，或提供顶层 release_dir',
+            }, status=400)
+        if len(item_release_dir) > 500:
+            return JsonResponse({
+                'error': (
+                    f'项目 {project_id} 记录 {record_id} 的 release_dir '
+                    '长度不能超过 500'
+                ),
+            }, status=400)
+        identity = (project_id, record_id)
+        if identity not in seen:
+            by_project.setdefault(project_id, []).append(
+                (record_id, item_release_dir.strip())
+            )
+            seen.add(identity)
+
+    updated = 0
+    skipped = 0
+    failed = []
+    for project_id, record_updates in by_project.items():
+        record_ids = [record_id for record_id, _ in record_updates]
+        if not Project.objects.filter(pk=project_id).exists():
+            skipped += len(record_ids)
+            failed.extend(
+                {
+                    'project_id': project_id,
+                    'record_id': record_id,
+                    'reason': '项目不存在',
+                }
+                for record_id in record_ids
+            )
+            continue
+
+        db_name = _get_project_db(project_id)
+        get_project_engine(project_id)
+        records = QorRecord.objects.using(db_name).select_related('module').filter(
+            pk__in=record_ids,
+            module__project_id=project_id,
+        )
+        records_map = {record.id: record for record in records}
+        writable_records = []
+        for record_id, release_dir in record_updates:
+            record = records_map.get(record_id)
+            if not record:
+                skipped += 1
+                failed.append({
+                    'project_id': project_id,
+                    'record_id': record_id,
+                    'reason': '记录不存在',
+                })
+                continue
+            if (
+                not request.user.is_admin
+                and not record.module.can_be_managed_by(request.user)
+            ):
+                skipped += 1
+                failed.append({
+                    'project_id': project_id,
+                    'record_id': record_id,
+                    'reason': '无权限',
+                })
+                continue
+            record.release_dir = release_dir
+            writable_records.append(record)
+
+        if writable_records:
+            QorRecord.objects.using(db_name).bulk_update(
+                writable_records, ['release_dir'],
+            )
+            updated += len(writable_records)
+
+    return JsonResponse({
+        'ok': True,
+        'updated': updated,
+        'skipped': skipped,
+        'failed': failed,
+        'release_dir': (
+            shared_release_dir.strip()
+            if isinstance(shared_release_dir, str)
+            else None
+        ),
+    })
+
+
+@login_required
 def admin_update_version_description(request, record_id):
     """更新版本描述"""
-    pid = _find_qor_record_project(record_id)
-    if pid is None:
-        return JsonResponse({'error': '记录不存在'}, status=404)
     data = json.loads(request.body) if request.body else {}
+    explicit_project_id = data.get('project_id')
+    if not str(explicit_project_id or '').isdigit():
+        return JsonResponse({'error': 'project_id 必填且必须为整数'}, status=400)
+    pid = int(explicit_project_id)
+    if not Project.objects.filter(pk=pid).exists():
+        return JsonResponse({'error': '项目不存在'}, status=404)
     desc = (data.get('description') or '').strip()
 
     db_name = _get_project_db(pid)
     get_project_engine(pid)
-    r = get_object_or_404(QorRecord.objects.using(db_name), pk=record_id)
+    r = get_object_or_404(
+        QorRecord.objects.using(db_name),
+        pk=record_id,
+        module__project_id=pid,
+    )
 
     if not request.user.is_admin:
         return JsonResponse({'error': '需要管理员权限'}, status=403)
@@ -2374,13 +3263,19 @@ def admin_batch_release(request):
         return JsonResponse({'error': 'viewer 角色无发布权限'}, status=403)
 
     data = json.loads(request.body) if request.body else {}
-    record_ids = data.get('record_ids', [])
-    if not record_ids:
-        return JsonResponse({'error': 'record_ids 必填'}, status=400)
-    if not isinstance(record_ids, list):
+    items = data.get('items')
+    record_ids = data.get('record_ids')
+    if items is None and record_ids is None:
+        return JsonResponse({'error': 'items 必填'}, status=400)
+    if items is not None and not isinstance(items, list):
+        return JsonResponse({'error': 'items 必须为数组'}, status=400)
+    if items is None and not isinstance(record_ids, list):
         return JsonResponse({'error': 'record_ids 必须为数组'}, status=400)
-    if len(record_ids) > 1000:
-        return JsonResponse({'error': f'单次最多 1000 条, 当前 {len(record_ids)} 条'}, status=400)
+    requested_count = len(items if items is not None else record_ids)
+    if not requested_count:
+        return JsonResponse({'error': '至少选择一条记录'}, status=400)
+    if requested_count > 1000:
+        return JsonResponse({'error': f'单次最多 1000 条, 当前 {requested_count} 条'}, status=400)
 
     released = bool(data.get('released', True))
     batch_release_dir = data.get('release_dir', '__NOT_PROVIDED__')
@@ -2389,32 +3284,61 @@ def admin_batch_release(request):
     skipped = 0
     failed = []
 
-    rid_to_project = {}
-    for rid in record_ids:
-        pid = _find_qor_record_project(int(rid))
-        if pid is not None:
-            rid_to_project[rid] = pid
-
     by_project = {}
-    for rid, pid in rid_to_project.items():
-        by_project.setdefault(pid, []).append(rid)
+    seen = set()
+    if items is not None:
+        for item in items:
+            try:
+                pid = int(item['project_id'])
+                rid = int(item['record_id'])
+            except (KeyError, TypeError, ValueError):
+                return JsonResponse({
+                    'error': '每个 item 都必须包含整数 project_id 和 record_id'
+                }, status=400)
+            identity = (pid, rid)
+            if identity not in seen:
+                by_project.setdefault(pid, []).append(rid)
+                seen.add(identity)
+    else:
+        # Legacy bare IDs are accepted only when each ID exists in exactly one
+        # project. Ambiguous IDs fail the whole request before any mutation.
+        for raw_id in record_ids:
+            try:
+                rid = int(raw_id)
+            except (TypeError, ValueError):
+                return JsonResponse({'error': 'record_ids 必须只包含整数'}, status=400)
+            projects = _find_qor_record_projects(rid)
+            if len(projects) != 1:
+                return JsonResponse({
+                    'error': f'记录 ID {rid} 跨项目不唯一或不存在，请使用 items'
+                }, status=409)
+            by_project.setdefault(projects[0], []).append(rid)
 
     for pid, rids in by_project.items():
+        if not Project.objects.filter(pk=pid).exists():
+            skipped += len(rids)
+            failed.extend(
+                {'project_id': pid, 'record_id': rid, 'reason': '项目不存在'} for rid in rids
+            )
+            continue
         db_name = _get_project_db(pid)
         get_project_engine(pid)
-        records = QorRecord.objects.using(db_name).filter(pk__in=rids)
+        records = QorRecord.objects.using(db_name).select_related('module').filter(
+            pk__in=rids,
+            module__project_id=pid,
+        )
         records_map = {r.id: r for r in records}
 
         for rid in rids:
             r = records_map.get(rid)
             if not r:
                 skipped += 1
-                failed.append({'id': rid, 'reason': '记录不存在'})
+                failed.append({'project_id': pid, 'record_id': rid, 'reason': '记录不存在'})
                 continue
 
-            if not request.user.is_admin and not request.user.is_owner:
+            if not request.user.is_admin and not r.module.can_be_managed_by(request.user):
                 skipped += 1
-                failed.append({'id': rid, 'reason': '无权限'})
+                failed.append({'project_id': pid, 'record_id': rid, 'reason': '无权限'})
                 continue
 
             r.is_released = released
@@ -2534,15 +3458,25 @@ def admin_reset_user_password(request, user_id):
     """重置用户密码"""
     if not request.user.is_admin:
         return JsonResponse({'error': '无权限'}, status=403)
-    user = get_object_or_404(User, pk=user_id)
 
     data = json.loads(request.body) if request.body else {}
     new_password = (data.get('password') or '').strip() or 'Reset@123'
 
-    user.set_password(new_password)
-    user.must_change_password = True
-    user.password_changed_at = None
-    user.save()
+    # Serialize reset/change operations for one account and write only the
+    # credential columns.  A request that loaded the same User earlier must
+    # not be able to restore an old password while saving unrelated profile
+    # state.
+    with transaction.atomic():
+        try:
+            user = User.objects.select_for_update().get(pk=user_id)
+        except User.DoesNotExist:
+            return JsonResponse({'error': '用户不存在'}, status=404)
+        user.set_password(new_password)
+        user.must_change_password = True
+        user.password_changed_at = None
+        user.save(update_fields=[
+            'password', 'must_change_password', 'password_changed_at',
+        ])
     return JsonResponse({
         'ok': True,
         'username': user.username,
@@ -2551,7 +3485,7 @@ def admin_reset_user_password(request, user_id):
     })
 
 
-@login_required
+@api_auth_required()
 @csrf_exempt
 def user_change_own_password(request):
     """修改自己的密码"""
@@ -2561,8 +3495,6 @@ def user_change_own_password(request):
 
     if not old_password or not new_password:
         return JsonResponse({'error': '旧密码和新密码不能为空'}, status=400)
-    if not request.user.check_password(old_password):
-        return JsonResponse({'error': '旧密码错误'}, status=400)
     if old_password == new_password:
         return JsonResponse({'error': '新密码不能与旧密码相同'}, status=400)
 
@@ -2571,11 +3503,23 @@ def user_change_own_password(request):
     if not ok:
         return JsonResponse({'error': err or '密码强度不足'}, status=400)
 
-    request.user.set_password(new_password)
-    request.user.must_change_password = False
-    request.user.password_changed_at = timezone.now()
-    request.user.save()
-    update_session_auth_hash(request, request.user)
+    # Re-read and lock the account instead of persisting the request's
+    # potentially stale User instance.  This makes reset -> forced change
+    # atomic with respect to another reset/change and limits the UPDATE to
+    # password lifecycle fields.
+    with transaction.atomic():
+        user = User.objects.select_for_update().get(pk=request.user.pk)
+        if not user.check_password(old_password):
+            return JsonResponse({'error': '旧密码错误'}, status=400)
+        user.set_password(new_password)
+        user.must_change_password = False
+        user.password_changed_at = timezone.now()
+        user.save(update_fields=[
+            'password', 'must_change_password', 'password_changed_at',
+        ])
+
+    request.user = user
+    update_session_auth_hash(request, user)
     return JsonResponse({'ok': True, 'must_change_password': False})
 
 
@@ -2600,11 +3544,14 @@ def api_v1_login(request):
     except User.DoesNotExist:
         return JsonResponse({'error': '用户名或密码错误'}, status=401)
 
-    if not user.check_password(password):
+    if not user.is_active or not user.check_password(password):
         return JsonResponse({'error': '用户名或密码错误'}, status=401)
 
     # 创建 Django session，确保 @login_required 端点能识别已认证用户
     login(request, user)
+    # login() rotates Django's CSRF secret. Mark the new token as used so
+    # CsrfViewMiddleware emits the csrftoken cookie with this response.
+    get_token(request)
 
     plaintext = ApiKey.generate_key()
     api_key = ApiKey(
@@ -2638,6 +3585,8 @@ def api_v1_login(request):
 def api_v1_me(request):
     """API v1 当前用户信息"""
     user = request.user
+    # Re-establish the AJAX CSRF cookie when restoring an existing session.
+    get_token(request)
     return JsonResponse({
         'user': {
             'id': user.id,
@@ -2649,8 +3598,18 @@ def api_v1_me(request):
             'is_release': user.is_release,
             'is_viewer': user.is_viewer,
         },
+        'must_change_password': user.must_change_password,
         'auth_method': getattr(request, 'auth_method', 'session'),
     })
+
+
+@login_required
+def api_v1_logout(request):
+    """End the browser session without revoking independent API keys."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    logout(request)
+    return JsonResponse({'ok': True})
 
 
 # =========================================================================
@@ -2787,6 +3746,7 @@ def api_v1_revoke_apikey(request, key_id):
 # API v1 - 上传
 # =========================================================================
 
+@csrf_exempt
 @api_auth_required(required_scope='upload')
 def api_v1_upload(request):
     """API v1 上传 CSV"""
@@ -2800,6 +3760,9 @@ def api_v1_upload(request):
         return JsonResponse({'error': '无效的 project_id'}, status=400)
 
     project = get_object_or_404(Project, pk=pid)
+    blocked = _require_writable_project(project)
+    if blocked:
+        return blocked
     if 'file' not in request.FILES:
         return JsonResponse({'error': '缺少上传文件'}, status=400)
 
@@ -2841,6 +3804,7 @@ def api_v1_upload(request):
     })
 
 
+@csrf_exempt
 @api_auth_required(required_scope='upload')
 def api_v1_qor_upload_json(request):
     """API v1 上传 JSON QoR 数据"""
@@ -2862,6 +3826,9 @@ def api_v1_qor_upload_json(request):
     mark_released = upload_info.get('mark_released', False)
 
     project = get_object_or_404(Project, pk=pid)
+    blocked = _require_writable_project(project)
+    if blocked:
+        return blocked
     set_current_project_id(pid)
     db_name = _get_project_db(pid)
     get_project_engine(pid)
@@ -3412,76 +4379,18 @@ def api_tools_source_files_open(request):
 
 @login_required
 def api_tools_source_files_gvim(request):
-    """在 gvim 中打开源文件"""
-    try:
-        body = json.loads(request.body) if request.body else None
-        if not body:
-            return JsonResponse({'ok': False, 'error': '请求体为空'}, status=400)
+    """Deprecated: clients should use the gvim:// protocol instead of server launch.
 
-        file_path = body.get('path', '').strip()
-        if not file_path:
-            return JsonResponse({'ok': False, 'error': '缺少 path 参数'}, status=400)
-
-        line = body.get('line')
-
-        expanded = os.path.expanduser(file_path)
-        if not os.path.exists(expanded):
-            return JsonResponse({'ok': False, 'error': f'文件不存在: {file_path}'}, status=404)
-
-        system = platform.system()
-        if system == 'Windows':
-            gvim_candidates = [
-                'gvim',
-                r'C:\Program Files\Vim\vim91\gvim.exe',
-                r'C:\Program Files (x86)\Vim\vim91\gvim.exe',
-                r'C:\Program Files\Vim\vim90\gvim.exe',
-                r'C:\Program Files (x86)\Vim\vim90\gvim.exe',
-            ]
-            gvim_path = None
-            for candidate in gvim_candidates:
-                try:
-                    subprocess.run(
-                        [candidate, '--version'],
-                        capture_output=True, timeout=3,
-                        creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
-                    )
-                    gvim_path = candidate
-                    break
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    continue
-
-            if not gvim_path:
-                return JsonResponse({
-                    'ok': False,
-                    'error': '未找到 gvim 安装路径',
-                }, status=400)
-        else:
-            gvim_path = 'gvim'
-
-        args = [gvim_path]
-        if line:
-            args.append(f'+{line}')
-        args.append(expanded)
-
-        if system == 'Windows':
-            subprocess.Popen(
-                args,
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
-                close_fds=True,
-            )
-        else:
-            subprocess.Popen(
-                args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-            )
-
-        return JsonResponse({
-            'ok': True,
-            'message': f'已在 gvim 中打开: {os.path.basename(expanded)}',
-            'path': os.path.abspath(expanded),
-        })
-
-    except Exception as e:
-        return JsonResponse({'ok': False, 'error': f'打开 gvim 失败: {str(e)}'}, status=500)
+    Kept for older tooling compatibility. Prefer registering
+    ``scripts/register_gvim_protocol.ps1`` and opening ``gvim://open?path=...``.
+    """
+    return JsonResponse({
+        'ok': False,
+        'deprecated': True,
+        'error': (
+            'Server-launched gvim is deprecated. Register the Windows gvim:// '
+            'protocol (scripts/register_gvim_protocol.ps1) and open source paths '
+            'from the Vue client via SourceFileLink / gvim://open?path=...&line=...'
+        ),
+        'protocol_example': 'gvim://open?path=C%3A%5Cpath%5Cfile.v&line=1',
+    }, status=410)

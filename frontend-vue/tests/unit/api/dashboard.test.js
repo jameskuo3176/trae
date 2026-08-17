@@ -25,4 +25,20 @@ describe('dashboard API contract', () => {
     await dashboardApi.saveConfig(payload)
     expect(apiClient.post).toHaveBeenCalledWith('/dashboard/save', payload)
   })
+
+  it('unwraps lazy raw report content for timing analysis', async () => {
+    const raw = { timing: { final: { scenarios: {} } } }
+    apiClient.get.mockResolvedValue({
+      data: {
+        ok: true,
+        data: { project_id: 5, record_id: '30', content: raw }
+      }
+    })
+
+    await expect(dashboardApi.rawReport(5, '30')).resolves.toEqual(raw)
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/v2/projects/5/records/30/raw',
+      { signal: undefined }
+    )
+  })
 })

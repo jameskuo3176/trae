@@ -5,6 +5,9 @@ const STORAGE_KEY = 'qor_dc_picker_preferences_v2'
 const defaults = {
   sectionIds: [],
   metricIds: [],
+  scenarioIds: [],
+  pathGroupIds: [],
+  catalogConfigured: false,
   sortMetric: 'WNS',
   showChange: true,
   compactTiming: false,
@@ -28,8 +31,13 @@ export const useDcComparisonStore = defineStore('dc-comparison', () => {
   const draft = ref(null)
   const pickerOpen = ref(false)
   const rawErrors = ref({})
+  const applyVersion = ref(0)
   const visibleCount = computed(
-    () => preferences.value.sectionIds.length + preferences.value.metricIds.length
+    () =>
+      preferences.value.sectionIds.length +
+      preferences.value.metricIds.length +
+      preferences.value.scenarioIds.length +
+      preferences.value.pathGroupIds.length
   )
 
   function open(runIds) {
@@ -37,7 +45,9 @@ export const useDcComparisonStore = defineStore('dc-comparison', () => {
       ...JSON.parse(JSON.stringify(preferences.value)),
       runIds: [...runIds],
       sectionIds: [...preferences.value.sectionIds],
-      metricIds: [...preferences.value.metricIds]
+      metricIds: [...preferences.value.metricIds],
+      scenarioIds: [...preferences.value.scenarioIds],
+      pathGroupIds: [...preferences.value.pathGroupIds]
     }
     pickerOpen.value = true
   }
@@ -49,7 +59,8 @@ export const useDcComparisonStore = defineStore('dc-comparison', () => {
 
   function apply() {
     if (!draft.value) return
-    preferences.value = JSON.parse(JSON.stringify(draft.value))
+    preferences.value = { ...JSON.parse(JSON.stringify(draft.value)), catalogConfigured: true }
+    applyVersion.value += 1
     pickerOpen.value = false
     draft.value = null
   }
@@ -68,5 +79,15 @@ export const useDcComparisonStore = defineStore('dc-comparison', () => {
     { deep: true }
   )
 
-  return { preferences, draft, pickerOpen, rawErrors, visibleCount, open, cancel, apply }
+  return {
+    preferences,
+    draft,
+    pickerOpen,
+    rawErrors,
+    applyVersion,
+    visibleCount,
+    open,
+    cancel,
+    apply
+  }
 })

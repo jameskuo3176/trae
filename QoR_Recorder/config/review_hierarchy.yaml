@@ -1,0 +1,137 @@
+version: "2026-08-12"
+timezone: Asia/Shanghai
+
+risk_thresholds:
+  tns_setup:
+    medium_percent: 10
+    high_percent: 25
+  area_total:
+    medium_percent: 5
+    high_percent: 10
+  utilization:
+    medium_percent: 3
+    high_percent: 8
+
+# YAML is the source of truth. Validate and synchronize with:
+#   python manage.py sync_review_hierarchy --check
+#   python manage.py sync_review_hierarchy --apply
+projects:
+  demo_ai_accel:
+    owner: admin
+    groups:
+      default:
+        owner: release
+        modules:
+          demo_ai_accel_extra_m0:
+            release_owner: release
+          demo_ai_accel_extra_m1:
+            release_owner: release
+          demo_ai_accel_extra_m2:
+            release_owner: release
+          dma:
+            release_owner: release
+          load_unit:
+            release_owner: release
+          noc_router:
+            release_owner: release
+          scheduler:
+            release_owner: release
+          store_unit:
+            release_owner: release
+          systolic:
+            release_owner: release
+          vec_reg:
+            release_owner: release
+
+  demo_dsp_engine:
+    owner: admin
+    groups:
+      default:
+        owner: release
+        modules:
+          addr_gen:
+            release_owner: release
+          coef_rom:
+            release_owner: release
+          data_buf:
+            release_owner: release
+          fft_core:
+            release_owner: release
+          filter_bank:
+            release_owner: release
+          mac_unit:
+            release_owner: release
+          twiddle_rom:
+            release_owner: release
+
+  demo_eth_mac:
+    owner: admin
+    groups:
+      default:
+        owner: release
+        modules:
+          fifo_async:
+            release_owner: release
+          mac_rx:
+            release_owner: release
+          mac_tx:
+            release_owner: release
+          mgmt:
+            release_owner: release
+          pcs:
+            release_owner: release
+          pma:
+            release_owner: release
+
+  demo_riscv_soc:
+    owner: admin
+    groups:
+      default:
+        owner: release
+        modules:
+          cpu_core:
+            release_owner: release
+          csr:
+            release_owner: release
+          decode:
+            release_owner: release
+          ifu:
+            release_owner: release
+          lsu:
+            release_owner: release
+          regfile:
+            release_owner: release
+
+  demo_video_codec:
+    owner: admin
+    groups:
+      default:
+        owner: release
+        modules:
+          cabac:
+            release_owner: release
+          deblock:
+            release_owner: release
+          intra_pred:
+            release_owner: release
+          mc_engine:
+            release_owner: release
+          me_engine:
+            release_owner: release
+          quant:
+            release_owner: release
+          recon:
+            release_owner: release
+          transform:
+            release_owner: release
+
+  newproject:
+    owner: admin
+    groups:
+      default:
+        owner: release
+        modules:
+          demoA:
+            release_owner: release
+          demoB:
+            release_owner: release

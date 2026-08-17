@@ -1,16 +1,31 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { useDashboardStore } from '@/stores/dashboard'
+import { useDashboardConfigsStore } from '@/stores/dashboardConfigs'
+import { useFiltersStore } from '@/stores/filters'
 import AppNavbar from '@/components/layout/AppNavbar.vue'
 import ThemeModal from '@/components/layout/ThemeModal.vue'
 import ChangePasswordModal from '@/components/layout/ChangePasswordModal.vue'
 import { useTheme } from '@/composables/useTheme'
 
 const auth = useAuthStore()
+const dashboard = useDashboardStore()
+const dashboardConfigs = useDashboardConfigsStore()
+const filters = useFiltersStore()
 const { initTheme } = useTheme()
 const changePwModalRef = ref(null)
 
 initTheme()
+watch(
+  () => auth.user?.id ?? null,
+  (userId, previousUserId) => {
+    if (userId == null || userId === previousUserId) return
+    filters.reset()
+    dashboard.reset()
+    dashboardConfigs.reset()
+  }
+)
 </script>
 
 <template>

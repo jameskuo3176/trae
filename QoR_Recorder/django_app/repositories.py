@@ -23,7 +23,7 @@ class RepositoryError(RuntimeError):
 class RecordRepository(Protocol):
     def list_records(self, project_id: int, *, module_id: int | None = None,
                      version: str | None = None, offset: int = 0,
-                     limit: int = 50) -> tuple[list[dict], int]: ...
+                     limit: int = 50, release_only: bool = False) -> tuple[list[dict], int]: ...
     def get_record(self, project_id: int, record_id: str) -> dict | None: ...
     def get_raw_report(self, project_id: int, record_id: str) -> dict | None: ...
     def list_violations(self, project_id: int, record_id: str) -> list[dict]: ...
@@ -55,8 +55,10 @@ class ORMRecordRepository:
         value.pop('raw_dc_report', None)  # raw data is lazy in API v2
         return value
 
-    def list_records(self, project_id, *, module_id=None, version=None, offset=0, limit=50):
+    def list_records(self, project_id, *, module_id=None, version=None, offset=0, limit=50,
+                     release_only=False):
         from django_app.core.models import LegacyModuleMapping, QorRecord
+        from django.db.models.functions import Coalesce
         qs = QorRecord.objects.using(self._alias(project_id)).all()
         if module_id is not None:
             legacy_ids = LegacyModuleMapping.objects.filter(
@@ -65,8 +67,13 @@ class ORMRecordRepository:
             qs = qs.filter(module_id__in=list(legacy_ids))
         if version:
             qs = qs.filter(version=version)
+        if release_only:
+            qs = qs.filter(is_released=True)
         total = qs.count()
-        rows = qs.order_by('-recorded_at', '-id')[offset:offset + limit]
+        rows = (
+            qs.annotate(_effective_at=Coalesce('released_at', 'recorded_at'))
+            .order_by('-_effective_at', '-id')[offset:offset + limit]
+        )
         return [self._document(project_id, row) for row in rows], total
 
     def get_record(self, project_id, record_id):
@@ -166,12 +173,15 @@ class MongoRecordRepository:
         value['id'] = str(value.pop('_id', value.get('id', '')))
         return value
 
-    def list_records(self, project_id, *, module_id=None, version=None, offset=0, limit=50):
+    def list_records(self, project_id, *, module_id=None, version=None, offset=0, limit=50,
+                     release_only=False):
         query: dict[str, Any] = {'project_id': project_id}
         if module_id is not None:
             query['module_id'] = module_id
         if version:
             query['version'] = version
+        if release_only:
+            query['is_released'] = True
         collection = self.db.qor_records
         total = collection.count_documents(query)
         cursor = collection.find(query, {'raw_dc_report': 0}).sort(

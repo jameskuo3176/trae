@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useDashboardStore } from '@/stores/dashboard'
+import { useRunLabelContext } from '@/composables/useChartPresentation'
 import BaseChart from './BaseChart.vue'
 
 const props = defineProps({
@@ -23,6 +24,7 @@ const COLORS = [
   '#00897b'
 ]
 const dashboard = useDashboardStore()
+const { runLabel } = useRunLabelContext()
 
 function getUnifiedValue(r, metric) {
   if (r.raw_dc_report) {
@@ -56,12 +58,7 @@ const chartOption = computed(() => {
   const records = dashboard.selectedRecords
   if (records.length === 0) return null
 
-  const cats = records.map(r => {
-    let label = r.module_name || ''
-    const tag = r.tag || r.version
-    if (tag) label += ` (${tag})`
-    return label
-  })
+  const cats = records.map(r => runLabel(r))
 
   if (props.multiMetrics) {
     const series = props.multiMetrics.map((m, i) => ({
@@ -117,7 +114,7 @@ const chartOption = computed(() => {
         v-if="dashboard.selectedRecords.length > 0 && chartOption"
         :chart-id="`chart-${metric.replace(/\./g, '-')}`"
         :option="chartOption"
-        :height="'400px'"
+        :records="dashboard.selectedRecords"
       />
       <div v-else class="empty-state">请选择数据记录</div>
     </div>

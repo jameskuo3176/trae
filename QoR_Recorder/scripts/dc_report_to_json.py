@@ -5,7 +5,7 @@
 
 设计原则: 1 个 DC 报告 = 1 个 run = 1 条 QorRecord.
 - full_dir = run.directory (不带 scenario/path_group 后缀)
-- timing.setup 字段: worst-case 聚合 (WNS=min, TNS=min, NVP=sum)
+- timing.setup 字段: WNS=min, TNS=负值求和, NVP=sum
 - clocks 字段: 第一个 scenario 的所有 path_groups 作为 clocks (单 scenario 约束)
 - extra.scenarios: 全量 scenarios × path_groups 审计数据
 - register_count: 来自 misc.fgcg.total_flops (DC 寄存器数)
@@ -24,7 +24,10 @@ import re
 import sys
 from typing import Any, Optional
 
-from services.qor_import import parse_source_path
+try:
+    from django_app.services.qor_import import parse_source_path
+except ImportError:
+    from services.qor_import import parse_source_path
 
 # schema_version 用于 §6.5 上传协议 (区别于 DC 报告自身的 scheme_version)
 SCHEMA_VERSION = '1.0'
@@ -165,6 +168,34 @@ def _build_extra_fields(dc: dict, default_path: Optional[str]) -> dict:
     if errs:
         extra['errors'] = errs
 
+    # Preserve every timing analysis type (default/final/other future labels)
+    # in one normalized structure for review UIs.
+    timing_sections = {}
+    for timing_name, timing_section in (dc.get('timing') or {}).items():
+        if not isinstance(timing_section, dict):
+            continue
+        normalized_scenarios = {}
+        for scenario_name, scenario in (timing_section.get('scenarios') or {}).items():
+            if not isinstance(scenario, dict):
+                continue
+            normalized_groups = {}
+            for group_name, metrics in (scenario.get('path_groups') or {}).items():
+                if not isinstance(metrics, dict):
+                    continue
+                normalized_groups[group_name] = {
+                    'wns': _to_float(metrics.get('WNS')),
+                    'tns': _to_float(metrics.get('TNS')),
+                    'nvp': _to_int(metrics.get('NVP')),
+                    'period': _to_float(metrics.get('Clk_Period')),
+                    'lol': _to_int(metrics.get('LoL')),
+                }
+            if normalized_groups:
+                normalized_scenarios[scenario_name] = normalized_groups
+        if normalized_scenarios:
+            timing_sections[timing_name] = normalized_scenarios
+    if timing_sections:
+        extra['timing_sections'] = timing_sections
+
     # timing metadata (跳过 'scenarios' 键, 避免非时序字段污染)
     default = (dc.get('timing') or {}).get('default') or {}
     md = default.get('metadata')
@@ -196,7 +227,8 @@ def _build_extra_fields(dc: dict, default_path: Optional[str]) -> dict:
                         if _to_int(p.get('NVP')) is not None]
             sc_summary[sname] = {
                 'wns_worst': min(wns_list) if wns_list else None,
-                'tns_total': sum(tns_list) if tns_list else None,
+                'tns_total': sum(value for value in tns_list if value < 0)
+                if tns_list else None,
                 'nvp_total': sum(x for x in nvp_list if x is not None) if nvp_list else None,
             }
         if sc_summary:
@@ -374,13 +406,14 @@ def convert_dc_to_qor_record(dc: dict, *,
     if register_count is not None:
         rec['register_count'] = register_count
 
-    # timing.setup (worst-case 聚合)
+    # timing.setup: WNS 取最小值；TNS 只累加负值，非负值不得抵消违例。
     timing_obj: dict = {}
     setup: dict = {}
     if all_wns:
         setup['wns'] = min(all_wns)
+    negative_tns = [value for value in all_tns if value < 0]
     if all_tns:
-        setup['tns'] = min(all_tns)
+        setup['tns'] = sum(negative_tns)
     if all_nvp:
         setup['nvp'] = sum(all_nvp)
     if setup:
@@ -401,7 +434,7 @@ def convert_dc_to_qor_record(dc: dict, *,
     if all_wns:
         extra['aggregate_wns_min'] = min(all_wns)
     if all_tns:
-        extra['aggregate_tns_min'] = min(all_tns)
+        extra['aggregate_tns_negative_sum'] = sum(negative_tns)
     if all_nvp:
         extra['aggregate_nvp_sum'] = sum(all_nvp)
     extra['timing_group_count'] = len(scenarios_audit)
@@ -424,6 +457,9 @@ def convert_dc_to_qor_record(dc: dict, *,
     if mark_released:
         upload_section['mark_released'] = True
     upload_section['module_name'] = top_module  # 供 save_records_to_db 查找 module
+    if run_dir:
+        upload_section['full_dir'] = run_dir
+        upload_section['release_dir'] = release_dir_override or run_dir
 
     payload = {
         'schema_version': SCHEMA_VERSION,

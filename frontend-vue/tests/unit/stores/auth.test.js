@@ -1,6 +1,18 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import { authApi } from '@/api/auth'
+
+vi.mock('@/api/auth', () => ({
+  authApi: {
+    login: vi.fn(),
+    me: vi.fn(),
+    logout: vi.fn(),
+    changePassword: vi.fn(),
+    getTheme: vi.fn(),
+    saveTheme: vi.fn()
+  }
+}))
 
 describe('Auth Store', () => {
   beforeEach(() => {
@@ -46,10 +58,10 @@ describe('Auth Store', () => {
     expect(auth.user).toBeNull()
   })
 
-  it('getAuthHeaders includes CSRF token', () => {
+  it('getAuthHeaders leaves CSRF handling to the request client', () => {
     const auth = useAuthStore()
     const headers = auth.getAuthHeaders()
-    expect(headers['X-CSRFToken']).toBe('test-csrf-token-value')
+    expect(headers['X-CSRFToken']).toBeUndefined()
   })
 
   it('getAuthHeaders includes API key when set', () => {
@@ -57,5 +69,32 @@ describe('Auth Store', () => {
     auth.apiKey = 'qor_test_key_123'
     const headers = auth.getAuthHeaders()
     expect(headers['X-API-Key']).toBe('qor_test_key_123')
+  })
+
+  it('restores the user and forced-password state through auth/me', async () => {
+    authApi.me.mockResolvedValue({
+      user: { id: 1, username: 'admin', is_admin: true },
+      must_change_password: true
+    })
+    const auth = useAuthStore()
+
+    await auth.fetchUser()
+
+    expect(auth.user.username).toBe('admin')
+    expect(auth.mustChangePassword).toBe(true)
+  })
+
+  it('clears the forced-password state after a successful password change', async () => {
+    authApi.changePassword.mockResolvedValue({
+      ok: true,
+      must_change_password: false
+    })
+    const auth = useAuthStore()
+    auth.mustChangePassword = true
+
+    await auth.changePassword('OldPassword1', 'NewPassword2')
+
+    expect(authApi.changePassword).toHaveBeenCalledWith('OldPassword1', 'NewPassword2')
+    expect(auth.mustChangePassword).toBe(false)
   })
 })

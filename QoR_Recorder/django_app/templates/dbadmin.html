@@ -8,6 +8,18 @@
         <span style="margin-left:16px;font-size:12px;color:var(--color-text-secondary);">类型: {{ data.db_type | upper
             }}</span>
     </div>
+    <div style="padding:12px 16px;border-bottom:1px solid #eee;">
+        <form method="get" action="{% url 'db_admin' %}" style="display:flex;gap:10px;align-items:center;">
+            <input type="hidden" name="action" value="tables">
+            <label for="database"><strong>数据库:</strong></label>
+            <select id="database" name="database" onchange="this.form.submit()" style="min-width:260px;padding:6px;">
+                {% for db in data.databases %}
+                <option value="{{ db.alias }}" {% if db.alias == data.database %}selected{% endif %}>{{ db.label }}</option>
+                {% endfor %}
+            </select>
+            <code style="font-size:12px;color:var(--color-text-secondary);">{{ data.database_info.path }}</code>
+        </form>
+    </div>
     <div class="card-body" style="display:flex;gap:16px;align-items:flex-start;">
 
         <!-- 左侧: 表列表 -->
@@ -17,7 +29,7 @@
             <ul style="list-style:none;">
                 {% for t in data.tables %}
                 <li style="margin:2px 0;">
-                    <a href="{% url 'db_admin' %}?action=schema&table={{ t }}"
+                    <a href="{% url 'db_admin' %}?database={{ data.database }}&action=schema&table={{ t }}"
                         style="display:block;padding:6px 10px;border-radius:4px;text-decoration:none;color:{% if data.current_table == t %}#fff{% else %}#333{% endif %};background:{% if data.current_table == t %}#1a237e{% else %}transparent{% endif %};">
                         {{ t }}
                     </a>
@@ -65,14 +77,14 @@
                         <td><strong>{{ c.name }}</strong>{% if c.pk %} <span style="color:#ffc107;">PK</span>{% endif %}
                         </td>
                         <td>{{ c.type }}</td>
-                        <td>{{ '是' if c.notnull else '否' }}</td>
-                        <td>{{ c.default if c.default else '' }}</td>
-                        <td>{{ '是' if c.pk else '' }}</td>
+                        <td>{% if c.notnull %}是{% else %}否{% endif %}</td>
+                        <td>{% if c.default %}{{ c.default }}{% endif %}</td>
+                        <td>{% if c.pk %}是{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
-            <a href="{% url 'db_admin' %}?action=browse&table={{ data.current_table }}" class="btn">浏览数据 →</a>
+            <a href="{% url 'db_admin' %}?database={{ data.database }}&action=browse&table={{ data.current_table }}" class="btn">浏览数据 →</a>
             {% endif %}
 
             {% if data.action == 'browse' %}
@@ -83,14 +95,14 @@
                 </span>
                 <div>
                     {% if data.page > 1 %}
-                    <a href="{% url 'db_admin' %}?action=browse&table={{ data.current_table }}&page={{ data.page|add:'-1' }}"
+                    <a href="{% url 'db_admin' %}?database={{ data.database }}&action=browse&table={{ data.current_table }}&page={{ data.page|add:'-1' }}"
                         class="btn-sm">上一页</a>
                     {% endif %}
                     {% if data.page < data.total_pages %} <a
-                        href="{% url 'db_admin' %}?action=browse&table={{ data.current_table }}&page={{ data.page|add:'1' }}"
+                        href="{% url 'db_admin' %}?database={{ data.database }}&action=browse&table={{ data.current_table }}&page={{ data.page|add:'1' }}"
                         class="btn-sm">下一页</a>
                         {% endif %}
-                        <a href="{% url 'db_admin' %}?action=schema&table={{ data.current_table }}"
+                        <a href="{% url 'db_admin' %}?database={{ data.database }}&action=schema&table={{ data.current_table }}"
                             class="btn-sm">结构</a>
                 </div>
             </div>
@@ -100,13 +112,17 @@
                     <thead>
                         <tr>
                             {% for col in data.columns %}<th>{{ col }}</th>{% endfor %}
+                            {% if data.pk_column %}<th>操作</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody>
                         {% for row in data.rows %}
                         <tr>
-                            {% for cell in row %}<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">{{
+                            {% for cell in row.cells %}<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">{{
                                 cell }}</td>{% endfor %}
+                            {% if data.pk_column %}
+                            <td><a class="btn-sm" href="{% url 'db_admin' %}?database={{ data.database }}&action=edit&table={{ data.current_table }}&pk={{ row.pk }}">编辑</a></td>
+                            {% endif %}
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -117,10 +133,41 @@
             {% endif %}
             {% endif %}
 
+            {% if data.action == 'edit' and data.edit_fields %}
+            <h3 style="margin-bottom:12px;">编辑: {{ data.current_table }}</h3>
+            <form method="post" action="{% url 'db_admin' %}">
+                {% csrf_token %}
+                <input type="hidden" name="database" value="{{ data.database }}">
+                <input type="hidden" name="table" value="{{ data.current_table }}">
+                <input type="hidden" name="pk_value" value="{{ data.pk_value }}">
+                <input type="hidden" name="action" value="update">
+                {% for field in data.edit_fields %}
+                <div style="display:grid;grid-template-columns:220px 1fr;gap:10px;margin-bottom:10px;align-items:start;">
+                    <label for="field_{{ field.name }}"><strong>{{ field.name }}</strong>{% if field.pk %} (PK){% endif %}</label>
+                    {% if field.pk %}
+                    <input id="field_{{ field.name }}" value="{{ field.value }}" disabled style="padding:7px;">
+                    {% else %}
+                    <textarea id="field_{{ field.name }}" name="field__{{ field.name }}" rows="2" style="padding:7px;">{% if field.value != None %}{{ field.value }}{% else %}__NULL__{% endif %}</textarea>
+                    {% endif %}
+                </div>
+                {% endfor %}
+                <button type="submit" class="btn">保存</button>
+            </form>
+            <form method="post" action="{% url 'db_admin' %}" style="margin-top:14px;" onsubmit="return confirm('确定删除这条原始记录？此操作不可撤销。')">
+                {% csrf_token %}
+                <input type="hidden" name="database" value="{{ data.database }}">
+                <input type="hidden" name="table" value="{{ data.current_table }}">
+                <input type="hidden" name="pk_value" value="{{ data.pk_value }}">
+                <input type="hidden" name="action" value="delete">
+                <button type="submit" class="btn" style="background:#c62828;">删除记录</button>
+            </form>
+            {% endif %}
+
             {% if data.action == 'query' %}
             <h3 style="margin-bottom:12px;">SQL 查询</h3>
             <form method="get" action="{% url 'db_admin' %}" style="margin-bottom:16px;">
                 <input type="hidden" name="action" value="query">
+                <input type="hidden" name="database" value="{{ data.database }}">
                 <textarea name="sql" rows="4" style="width:100%;font-family:monospace;padding:8px;"
                     placeholder="SELECT * FROM qor_records LIMIT 10">{{ data.sql }}</textarea>
                 <button type="submit" class="btn" style="margin-top:8px;">执行 (仅 SELECT)</button>
@@ -133,7 +180,7 @@
                     </thead>
                     <tbody>
                         {% for row in data.rows %}
-                        <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+                        <tr>{% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}</tr>
                         {% endfor %}
                     </tbody>
                 </table>
@@ -146,8 +193,8 @@
 
             <!-- 快速 SQL 查询入口 -->
             <div style="margin-top:24px;padding-top:16px;border-top:1px solid #eee;">
-                <a href="{% url 'db_admin' %}?action=query" class="btn-sm">SQL 查询 →</a>
-                <a href="{% url 'db_admin' %}?action=tables" class="btn-sm">← 返回表列表</a>
+                <a href="{% url 'db_admin' %}?database={{ data.database }}&action=query" class="btn-sm">SQL 查询 →</a>
+                <a href="{% url 'db_admin' %}?database={{ data.database }}&action=tables" class="btn-sm">← 返回表列表</a>
             </div>
         </div>
     </div>

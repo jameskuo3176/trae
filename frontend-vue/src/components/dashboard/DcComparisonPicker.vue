@@ -4,23 +4,34 @@ import { useDcComparisonStore } from '@/stores/dcComparison'
 
 const props = defineProps({
   records: { type: Array, default: () => [] },
-  sections: { type: Array, default: () => [] }
+  sections: { type: Array, default: () => [] },
+  timingScenarios: { type: Array, default: () => [] },
+  timingPathGroups: { type: Array, default: () => [] }
 })
 const dc = useDcComparisonStore()
 const dialog = ref(null)
 let returnFocus = null
-const metrics = computed(() =>
-  props.sections.flatMap(section =>
-    section.metrics.map(metric => ({
-      id: `${section.id}.${metric}`,
-      label: metric,
-      section: section.label
-    }))
-  )
+const sectionMetrics = computed(() =>
+  props.sections.map(section => ({
+    ...section,
+    items: section.metrics.map(metric => {
+      const id = typeof metric === 'object' ? metric.id : metric
+      const label = typeof metric === 'object' ? metric.label : metric.replaceAll('_', ' ')
+      return { id: `${section.id}.${id}`, label, section: section.label }
+    })
+  }))
 )
+const metrics = computed(() => sectionMetrics.value.flatMap(section => section.items))
+const recordKey = record => String(record.__selectionKey ?? record.id)
 
 function setAll(key, values, checked) {
   dc.draft[key] = checked ? values : []
+}
+
+function setSectionMetrics(section, checked) {
+  const sectionIds = new Set(section.items.map(metric => metric.id))
+  const retained = dc.draft.metricIds.filter(id => !sectionIds.has(id))
+  dc.draft.metricIds = checked ? [...retained, ...sectionIds] : retained
 }
 
 function closeOnEscape(event) {
@@ -87,22 +98,13 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
             Runs <b>{{ dc.draft.runIds.length }} / {{ records.length }}</b>
           </legend>
           <div class="mini-actions">
-            <button
-              type="button"
-              @click="
-                setAll(
-                  'runIds',
-                  records.map(r => String(r.id)),
-                  true
-                )
-              "
-            >
+            <button type="button" @click="setAll('runIds', records.map(recordKey), true)">
               All
             </button>
             <button type="button" @click="setAll('runIds', [], false)">None</button>
           </div>
-          <label v-for="record in records" :key="record.id">
-            <input v-model="dc.draft.runIds" type="checkbox" :value="String(record.id)" />
+          <label v-for="record in records" :key="recordKey(record)">
+            <input v-model="dc.draft.runIds" type="checkbox" :value="recordKey(record)" />
             <span>{{ record.module_name }} · {{ record.version }}</span>
           </label>
         </fieldset>
@@ -145,12 +147,49 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
             </button>
             <button type="button" @click="setAll('metricIds', [], false)">None</button>
           </div>
-          <label v-for="metric in metrics" :key="metric.id">
-            <input v-model="dc.draft.metricIds" type="checkbox" :value="metric.id" />
-            <span
-              ><small>{{ metric.section }}</small> {{ metric.label }}</span
-            >
+          <section v-for="section in sectionMetrics" :key="section.id" class="metric-group">
+            <div class="metric-group-heading">
+              <strong>{{ section.label }}</strong>
+              <span>
+                <button type="button" @click="setSectionMetrics(section, true)">All</button>
+                <button type="button" @click="setSectionMetrics(section, false)">None</button>
+              </span>
+            </div>
+            <label v-for="metric in section.items" :key="metric.id">
+              <input v-model="dc.draft.metricIds" type="checkbox" :value="metric.id" />
+              <span>{{ metric.label }}</span>
+            </label>
+          </section>
+        </fieldset>
+        <fieldset>
+          <legend>Timing scope</legend>
+          <div class="metric-group-heading">
+            <strong>Scenario</strong>
+            <span>
+              <button type="button" @click="setAll('scenarioIds', timingScenarios, true)">
+                All
+              </button>
+              <button type="button" @click="setAll('scenarioIds', [], false)">Any</button>
+            </span>
+          </div>
+          <label v-for="scenario in timingScenarios" :key="scenario">
+            <input v-model="dc.draft.scenarioIds" type="checkbox" :value="scenario" />
+            <span>{{ scenario }}</span>
           </label>
+          <div class="metric-group-heading timing-path-heading">
+            <strong>Path group</strong>
+            <span>
+              <button type="button" @click="setAll('pathGroupIds', timingPathGroups, true)">
+                All
+              </button>
+              <button type="button" @click="setAll('pathGroupIds', [], false)">Any</button>
+            </span>
+          </div>
+          <label v-for="pathGroup in timingPathGroups" :key="pathGroup">
+            <input v-model="dc.draft.pathGroupIds" type="checkbox" :value="pathGroup" />
+            <span>{{ pathGroup }}</span>
+          </label>
+          <small>Any 表示不限制；同时控制 WNS/TNS 聚合范围。</small>
         </fieldset>
         <fieldset>
           <legend>Display options</legend>
@@ -158,9 +197,6 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
             ><input v-model="dc.draft.showChange" type="checkbox" /> Baseline-aware changes</label
           >
           <label><input v-model="dc.draft.compactTiming" type="checkbox" /> Compact timing</label>
-          <label
-            ><input v-model="dc.draft.onlyWithRaw" type="checkbox" /> Runs with DC report</label
-          >
           <label
             ><input v-model="dc.draft.copyOnClick" type="checkbox" /> Click cells to copy</label
           >
@@ -198,15 +234,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', closeOnEscape))
   display: grid;
   place-items: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.72);
+  background: var(--color-overlay);
 }
 .picker {
-  width: min(1120px, 96vw);
+  width: min(1240px, 96vw);
   max-height: 92vh;
   overflow: auto;
   background: var(--color-surface);
   border: 1px solid var(--color-primary);
-  box-shadow: var(--glow-primary);
+  box-shadow: 0 18px 52px var(--color-shadow);
 }
 header,
 footer {
@@ -233,9 +269,18 @@ header p {
 }
 .picker-grid {
   display: grid;
-  grid-template-columns: 1.25fr 1fr 1.4fr 1fr;
+  grid-template-columns: 1.2fr 0.9fr 1.3fr 1fr 0.9fr;
   gap: 8px;
   padding: 8px;
+}
+.timing-path-heading {
+  margin-top: 12px;
+}
+fieldset small {
+  display: block;
+  margin-top: 8px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
 }
 fieldset {
   position: relative;
@@ -260,6 +305,13 @@ fieldset label {
   font-size: 11px;
   cursor: pointer;
 }
+fieldset label:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-on-hover);
+}
+fieldset label:hover small {
+  color: inherit;
+}
 fieldset small {
   color: var(--color-text-secondary);
 }
@@ -271,11 +323,37 @@ fieldset small {
   gap: 3px;
 }
 .mini-actions button,
-.sort-selector button {
+.sort-selector button,
+.metric-group-heading button {
   padding: 2px 6px;
   border: 1px solid var(--color-border);
   background: var(--color-background);
   color: var(--color-text);
+}
+.mini-actions button:hover,
+.sort-selector button:hover,
+.metric-group-heading button:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-hover);
+  color: var(--color-text-on-hover);
+}
+.metric-group + .metric-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+.metric-group-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  color: var(--color-text);
+  font-size: 10px;
+}
+.metric-group-heading span {
+  display: flex;
+  gap: 3px;
 }
 footer {
   border-top: 1px solid var(--color-border);

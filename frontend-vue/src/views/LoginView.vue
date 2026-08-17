@@ -126,7 +126,7 @@ async function handleLogin() {
   padding: 4px 8px;
 }
 .error-text {
-  color: #ff5252;
+  color: var(--color-danger);
   font-size: 14px;
   text-align: center;
 }
@@ -137,7 +137,10 @@ async function handleLogin() {
   margin-top: 8px;
 }
 .login-btn:disabled {
-  opacity: 0.6;
+  border-color: var(--color-border);
+  background: var(--color-disabled-background);
+  color: var(--color-disabled-text);
+  opacity: 1;
   cursor: not-allowed;
 }
 </style>

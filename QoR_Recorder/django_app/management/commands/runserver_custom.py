@@ -12,19 +12,22 @@ from django.core.management.commands.runserver import Command as RunserverComman
 
 
 class Command(RunserverCommand):
-    help = '启动开发服务器 (含自动备份与默认数据初始化)'
+    help = '启动开发服务器 (可选自动备份与默认数据初始化)'
 
     def run(self, **options):
         # 启动前任务
         self._startup_backup()
         self._init_default_data()
-        self._print_banner()
+        self._print_banner(options)
 
         # 调用父类 runserver
         super().run(**options)
 
     def _startup_backup(self):
         """若为 SQLite, 执行数据库备份"""
+        if not getattr(settings, 'AUTO_BACKUP_ENABLED', False):
+            print('[BACKUP] 自动备份已关闭 (设置 AUTO_BACKUP_ENABLED=1 可启用)')
+            return
         db_type = getattr(settings, 'DB_TYPE', 'sqlite')
         if db_type != 'sqlite':
             print(f'[BACKUP] {db_type} 后端, 跳过本地文件备份 (请确保后端已配置备份策略)')
@@ -56,8 +59,9 @@ class Command(RunserverCommand):
         except Exception as e:
             print(f'[INIT] 默认数据初始化异常: {e}')
 
-    def _print_banner(self):
+    def _print_banner(self, options=None):
         """打印启动横幅"""
+        options = options or {}
         db_type = getattr(settings, 'DB_TYPE', 'sqlite')
         db_config = settings.DATABASES.get('default', {})
         sql_uri = db_config.get('NAME', '') or db_config.get('ENGINE', '')
@@ -78,10 +82,20 @@ class Command(RunserverCommand):
 
         host = getattr(settings, 'HOST', '0.0.0.0')
         port = getattr(settings, 'PORT', 5000)
+        addrport = options.get('addrport')
+        if addrport:
+            if ':' in addrport:
+                host, raw_port = addrport.rsplit(':', 1)
+                if raw_port.isdigit():
+                    port = int(raw_port)
+            elif addrport.isdigit():
+                port = int(addrport)
         debug = getattr(settings, 'DEBUG', False)
 
         print('=' * 60)
         print('QoR Recorder 系统启动中...')
+        print(f'进程标识:   pid={os.getpid()} cwd={os.getcwd()}')
+        print(f'主数据库:   {os.path.abspath(str(sql_uri))}')
         print('默认管理员: admin / admin@2026  (首次登录请立即修改)')
         print('默认用户:   user / user@2026')
         print(f'监听地址:   {host}:{port}  (debug={debug})')

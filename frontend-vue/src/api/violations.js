@@ -9,10 +9,6 @@ export const violationsApi = {
     return apiClient.get('/violations/timing_groups', { params }).then(r => r.data)
   },
 
-  getSourceFiles(params) {
-    return apiClient.get('/violations/source_files', { params }).then(r => r.data)
-  },
-
   getList(params) {
     return apiClient.get('/violations', { params }).then(r => r.data)
   },

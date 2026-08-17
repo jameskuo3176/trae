@@ -3,8 +3,8 @@ import * as echarts from 'echarts'
 export function useCharts() {
   const chartInstances = new Map()
 
-  function initChart(domId, theme = null) {
-    const dom = document.getElementById(domId)
+  function initChart(domId, theme = null, host = null) {
+    const dom = host || document.getElementById(domId)
     if (!dom) return null
     const existing = echarts.getInstanceByDom(dom)
     if (existing) existing.dispose()

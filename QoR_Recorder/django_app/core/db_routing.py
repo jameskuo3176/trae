@@ -15,10 +15,12 @@ import os
 import re
 import threading
 from collections import defaultdict
+from datetime import datetime
 
 from django.conf import settings
 from django.db import connections
 from django.db.utils import OperationalError
+from django.utils import timezone
 
 # =========================================================================
 # 常量
@@ -28,6 +30,7 @@ PROJECT_DB_PREFIX = 'qor_p_'
 # 项目库模型名集合 (与 Flask 版本 __bind_key__='project' 的模型一致)
 PROJECT_MODEL_NAMES = {
     'Module', 'QorRecord', 'ViolationPath', 'RunNote',
+    'RecordAnnotation', 'RecordAnnotationImage',
     'DashboardGroup', 'AlertRule', 'AlertEvent', 'DataSnapshot',
     'TileReview', 'GroupReview', 'SubsystemReview',
     'ReviewSnapshot', 'ReviewFile',
@@ -47,9 +50,25 @@ _thread_local = threading.local()
 # 路径工具
 # =========================================================================
 def project_db_path(project_id):
-    """获取项目 DB 文件路径"""
+    """Return the preferred project database path with legacy fallback."""
     data_dir = str(settings.DATA_DIR) if hasattr(settings, 'DATA_DIR') else str(settings.BASE_DIR.parent / 'data')
-    return os.path.join(data_dir, f'{PROJECT_DB_PREFIX}{project_id}.db')
+    legacy_path = os.path.join(data_dir, f'{PROJECT_DB_PREFIX}{project_id}.db')
+    try:
+        from django.apps import apps
+        Project = apps.get_model('core', 'Project')
+        project = Project.objects.using('default').only('name', 'db_path').get(pk=project_id)
+        safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', project.name).strip('._-')
+        if not safe_name:
+            safe_name = f'project_{project_id}'
+        preferred = os.path.join(data_dir, f'{safe_name}_syn_qor.db')
+        configured = os.path.abspath(project.db_path) if project.db_path else ''
+        if configured and configured.endswith('_syn_qor.db') and os.path.exists(configured):
+            return configured
+        if os.path.exists(preferred) or not os.path.exists(legacy_path):
+            return preferred
+    except Exception:
+        pass
+    return legacy_path
 
 
 def _get_project_db_alias(project_id):
@@ -92,6 +111,10 @@ def get_project_engine(project_id):
             'CONN_MAX_AGE': 0,
             'CONN_HEALTH_CHECKS': False,
             'TIME_ZONE': settings.TIME_ZONE,
+            'TEST': {
+                'CHARSET': None, 'COLLATION': None, 'MIGRATE': True,
+                'MIRROR': None, 'NAME': None,
+            },
         }
         # 确保连接可用
         conn = connections[alias]
@@ -134,6 +157,10 @@ def create_project_db(project_id):
             'CONN_MAX_AGE': 0,
             'CONN_HEALTH_CHECKS': False,
             'TIME_ZONE': settings.TIME_ZONE,
+            'TEST': {
+                'CHARSET': None, 'COLLATION': None, 'MIGRATE': True,
+                'MIRROR': None, 'NAME': None,
+            },
         }
 
         # 3. 通过 Django schema 迁移创建项目模型表
@@ -180,22 +207,46 @@ def _create_project_tables(project_id, alias):
 
 
 def list_all_project_dbs():
-    """扫描 DATA_DIR 列出所有项目 DB 文件"""
+    """List databases belonging to current Project rows."""
     data_dir = str(settings.DATA_DIR) if hasattr(settings, 'DATA_DIR') else str(settings.BASE_DIR.parent / 'data')
     if not os.path.isdir(data_dir):
         return []
 
     files = []
-    prefix = PROJECT_DB_PREFIX
-    for name in os.listdir(data_dir):
-        if name.startswith(prefix) and name.endswith('.db'):
+    try:
+        from django.apps import apps
+        Project = apps.get_model('core', 'Project')
+        project_ids = Project.objects.using('default').order_by('id').values_list('id', flat=True)
+        for pid in project_ids:
             try:
-                pid = int(name[len(prefix):-len('.db')])
-                full = os.path.join(data_dir, name)
+                full = project_db_path(pid)
+                if not os.path.exists(full):
+                    continue
                 size = os.path.getsize(full)
-                files.append({'project_id': pid, 'path': full, 'size_kb': size // 1024})
-            except (ValueError, OSError):
+                files.append({
+                    'project_id': pid,
+                    'path': full,
+                    'name': os.path.basename(full),
+                    'size_kb': size // 1024,
+                })
+            except OSError:
                 continue
+    except Exception:
+        # Bootstrap fallback before the main Project table is available.
+        prefix = PROJECT_DB_PREFIX
+        for name in os.listdir(data_dir):
+            if name.startswith(prefix) and name.endswith('.db'):
+                try:
+                    pid = int(name[len(prefix):-len('.db')])
+                    full = os.path.join(data_dir, name)
+                    files.append({
+                        'project_id': pid,
+                        'path': full,
+                        'name': name,
+                        'size_kb': os.path.getsize(full) // 1024,
+                    })
+                except (ValueError, OSError):
+                    continue
     return sorted(files, key=lambda x: x['project_id'])
 
 
@@ -273,16 +324,23 @@ class ProjectDBRouter:
         - 主库 (default): 只允许非项目模型迁移 (User, Project, ApiKey 等)
         - 项目库: 只允许项目模型迁移 (Module, QorRecord 等)
         """
+        project_model_names = {name.lower() for name in PROJECT_MODEL_NAMES}
         if db == 'default':
-            # 主库不允许项目模型
-            if model_name:
-                return model_name.lower() not in {n.lower() for n in PROJECT_MODEL_NAMES}
+            if app_label == 'core' and model_name:
+                return model_name.lower() not in project_model_names
             return True
-        # 项目库: 只允许项目模型
-        if model_name and model_name.lower() in {n.lower() for n in PROJECT_MODEL_NAMES}:
-            return True
-        # 项目库: 允许所有 app 的迁移 (否则 migrate 会报错)
-        return db.startswith('project_')
+        if db.startswith('project_'):
+            # A migration is still recorded by Django when all of its
+            # operations are routed away. This keeps graph history complete
+            # without copying users/auth/global tables into every project DB.
+            if app_label != 'core':
+                return False
+            if model_name is None:
+                # RunPython/RunSQL operations without a model hint are global
+                # unless a migration explicitly opts into a project model.
+                return False
+            return model_name.lower() in project_model_names
+        return None
 
 
 # 兼容 settings.py 中的引用名
@@ -420,7 +478,7 @@ def query_records_by_projects(
       owner_id:       int
       release_only:   True = 仅 is_released
       dir_prefix:     str, 按 full_dir 前缀过滤
-      order_desc:     True = recorded_at 倒序
+      order_desc:     True = released_at（为空回退 recorded_at）倒序
       limit:          每项目上限
     """
     if proj_id_list is None:
@@ -457,7 +515,7 @@ def query_records_by_projects(
             continue
 
         try:
-            qs = QorRecord.objects.using(alias).all()
+            qs = QorRecord.objects.using(alias).select_related('module').all()
             if release_only:
                 qs = qs.filter(is_released=True)
             if mod_id_filter and project_module_map:
@@ -472,9 +530,13 @@ def query_records_by_projects(
                 qs = qs.filter(owner_id=owner_id)
             if dir_prefix:
                 qs = qs.filter(full_dir__startswith=dir_prefix)
-            order = '-recorded_at' if order_desc else 'recorded_at'
-            qs = qs.order_by(order)[:limit]
-            all_records.extend(list(qs))
+            order = '-released_at' if order_desc else 'released_at'
+            rows = list(qs.order_by(order, '-recorded_at', '-id')[:limit])
+            for row in rows:
+                # Preserve the source project after the thread-local router
+                # advances to the next project database.
+                row._qor_project_id = pid
+            all_records.extend(rows)
         except OperationalError:
             continue
         except Exception:
@@ -482,7 +544,9 @@ def query_records_by_projects(
 
     # 跨项目排序
     all_records.sort(
-        key=lambda r: r.recorded_at if r.recorded_at else '',
+        key=lambda r: r.released_at or r.recorded_at or timezone.make_aware(
+            datetime.min, timezone.get_current_timezone()
+        ),
         reverse=order_desc,
     )
     return all_records[:limit]

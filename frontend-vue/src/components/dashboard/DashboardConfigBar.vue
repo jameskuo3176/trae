@@ -1,12 +1,15 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useDashboardConfigsStore } from '@/stores/dashboardConfigs'
+import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps({ modelValue: { type: Object, required: true } })
 const emit = defineEmits(['update:modelValue'])
 const configs = useDashboardConfigsStore()
+const auth = useAuthStore()
 const name = ref('')
 const makeDefault = ref(false)
+const canSave = computed(() => !auth.isViewer)
 const selected = computed(() =>
   configs.configs.find(config => String(config.id) === configs.activeId)
 )
@@ -36,22 +39,25 @@ onMounted(async () => {
         {{ config.name }}{{ config.is_default ? ' · default' : '' }}
       </option>
     </select>
-    <input
-      v-model="name"
-      type="text"
-      placeholder="Configuration name"
-      aria-label="Configuration name"
-      @keyup.enter="save"
-    />
-    <label><input v-model="makeDefault" type="checkbox" /> Default</label>
-    <button
-      class="btn btn-sm"
-      type="button"
-      :disabled="!name.trim() || configs.loading"
-      @click="save"
-    >
-      Save current
-    </button>
+    <template v-if="canSave">
+      <input
+        v-model="name"
+        type="text"
+        placeholder="Configuration name"
+        aria-label="Configuration name"
+        @keyup.enter="save"
+      />
+      <label><input v-model="makeDefault" type="checkbox" /> Default</label>
+      <button
+        class="btn btn-sm"
+        type="button"
+        :disabled="!name.trim() || configs.loading"
+        @click="save"
+      >
+        Save current
+      </button>
+    </template>
+    <span v-else class="config-note">Read-only dashboard</span>
     <span v-if="configs.error" class="config-note" role="status">{{ configs.error }}</span>
   </section>
 </template>

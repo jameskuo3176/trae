@@ -11,6 +11,7 @@
   - /change_password
 """
 import logging
+import re
 
 from django.conf import settings
 from django.contrib import messages
@@ -95,7 +96,7 @@ def admin_page(request):
     """
     if request.user.is_viewer:
         return HttpResponseForbidden()
-    if not (request.user.is_admin or request.user.is_owner or request.user.is_release):
+    if not (request.user.is_admin or request.user.is_owner):
         return HttpResponseForbidden()
     return render(request, 'admin.html', {'user': request.user})
 
@@ -108,12 +109,14 @@ def qor_record_detail_page(request, record_id):
       - 先通过 _find_qor_record_project 定位项目 DB
       - 再在该项目库中查询 QorRecord 并检查权限
 
-    - admin / owner: 可查看所有记录
-    - viewer: 仅可看已发布记录 (未发布 404); 不受 ProjectMember 限制 (本身无项目角色)
+    - admin / owner / viewer: 可查看所有非隐藏项目记录
+    - viewer 仍由中间件保持严格只读
     """
     # 跨项目库定位
     pid = _find_qor_record_project(record_id)
     if pid is None:
+        raise Http404("记录不存在")
+    if not Project.objects.exclude(status='hidden').filter(pk=pid).exists():
         raise Http404("记录不存在")
 
     # 获取项目库连接并查询
@@ -128,11 +131,7 @@ def qor_record_detail_page(request, record_id):
     # 设置线程局部 project_id, 确保 rec.module 等关联查询能正确路由到项目库
     set_current_project_id(pid)
 
-    # v5.0 viewer: 未发布记录视同不存在 (不受 ProjectMember 限制)
-    if request.user.is_viewer:
-        if not rec.is_released:
-            raise Http404("记录不存在")
-    elif not request.user.is_admin and not request.user.is_release and not request.user.is_owner:
+    if not request.user.is_admin and not request.user.is_owner and not request.user.is_viewer:
         # 其它角色: 需是项目成员
         member = ProjectMember.objects.filter(
             project_id=rec.module.project_id, user=request.user,
@@ -152,7 +151,7 @@ def qor_record_detail_page(request, record_id):
 
 @login_required
 def db_admin(request, subpath=''):
-    """数据库可视化面板 (仅管理员)"""
+    """Admin-only raw database browser/editor for main and project databases."""
     if not request.user.is_admin:
         return HttpResponseForbidden()
     if not getattr(settings, 'ENABLE_DB_ADMIN', False):
@@ -160,110 +159,180 @@ def db_admin(request, subpath=''):
             'message': '数据库可视化未启用。请设置环境变量 ENABLE_DB_ADMIN=1',
         }, status=403)
 
-    action = request.GET.get('action', 'tables')
-    data = {}
+    action = request.POST.get('action') or request.GET.get('action', 'tables')
+    data = {'action': action}
+    database_choices = [{
+        'alias': 'default',
+        'label': '主数据库',
+        'path': str(settings.DATABASES['default'].get('NAME', '')),
+    }]
+    for project in Project.objects.order_by('name'):
+        alias = _get_project_db_alias(project.id)
+        try:
+            connection = get_project_engine(project.id)
+            database_choices.append({
+                'alias': alias,
+                'label': f'{project.name} ({project.id})',
+                'path': str(connection.settings_dict.get('NAME', '')),
+            })
+        except Exception as exc:
+            logger.warning('Cannot register project DB %s: %s', project.id, exc)
+    allowed_aliases = {item['alias'] for item in database_choices}
+    db_alias = request.POST.get('database') or request.GET.get('database', 'default')
+    if db_alias not in allowed_aliases:
+        db_alias = 'default'
+    data.update({
+        'databases': database_choices,
+        'database': db_alias,
+        'database_info': next(item for item in database_choices if item['alias'] == db_alias),
+    })
 
     try:
-        db_uri = settings.DATABASES['default'].get('ENGINE', '')
-        is_sqlite = 'sqlite' in db_uri.lower()
+        connection = connections[db_alias]
+        is_sqlite = 'sqlite' in connection.settings_dict.get('ENGINE', '').lower()
+        quote = connection.ops.quote_name
+        tables = sorted(connection.introspection.table_names())
+        data['tables'] = tables
 
-        def _get_tables():
-            """获取所有表名"""
-            with connections['default'].cursor() as cursor:
-                if is_sqlite:
-                    cursor.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                    )
-                else:
-                    cursor.execute(
-                        "SELECT table_name AS name FROM information_schema.tables "
-                        "WHERE table_schema = DATABASE() ORDER BY table_name"
-                    )
-                return [row[0] for row in cursor.fetchall()]
+        table = request.POST.get('table') or request.GET.get('table', '')
+        data['current_table'] = table or None
+        if table and table not in tables:
+            data['error'] = '无效的表名'
+            table = ''
 
-        def _get_columns(table):
-            """获取表结构"""
-            with connections['default'].cursor() as cursor:
-                if is_sqlite:
-                    cursor.execute(f"PRAGMA table_info({table})")
-                    return [{
-                        'name': row[1], 'type': row[2], 'notnull': row[3],
-                        'default': row[4] if row[4] is not None else '',
-                        'pk': row[5] > 0,
-                    } for row in cursor.fetchall()]
-                else:
-                    cursor.execute(
-                        f"SELECT column_name, data_type, is_nullable, column_default, column_key "
-                        f"FROM information_schema.columns WHERE table_schema = DATABASE() "
-                        f"AND table_name = '{table}' ORDER BY ordinal_position"
-                    )
-                    return [{
-                        'name': row[0], 'type': row[1], 'notnull': row[2] == 'NO',
-                        'default': row[3] if row[3] is not None else '',
-                        'pk': row[4] == 'PRI',
-                    } for row in cursor.fetchall()]
+        def get_columns(selected_table):
+            with connection.cursor() as cursor:
+                description = connection.introspection.get_table_description(
+                    cursor, selected_table,
+                )
+                constraints = connection.introspection.get_constraints(
+                    cursor, selected_table,
+                )
+            primary_names = {
+                column
+                for constraint in constraints.values()
+                if constraint.get('primary_key')
+                for column in constraint.get('columns', [])
+            }
+            return [{
+                'name': column.name,
+                'type': str(column.type_code),
+                'notnull': not bool(column.null_ok),
+                'default': getattr(column, 'default', '') or '',
+                'pk': column.name in primary_names,
+            } for column in description]
 
-        def _safe_table(table):
-            """验证表名安全性"""
-            return table and table.replace('_', '').isalnum()
+        columns = get_columns(table) if table else []
+        pk_column = next((column['name'] for column in columns if column['pk']), None)
+        data['column_details'] = columns
+        data['pk_column'] = pk_column
 
-        data['tables'] = _get_tables()
-
-        if action == 'tables':
-            data['current_table'] = None
-        elif action == 'schema':
-            table = request.GET.get('table', '')
-            data['current_table'] = table
-            if not _safe_table(table):
-                data['error'] = '无效的表名'
+        if request.method == 'POST' and action in ('update', 'delete'):
+            if not table or not pk_column:
+                data['error'] = '该表没有可用的单列主键，禁止修改'
             else:
-                data['columns'] = _get_columns(table)
-                with connections['default'].cursor() as cursor:
-                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                    data['row_count'] = cursor.fetchone()[0]
-        elif action == 'browse':
-            table = request.GET.get('table', '')
+                if getattr(settings, 'AUTO_BACKUP_ENABLED', False):
+                    from django_app.services.backup_service import perform_backup
+                    backup = perform_backup(
+                        backup_type='pre_db_admin_edit',
+                        user=request.user,
+                    )
+                    if not backup.get('ok'):
+                        raise RuntimeError(f'写入前备份失败: {backup.get("error")}')
+                pk_value = request.POST.get('pk_value')
+                if action == 'delete':
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            f'DELETE FROM {quote(table)} WHERE {quote(pk_column)} = %s',
+                            [pk_value],
+                        )
+                    messages.success(request, f'已删除 {table}.{pk_column}={pk_value}')
+                else:
+                    editable = [
+                        column['name'] for column in columns
+                        if column['name'] != pk_column
+                    ]
+                    values = [
+                        None if request.POST.get(f'field__{name}') == '__NULL__'
+                        else request.POST.get(f'field__{name}', '')
+                        for name in editable
+                    ]
+                    assignments = ', '.join(f'{quote(name)} = %s' for name in editable)
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            f'UPDATE {quote(table)} SET {assignments} '
+                            f'WHERE {quote(pk_column)} = %s',
+                            values + [pk_value],
+                        )
+                    messages.success(request, f'已更新 {table}.{pk_column}={pk_value}')
+                return redirect(
+                    f"{request.path}?database={db_alias}&action=browse&table={table}"
+                )
+
+        if action == 'schema' and table:
+            data['columns'] = columns
+            with connection.cursor() as cursor:
+                cursor.execute(f'SELECT COUNT(*) FROM {quote(table)}')
+                data['row_count'] = cursor.fetchone()[0]
+        elif action == 'browse' and table:
             page = max(1, int(request.GET.get('page', 1)))
             per_page = 50
             offset = (page - 1) * per_page
-            data['current_table'] = table
-            if not _safe_table(table):
-                data['error'] = '无效的表名'
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f'SELECT * FROM {quote(table)} LIMIT %s OFFSET %s',
+                    [per_page, offset],
+                )
+                rows = cursor.fetchall()
+                names = [column[0] for column in cursor.description]
+                cursor.execute(f'SELECT COUNT(*) FROM {quote(table)}')
+                total = cursor.fetchone()[0]
+            pk_index = names.index(pk_column) if pk_column in names else None
+            data.update({
+                'columns': names,
+                'rows': [{
+                    'cells': list(row),
+                    'pk': row[pk_index] if pk_index is not None else None,
+                } for row in rows],
+                'total': total,
+                'page': page,
+                'per_page': per_page,
+                'total_pages': max(1, (total + per_page - 1) // per_page),
+            })
+        elif action == 'edit' and table and pk_column:
+            pk_value = request.GET.get('pk')
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f'SELECT * FROM {quote(table)} WHERE {quote(pk_column)} = %s',
+                    [pk_value],
+                )
+                row = cursor.fetchone()
+                names = [column[0] for column in cursor.description]
+            if row is None:
+                data['error'] = '记录不存在'
             else:
-                with connections['default'].cursor() as cursor:
-                    cursor.execute(
-                        f"SELECT * FROM {table} LIMIT %s OFFSET %s",
-                        [per_page, offset],
-                    )
-                    rows = cursor.fetchall()
-                    data['columns'] = [col[0] for col in cursor.description] if rows else []
-                    data['rows'] = [list(r) for r in rows]
-                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                    cnt = cursor.fetchone()[0]
-                    data['total'] = cnt
-                    data['page'] = page
-                    data['per_page'] = per_page
-                    data['total_pages'] = (cnt + per_page - 1) // per_page
+                data['edit_fields'] = [
+                    {'name': name, 'value': value, 'pk': name == pk_column}
+                    for name, value in zip(names, row)
+                ]
+                data['pk_value'] = pk_value
         elif action == 'query':
             sql = request.GET.get('sql', '').strip()
             data['sql'] = sql
-            if not sql.lower().startswith('select'):
-                data['error'] = '只允许执行 SELECT 查询'
-            else:
-                try:
-                    with connections['default'].cursor() as cursor:
-                        cursor.execute(sql)
-                        rows = cursor.fetchall()
-                        data['columns'] = [col[0] for col in cursor.description] if rows else []
-                        data['rows'] = [list(r) for r in rows[:200]]
-                        data['truncated'] = len(rows) > 200
-                except Exception as e:
-                    data['error'] = str(e)
-    except Exception as e:
-        data['error'] = str(e)
+            if sql and not re.match(r'^\s*select\b', sql, re.I):
+                data['error'] = '只允许 SELECT 查询'
+            elif sql:
+                with connection.cursor() as cursor:
+                    cursor.execute(sql)
+                    rows = cursor.fetchmany(201)
+                    data['columns'] = [column[0] for column in cursor.description]
+                    data['rows'] = [{'cells': list(row)} for row in rows[:200]]
+                    data['truncated'] = len(rows) > 200
+        data['db_type'] = 'sqlite' if is_sqlite else connection.vendor
+    except Exception as exc:
+        data['error'] = str(exc)
+        data.setdefault('db_type', 'unknown')
 
-    data['action'] = action
-    data['db_type'] = 'sqlite' if is_sqlite else 'mysql'
     try:
         return render(request, 'dbadmin.html', {'data': data})
     except Exception as e:

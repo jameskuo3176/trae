@@ -1,20 +1,17 @@
 <script setup>
 import { computed } from 'vue'
 import { useDashboardStore } from '@/stores/dashboard'
+import { useRunLabelContext } from '@/composables/useChartPresentation'
 import BaseChart from './BaseChart.vue'
 
 const dashboard = useDashboardStore()
+const { runLabel } = useRunLabelContext()
 
 const chartOption = computed(() => {
   const records = dashboard.selectedRecords
   if (records.length === 0) return null
 
-  const cats = records.map(r => {
-    let label = r.module_name || ''
-    const tag = r.tag || r.version
-    if (tag) label += ` (${tag})`
-    return label
-  })
+  const cats = records.map(r => runLabel(r))
 
   return {
     tooltip: { trigger: 'axis' },
@@ -46,6 +43,7 @@ const chartOption = computed(() => {
         v-if="dashboard.selectedRecords.length > 0 && chartOption"
         chart-id="chart-power"
         :option="chartOption"
+        :records="dashboard.selectedRecords"
       />
       <div v-else class="empty-state">请选择数据记录</div>
     </div>

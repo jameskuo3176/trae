@@ -2,32 +2,179 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useDashboardStore } from '@/stores/dashboard'
 import { useDcComparisonStore } from '@/stores/dcComparison'
+import { useRunLabelContext } from '@/composables/useChartPresentation'
 import { dashboardApi } from '@/api/dashboard'
-import { useGvim } from '@/composables/useGvim'
+import { normalizeTimingSections } from '@/utils/timing'
+import { useTimingAnalysis } from '@/composables/useTimingAnalysis'
 import DataTable from '@/components/common/DataTable.vue'
+import SourceFileLink from '@/components/common/SourceFileLink.vue'
 import DcComparisonPicker from './DcComparisonPicker.vue'
 
 const dashboard = useDashboardStore()
 const dc = useDcComparisonStore()
-const { href: gvimHref, handleClick: handleGvimClick } = useGvim()
+const { runLabel } = useRunLabelContext()
 const navWidth = ref(Number(localStorage.getItem('dcNavWidth')) || 236)
 const vsDraftIds = ref(new Set())
 const rawControllers = new Map()
 
-const records = computed(() =>
-  dashboard.records.filter(
-    record => !dc.preferences.onlyWithRaw || dashboard.rawReports[String(record.id)]
-  )
+const canonicalSections = [
+  {
+    id: 'qor_timing',
+    label: 'Timing',
+    metrics: [
+      { id: 'wns_setup', label: 'Setup WNS', aliases: ['wns'] },
+      { id: 'tns_setup', label: 'Setup TNS', aliases: ['tns'] },
+      { id: 'nvp_setup', label: 'Setup NVP', aliases: ['nvp'] },
+      { id: 'wns_hold', label: 'Hold WNS' },
+      { id: 'tns_hold', label: 'Hold TNS' },
+      { id: 'nvp_hold', label: 'Hold NVP' },
+      { id: 'target_frequency', label: 'Target frequency' },
+      { id: 'achieved_frequency', label: 'Achieved frequency' }
+    ]
+  },
+  {
+    id: 'qor_area_count',
+    label: 'Area / Count',
+    metrics: [
+      { id: 'area_total', label: 'Total area' },
+      { id: 'area_combinational', label: 'Combinational area' },
+      { id: 'area_sequential', label: 'Sequential area' },
+      { id: 'area_macro', label: 'Macro area' },
+      { id: 'cell_count', label: 'Cell count' },
+      { id: 'instance_count', label: 'Instance count' },
+      { id: 'net_count', label: 'Net count' },
+      { id: 'register_count', label: 'Register count' }
+    ]
+  },
+  {
+    id: 'qor_power',
+    label: 'Power',
+    metrics: [
+      { id: 'power_internal', label: 'Internal power' },
+      { id: 'power_switching', label: 'Switching power' },
+      { id: 'power_leakage', label: 'Leakage power' },
+      { id: 'power_total', label: 'Total power' }
+    ]
+  },
+  {
+    id: 'qor_physical',
+    label: 'Physical',
+    metrics: [
+      { id: 'utilization', label: 'Utilization' },
+      { id: 'mbb_ratio', label: 'MBB ratio' },
+      { id: 'clock_gating_ratio', label: 'Clock gating' },
+      { id: 'congestion_h', label: 'Congestion horizontal' },
+      { id: 'congestion_v', label: 'Congestion vertical' },
+      { id: 'congestion_b', label: 'Congestion combined', aliases: ['congestion'] }
+    ]
+  }
+]
+
+const records = computed(() => dashboard.records)
+const selected = computed(() => dashboard.selectedRecords)
+const recordKey = record => dashboard.selectionKey(record)
+const rawSelected = computed(() =>
+  dashboard.selectedRecords.filter(record => dashboard.rawReports[recordKey(record)])
 )
-const selected = computed(() =>
-  dashboard.selectedRecords.filter(record => dashboard.rawReports[String(record.id)])
+const timingScopes = computed(() => {
+  const scenarios = new Set()
+  const pathGroups = new Set()
+  rawSelected.value.forEach(record => {
+    const sections = normalizeTimingSections({
+      raw_dc_report: normalizedRaw(record)
+    })
+    Object.values(sections).forEach(analysis => {
+      Object.entries(analysis).forEach(([scenario, groups]) => {
+        scenarios.add(scenario)
+        Object.keys(groups).forEach(group => pathGroups.add(group))
+      })
+    })
+  })
+  return {
+    scenarios: [...scenarios].sort(),
+    pathGroups: [...pathGroups].sort()
+  }
+})
+const timingRecords = computed(() =>
+  selected.value.map(record => ({
+    ...record,
+    raw_dc_report: normalizedRaw(record)
+  }))
 )
+const { computedMetrics: scopedTimingMetrics, groupDetails: scopedTimingGroups } = useTimingAnalysis(
+  () => timingRecords.value,
+  {
+    selectedScenarios: computed({
+      get: () => dc.preferences.scenarioIds,
+      set: value => {
+        dc.preferences.scenarioIds = value
+      }
+    }),
+    selectedPathGroups: computed({
+      get: () => dc.preferences.pathGroupIds,
+      set: value => {
+        dc.preferences.pathGroupIds = value
+      }
+    })
+  }
+)
+const scopedTimingByRun = computed(
+  () =>
+    new Map(
+      scopedTimingMetrics.value.map(item => [
+        recordKey(item.record),
+        {
+          wns_setup: item.wns,
+          tns_setup: item.tns,
+          nvp_setup: item.nvp,
+          aggregateAnalyses: item.aggregateAnalyses
+        }
+      ])
+    )
+)
+const timingGroupsByRun = computed(
+  () =>
+    new Map(
+      scopedTimingGroups.value.map(item => [
+        recordKey(item.record),
+        new Map(
+          item.groups.map(group => [
+            `${group.analysis}\u0000${group.scenario}\u0000${group.pathGroup}`,
+            group
+          ])
+        )
+      ])
+    )
+)
+const timingHierarchy = computed(() => {
+  const analyses = new Map()
+  scopedTimingGroups.value.forEach(item => {
+    item.groups.forEach(group => {
+      if (!analyses.has(group.analysis)) analyses.set(group.analysis, new Map())
+      const scenarios = analyses.get(group.analysis)
+      if (!scenarios.has(group.scenario)) scenarios.set(group.scenario, new Set())
+      scenarios.get(group.scenario).add(group.pathGroup)
+    })
+  })
+  return [...analyses.entries()]
+    .sort(([left], [right]) => {
+      if (left === 'default') return -1
+      if (right === 'default') return 1
+      return left.localeCompare(right)
+    })
+    .map(([analysis, scenarios]) => ({
+      analysis,
+      scenarios: [...scenarios.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([scenario, groups]) => ({ scenario, groups: [...groups].sort() }))
+    }))
+})
 const activeSelection = computed(() =>
   dc.preferences.vsMode ? vsDraftIds.value : dashboard.selectedIds
 )
 
 function normalizedRaw(record) {
-  const raw = dashboard.rawReports[String(record.id)]
+  const raw = dashboard.rawReports[recordKey(record)]
   if (!raw) return {}
   if (typeof raw === 'object') return raw
   try {
@@ -37,9 +184,9 @@ function normalizedRaw(record) {
   }
 }
 
-const sections = computed(() => {
+const rawSections = computed(() => {
   const result = new Map()
-  selected.value.forEach(record => {
+  rawSelected.value.forEach(record => {
     Object.entries(normalizedRaw(record)).forEach(([id, value]) => {
       if (id === 'metadata' || !value || typeof value !== 'object') return
       const metrics = Array.isArray(value)
@@ -53,10 +200,120 @@ const sections = computed(() => {
   return [...result.values()].map(section => ({ ...section, metrics: [...section.metrics] }))
 })
 
-const visibleSections = computed(() => {
+const pickerSections = computed(() => [
+  ...canonicalSections.map(section => ({
+    ...section,
+    metrics: section.metrics.map(metric => ({ id: metric.id, label: metric.label }))
+  })),
+  ...rawSections.value
+])
+
+const visibleRawSections = computed(() => {
   const configured = dc.preferences.sectionIds
-  return sections.value.filter(section => !configured.length || configured.includes(section.id))
+  return rawSections.value.filter(
+    section => !dc.preferences.catalogConfigured || configured.includes(section.id)
+  )
 })
+
+const visibleCanonicalSections = computed(() => {
+  const configured = dc.preferences.sectionIds
+  return canonicalSections
+    .filter(section => !dc.preferences.catalogConfigured || configured.includes(section.id))
+    .map(section => ({
+      ...section,
+      metrics: section.metrics.filter(metric => {
+        if (dc.preferences.compactTiming && section.id === 'qor_timing') {
+          return /wns|tns|nvp/.test(metric.id)
+        }
+        return (
+          !dc.preferences.catalogConfigured ||
+          dc.preferences.metricIds.includes(`${section.id}.${metric.id}`)
+        )
+      })
+    }))
+    .filter(section => section.metrics.length)
+})
+
+function hasTimingSections(record) {
+  return Object.keys(normalizeTimingSections({ raw_dc_report: normalizedRaw(record) })).length > 0
+}
+
+function canonicalValue(record, metric, sectionId = '') {
+  if (
+    sectionId === 'qor_timing' &&
+    ['wns_setup', 'tns_setup', 'nvp_setup'].includes(metric.id) &&
+    hasTimingSections(record)
+  ) {
+    return scopedTimingByRun.value.get(recordKey(record))?.[metric.id] ?? null
+  }
+  for (const key of [metric.id, ...(metric.aliases || [])]) {
+    const value = record?.[key]
+    if (value !== null && value !== undefined && value !== '') return value
+  }
+  return null
+}
+
+function formatCanonicalValue(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric.toFixed(2) : value
+}
+
+function canonicalChangeClass(section, metric, currentValue, record) {
+  if (!dc.preferences.showChange || recordKey(record) === dashboard.baselineId) return ''
+  const baseValue = canonicalValue(dashboard.baselineRecord, metric, section.id)
+  const current = Number(currentValue)
+  const base = Number(baseValue)
+  if (!Number.isFinite(current) || !Number.isFinite(base) || current === base) return ''
+  const higherIsBetter =
+    /wns|tns|frequency|utilization|gating/.test(metric.id) && !/target_frequency/.test(metric.id)
+  const better = higherIsBetter ? current > base : current < base
+  return better ? 'change-better' : 'change-worse'
+}
+
+function canonicalRows(section) {
+  return section.metrics.map(metric => {
+    const row = { id: metric.id, metric: metric.label, __classes: {} }
+    selected.value.forEach(record => {
+      const key = recordKey(record)
+      const value = canonicalValue(record, metric, section.id)
+      row[key] = value
+      row.__classes[key] = canonicalChangeClass(section, metric, value, record)
+    })
+    return row
+  })
+}
+
+function timingGroup(record, analysis, scenario, pathGroup) {
+  return timingGroupsByRun.value
+    .get(recordKey(record))
+    ?.get(`${analysis}\u0000${scenario}\u0000${pathGroup}`)
+}
+
+function formatTimingPart(value) {
+  return value == null ? '—' : Number(value).toFixed(2)
+}
+
+function timingAnalysisContributes(record, analysis) {
+  return scopedTimingByRun.value.get(recordKey(record))?.aggregateAnalyses?.includes(analysis)
+}
+
+function canonicalColumns() {
+  return [
+    { key: 'metric', label: 'QoR metric', width: '190px', sortable: false },
+    ...selected.value.map(record => ({
+      key: recordKey(record),
+      label: runLabel(record),
+      numeric: true,
+      format: formatCanonicalValue,
+      sortValue: row => numericValue(row[recordKey(record)]) ?? row[recordKey(record)],
+      class: row => [
+        dashboard.baselineId === recordKey(record) ? 'baseline' : '',
+        row.__classes?.[recordKey(record)] || ''
+      ]
+    }))
+  ]
+}
 
 function sectionRows(section) {
   return section.metrics
@@ -72,19 +329,15 @@ function sectionRows(section) {
     .map(metric => {
       const row = { id: metric, metric, __classes: {} }
       selected.value.forEach(record => {
+        const key = recordKey(record)
         const data = normalizedRaw(record)[section.id]
-        row[String(record.id)] = Array.isArray(data)
+        row[key] = Array.isArray(data)
           ? data
               .map(item => item?.[metric])
               .filter(value => value != null)
               .join(' / ')
           : data?.[metric]
-        row.__classes[String(record.id)] = changeClass(
-          section.id,
-          metric,
-          row[String(record.id)],
-          record
-        )
+        row.__classes[key] = changeClass(section.id, metric, row[key], record)
       })
       return row
     })
@@ -100,7 +353,7 @@ function numericValue(value) {
 }
 
 function changeClass(sectionId, metric, currentValue, record) {
-  if (!dc.preferences.showChange || String(record.id) === dashboard.baselineId) return ''
+  if (!dc.preferences.showChange || recordKey(record) === dashboard.baselineId) return ''
   const baseline = dashboard.baselineRecord
   if (!baseline) return ''
   const baselineData = normalizedRaw(baseline)[sectionId]
@@ -123,37 +376,37 @@ function sectionColumns() {
   return [
     { key: 'metric', label: 'Metric', width: '180px' },
     ...selected.value.map(record => ({
-      key: String(record.id),
-      label: `${record.module_name || 'module'} · ${record.version || record.tag || record.id}`,
+      key: recordKey(record),
+      label: runLabel(record),
       numeric: true,
-      sortValue: row => numericValue(row[String(record.id)]) ?? row[String(record.id)],
+      sortValue: row => numericValue(row[recordKey(record)]) ?? row[recordKey(record)],
       class: row => [
-        dashboard.baselineId === String(record.id) ? 'baseline' : '',
-        row.__classes?.[String(record.id)] || ''
+        dashboard.baselineId === recordKey(record) ? 'baseline' : '',
+        row.__classes?.[recordKey(record)] || ''
       ]
     }))
   ]
 }
 
 async function ensureRaw(record) {
-  const id = String(record.id)
-  if (dashboard.rawReports[id] || dashboard.rawLoadingIds.has(id)) return
+  const key = recordKey(record)
+  if (dashboard.rawReports[key] || dashboard.rawLoadingIds.has(key)) return
   const controller = new AbortController()
-  rawControllers.set(id, controller)
-  dashboard.setRawLoading(id, true)
+  rawControllers.set(key, controller)
+  dashboard.setRawLoading(key, true)
   try {
-    const raw = await dashboardApi.rawReport(record.project_id, id, controller.signal)
-    dashboard.setRawReport(id, raw)
+    const raw = await dashboardApi.rawReport(record.project_id, record.id, controller.signal)
+    dashboard.setRawReport(key, raw)
   } catch (error) {
-    if (error.code !== 'ERR_CANCELED') dc.rawErrors = { ...dc.rawErrors, [id]: error.message }
+    if (error.code !== 'ERR_CANCELED') dc.rawErrors = { ...dc.rawErrors, [key]: error.message }
   } finally {
-    dashboard.setRawLoading(id, false)
-    rawControllers.delete(id)
+    dashboard.setRawLoading(key, false)
+    rawControllers.delete(key)
   }
 }
 
 function toggle(record) {
-  const id = String(record.id)
+  const id = recordKey(record)
   if (dc.preferences.vsMode) {
     const next = new Set(vsDraftIds.value)
     next.has(id) ? next.delete(id) : next.add(id)
@@ -171,6 +424,12 @@ function selectAllRuns() {
 
 function openPicker() {
   dc.open([...dashboard.selectedIds])
+  if (!dc.preferences.catalogConfigured) {
+    dc.draft.sectionIds = pickerSections.value.map(section => section.id)
+    dc.draft.metricIds = pickerSections.value.flatMap(section =>
+      section.metrics.map(metric => `${section.id}.${metric.id || metric}`)
+    )
+  }
 }
 
 function applyVsSelection() {
@@ -200,13 +459,18 @@ function startResize(event) {
 }
 
 watch(
-  () => dc.preferences.runIds,
-  ids => {
-    if (!ids) return
+  () => dc.applyVersion,
+  () => {
+    const ids = dc.preferences.runIds
     dashboard.selectedIds = new Set(ids.map(String))
     dashboard.selectedRecords.forEach(ensureRaw)
     if (dc.preferences.vsMode) vsDraftIds.value = new Set(dashboard.selectedIds)
   }
+)
+watch(
+  () => dashboard.selectedRecords.map(recordKey).join('|'),
+  () => dashboard.selectedRecords.forEach(ensureRaw),
+  { immediate: true }
 )
 watch(
   () => dc.preferences.vsMode,
@@ -222,7 +486,8 @@ defineExpose({ sectionRows, sectionColumns, vsDraftIds, applyVsSelection, cancel
   <section class="dc-shell" aria-labelledby="dc-heading">
     <aside class="dc-nav" :style="{ width: `${navWidth}px` }">
       <header>
-        <strong id="dc-heading">DC comparison</strong><span>{{ selected.length }} ready</span>
+        <strong id="dc-heading">QoR comparison</strong
+        ><span>{{ selected.length }} selected · {{ rawSelected.length }} raw</span>
       </header>
       <div class="nav-actions">
         <button class="btn btn-sm btn-default" type="button" @click="selectAllRuns">All</button>
@@ -232,16 +497,16 @@ defineExpose({ sectionRows, sectionColumns, vsDraftIds, applyVsSelection, cancel
       </div>
       <label
         v-for="record in records"
-        :key="record.id"
+        :key="recordKey(record)"
         class="run-item"
         :class="{
-          selected: activeSelection.has(String(record.id)),
-          'vs-selected': dc.preferences.vsMode && vsDraftIds.has(String(record.id))
+          selected: activeSelection.has(recordKey(record)),
+          'vs-selected': dc.preferences.vsMode && vsDraftIds.has(recordKey(record))
         }"
       >
         <input
           type="checkbox"
-          :checked="activeSelection.has(String(record.id))"
+          :checked="activeSelection.has(recordKey(record))"
           @change="toggle(record)"
         />
         <span
@@ -251,9 +516,9 @@ defineExpose({ sectionRows, sectionColumns, vsDraftIds, applyVsSelection, cancel
         <button
           type="button"
           class="baseline-button"
-          :aria-pressed="dashboard.baselineId === String(record.id)"
+          :aria-pressed="dashboard.baselineId === recordKey(record)"
           title="Set baseline"
-          @click.prevent="dashboard.setBaseline(record.id)"
+          @click.prevent="dashboard.setBaseline(recordKey(record))"
         >
           B
         </button>
@@ -298,16 +563,138 @@ defineExpose({ sectionRows, sectionColumns, vsDraftIds, applyVsSelection, cancel
         </div>
       </div>
       <div v-if="!dashboard.selectedIds.size" class="empty-state">
-        Select runs from the checklist to load DC reports lazily.
+        Select runs from the checklist to compare canonical QoR metrics.
       </div>
-      <div v-else-if="dashboard.rawLoadingIds.size" class="status-line" role="status">
+      <template v-if="dashboard.selectedIds.size">
+        <article
+          v-for="section in visibleCanonicalSections"
+          :key="section.id"
+          class="dc-section canonical-section"
+        >
+          <h3>{{ section.label }}</h3>
+          <DataTable
+            :rows="canonicalRows(section)"
+            :columns="canonicalColumns()"
+            row-key="id"
+            :copy-on-click="dc.preferences.copyOnClick"
+            :filename="`${section.id}.csv`"
+          />
+          <details
+            v-if="section.id === 'qor_timing' && timingHierarchy.length"
+            class="timing-breakdown"
+            :open="!dc.preferences.compactTiming"
+          >
+            <summary>
+              <span>Scenario → path-group contributions</span>
+              <small>WNS minimum · negative TNS sum · NVP total</small>
+            </summary>
+            <section
+              v-for="analysis in timingHierarchy"
+              :key="analysis.analysis"
+              class="timing-analysis"
+            >
+              <h4>
+                {{ analysis.analysis }}
+                <span
+                  v-if="selected.some(record => timingAnalysisContributes(record, analysis.analysis))"
+                  class="aggregate-source"
+                >
+                  aggregate source
+                </span>
+              </h4>
+              <div
+                v-for="scenario in analysis.scenarios"
+                :key="scenario.scenario"
+                class="timing-scenario"
+              >
+                <h5>{{ scenario.scenario }}</h5>
+                <div class="timing-table-scroll">
+                  <table class="table timing-group-table">
+                    <thead>
+                      <tr>
+                        <th>Path group</th>
+                        <th v-for="record in selected" :key="recordKey(record)">
+                          {{ runLabel(record) }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="pathGroup in scenario.groups" :key="pathGroup">
+                        <th scope="row">{{ pathGroup }}</th>
+                        <td v-for="record in selected" :key="recordKey(record)">
+                          <template
+                            v-if="
+                              timingGroup(
+                                record,
+                                analysis.analysis,
+                                scenario.scenario,
+                                pathGroup
+                              )
+                            "
+                          >
+                            <span>
+                              WNS
+                              {{
+                                formatTimingPart(
+                                  timingGroup(
+                                    record,
+                                    analysis.analysis,
+                                    scenario.scenario,
+                                    pathGroup
+                                  ).summary.wns
+                                )
+                              }}
+                            </span>
+                            <span>
+                              TNS
+                              {{
+                                formatTimingPart(
+                                  timingGroup(
+                                    record,
+                                    analysis.analysis,
+                                    scenario.scenario,
+                                    pathGroup
+                                  ).summary.tns
+                                )
+                              }}
+                            </span>
+                            <span>
+                              NVP
+                              {{
+                                formatTimingPart(
+                                  timingGroup(
+                                    record,
+                                    analysis.analysis,
+                                    scenario.scenario,
+                                    pathGroup
+                                  ).summary.nvp
+                                )
+                              }}
+                            </span>
+                          </template>
+                          <span v-else class="missing-value" aria-label="Not present">—</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          </details>
+        </article>
+      </template>
+      <div v-if="dashboard.rawLoadingIds.size" class="status-line" role="status">
         Loading {{ dashboard.rawLoadingIds.size }} raw report(s)…
       </div>
       <div v-for="(message, id) in dc.rawErrors" :key="id" class="error-line" role="alert">
         {{ id }}: {{ message }}
       </div>
-      <article v-for="section in visibleSections" :key="section.id" class="dc-section">
-        <h3>{{ section.label }}</h3>
+      <article
+        v-for="section in visibleRawSections"
+        :key="section.id"
+        class="dc-section raw-section"
+      >
+        <h3>Raw · {{ section.label }}</h3>
         <DataTable
           :rows="sectionRows(section)"
           :columns="sectionColumns()"
@@ -316,18 +703,17 @@ defineExpose({ sectionRows, sectionColumns, vsDraftIds, applyVsSelection, cancel
           :filename="`dc-${section.id}.csv`"
         >
           <template v-if="dc.preferences.pathLinks" #cell-metric="{ value }">
-            <a
-              v-if="gvimHref(value)"
-              :href="gvimHref(value)"
-              title="Open with gvim protocol; Alt+click uses server fallback"
-              @click="handleGvimClick($event, value)"
-              >{{ value }}</a
-            ><span v-else>{{ value }}</span>
+            <SourceFileLink :path="value" />
           </template>
         </DataTable>
       </article>
     </div>
-    <DcComparisonPicker :records="dashboard.records" :sections="sections" />
+    <DcComparisonPicker
+      :records="dashboard.records"
+      :sections="pickerSections"
+      :timing-scenarios="timingScopes.scenarios"
+      :timing-path-groups="timingScopes.pathGroups"
+    />
   </section>
 </template>
 
@@ -466,13 +852,138 @@ defineExpose({ sectionRows, sectionColumns, vsDraftIds, applyVsSelection, cancel
   background: var(--color-surface-hover);
   border-bottom: 1px solid var(--color-border);
 }
+.canonical-section h3 {
+  box-shadow: inset 3px 0 var(--color-primary);
+}
+.timing-breakdown {
+  border-top: 1px solid var(--color-border);
+}
+.timing-breakdown > summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 10px;
+  cursor: pointer;
+  color: var(--color-text);
+  font-size: 11px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface));
+}
+.timing-breakdown > summary small {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 400;
+}
+.timing-analysis {
+  padding: 8px;
+}
+.timing-analysis + .timing-analysis {
+  border-top: 1px solid var(--color-border);
+}
+.timing-analysis h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.aggregate-source {
+  padding: 1px 5px;
+  border: 1px solid var(--color-primary);
+  color: var(--color-primary);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: none;
+}
+.timing-scenario {
+  border: 1px solid var(--color-border);
+}
+.timing-scenario + .timing-scenario {
+  margin-top: 6px;
+}
+.timing-scenario h5 {
+  padding: 4px 7px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-hover);
+  font-family: Consolas, Monaco, monospace;
+  font-size: 10px;
+}
+.timing-table-scroll {
+  overflow-x: auto;
+}
+.timing-group-table {
+  width: 100%;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 10px;
+}
+.timing-group-table th,
+.timing-group-table td {
+  padding: 4px 7px;
+  border-right: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.timing-group-table thead th,
+.timing-group-table tbody th {
+  text-align: left;
+}
+.timing-group-table tbody th {
+  color: var(--color-text);
+  font-weight: 600;
+}
+.timing-group-table td {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.timing-group-table td > span + span {
+  margin-left: 10px;
+}
+.timing-group-table td > span::first-letter {
+  color: var(--color-text-secondary);
+}
+.missing-value {
+  color: var(--color-text-secondary);
+}
+.raw-section {
+  opacity: 0.96;
+}
+.dc-section :deep(.data-table th:first-child),
+.dc-section :deep(.data-table td:first-child) {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--color-surface);
+}
+.dc-section :deep(.data-table th:first-child) {
+  z-index: 3;
+  background: var(--color-surface-hover);
+}
+.dc-section :deep(.data-table tbody tr:hover td:first-child) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-on-hover);
+}
+.dc-section :deep(.data-table tbody tr:hover td:first-child *) {
+  color: inherit;
+}
+.dc-section :deep(.data-table tbody tr:hover td.change-better) {
+  background: var(--color-success-background);
+  color: var(--color-success);
+}
+.dc-section :deep(.data-table tbody tr:hover td.change-worse) {
+  background: var(--color-danger-background);
+  color: var(--color-danger);
+}
+.dc-section :deep(.data-table tbody tr:hover td.baseline) {
+  box-shadow: inset 3px 0 var(--color-primary);
+}
 .status-line,
 .error-line {
   padding: 6px 10px;
   font-size: 11px;
 }
 .error-line {
-  color: #ff8c8c;
+  color: var(--color-danger);
 }
 :deep(.baseline) {
   box-shadow: inset 3px 0 var(--color-primary);

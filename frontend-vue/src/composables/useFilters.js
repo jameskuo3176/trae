@@ -20,7 +20,7 @@ export function useFilters() {
 
   function buildApiParams() {
     const params = {}
-    if (filters.projectId) params.project_ids = filters.projectId
+    if (filters.projectIds.length > 0) params.project_ids = filters.projectIds.join(',')
     if (filters.moduleIds.length > 0) params.module_ids = filters.moduleIds.join(',')
     if (filters.versionIds.length > 0) params.versions = filters.versionIds.join(',')
     if (filters.dirPrefix) params.dir_prefix = filters.dirPrefix

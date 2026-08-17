@@ -3,8 +3,10 @@ import { ref, watch, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps({
-  mustChange: { type: Boolean, default: false }
+  mustChange: { type: Boolean, default: false },
+  modelValue: { type: Boolean, default: false }
 })
+const emit = defineEmits(['update:modelValue'])
 
 const auth = useAuthStore()
 const showModal = ref(false)
@@ -16,7 +18,7 @@ const success = ref('')
 const loading = ref(false)
 
 onMounted(() => {
-  if (props.mustChange) {
+  if (props.mustChange || props.modelValue) {
     showModal.value = true
   }
 })
@@ -29,6 +31,21 @@ watch(
     }
   }
 )
+
+watch(
+  () => props.modelValue,
+  val => {
+    showModal.value = val
+  }
+)
+
+watch(showModal, val => {
+  emit('update:modelValue', val)
+})
+
+function closeModal() {
+  if (!loading.value) showModal.value = false
+}
 
 async function handleSubmit() {
   error.value = ''
@@ -49,7 +66,7 @@ async function handleSubmit() {
     newPassword.value = ''
     confirmPassword.value = ''
     setTimeout(() => {
-      showModal.value = false
+      closeModal()
     }, 1500)
   } catch (e) {
     error.value = e.response?.data?.error || e.message || '修改失败'
@@ -62,11 +79,11 @@ defineExpose({ showModal })
 </script>
 
 <template>
-  <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
+  <div v-if="showModal" class="modal-overlay" @click.self="closeModal">
     <div class="modal-content">
       <div class="modal-header">
         <h3>修改密码</h3>
-        <button class="close-btn" @click="showModal = false">×</button>
+        <button class="close-btn" @click="closeModal">×</button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -85,7 +102,7 @@ defineExpose({ showModal })
         <p v-if="success" class="success-text">{{ success }}</p>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-default" @click="showModal = false">取消</button>
+        <button class="btn btn-default" @click="closeModal">取消</button>
         <button class="btn" :disabled="loading" @click="handleSubmit">
           {{ loading ? '提交中...' : '确认修改' }}
         </button>
@@ -98,7 +115,7 @@ defineExpose({ showModal })
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--color-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -136,11 +153,11 @@ defineExpose({ showModal })
   gap: 8px;
 }
 .error-text {
-  color: #ff5252;
+  color: var(--color-danger);
   font-size: 14px;
 }
 .success-text {
-  color: #66bb6a;
+  color: var(--color-success);
   font-size: 14px;
 }
 </style>

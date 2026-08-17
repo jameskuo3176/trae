@@ -82,7 +82,7 @@ def authenticate_request(request):
                 key_hash=key_hash,
                 revoked=False,
             )
-            if key_obj.is_valid:
+            if key_obj.is_valid and key_obj.user.is_active:
                 # 更新最后使用时间
                 from django.utils import timezone
                 ApiKey.objects.filter(id=key_obj.id).update(

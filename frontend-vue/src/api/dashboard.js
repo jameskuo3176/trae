@@ -3,16 +3,24 @@ import apiClient from './client'
 const unwrap = response => response.data?.data ?? response.data
 
 export const dashboardApi = {
-  modules(projectId, signal) {
-    return apiClient.get('/v2/modules', { params: { project_id: projectId }, signal }).then(unwrap)
+  modules(projectIds, signal) {
+    const params =
+      projectIds && projectIds.length ? { project_ids: projectIds.join(',') } : {}
+    return apiClient.get('/v2/modules', { params, signal }).then(response => ({
+      modules: response.data.data || [],
+      meta: response.data.meta || {}
+    }))
   },
-  versions(projectId, signal) {
-    return apiClient.get('/v2/versions', { params: { project_id: projectId }, signal }).then(unwrap)
+  versions(projectIds, signal) {
+    const params =
+      projectIds && projectIds.length ? { project_ids: projectIds.join(',') } : {}
+    return apiClient.get('/v2/versions', { params, signal }).then(unwrap)
   },
   records(params, signal) {
     return apiClient.get('/v2/records', { params, signal }).then(response => ({
       records: response.data.data || [],
-      pagination: response.data.pagination || null
+      pagination: response.data.pagination || null,
+      meta: response.data.meta || {}
     }))
   },
   record(projectId, recordId, signal) {
@@ -22,6 +30,7 @@ export const dashboardApi = {
     return apiClient
       .get(`/v2/projects/${projectId}/records/${recordId}/raw`, { signal })
       .then(unwrap)
+      .then(value => value?.content ?? value)
   },
   violations(projectId, recordId, signal) {
     return apiClient

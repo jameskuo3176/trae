@@ -74,7 +74,7 @@ class Command(BaseCommand):
             legacy_user = User.objects.filter(username='user', role='user').first()
             if legacy_user:
                 legacy_user.role = 'owner'
-                legacy_user.save()
+                legacy_user.save(update_fields=['role'])
                 self.stdout.write('[INIT] 已将 user 角色迁移为 owner (v5)')
 
         # release → owner (v5 迁移)
@@ -91,7 +91,7 @@ class Command(BaseCommand):
             legacy_release = User.objects.filter(username='release', role='release').first()
             if legacy_release:
                 legacy_release.role = 'owner'
-                legacy_release.save()
+                legacy_release.save(update_fields=['role'])
                 self.stdout.write('[INIT] 已将 release 角色迁移为 owner (v5)')
 
         # viewer
@@ -134,7 +134,7 @@ class Command(BaseCommand):
             if u and any(u.check_password(p) for p in default_pws):
                 if not u.must_change_password:
                     u.must_change_password = True
-                    u.save()
+                    u.save(update_fields=['must_change_password'])
                     self.stdout.write(
                         f'[SECURITY] {uname} 仍使用出厂默认密码, 已标记 must_change_password=True'
                     )

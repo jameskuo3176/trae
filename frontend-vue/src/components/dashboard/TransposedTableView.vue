@@ -1,9 +1,11 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useDashboardStore } from '@/stores/dashboard'
+import { useRunLabelContext } from '@/composables/useChartPresentation'
 import DataTable from '@/components/common/DataTable.vue'
 
 const dashboard = useDashboardStore()
+const { runLabel } = useRunLabelContext()
 const showColors = ref(true)
 const colorThreshold = ref(5)
 const metrics = [
@@ -37,7 +39,7 @@ const columns = computed(() => [
   { key: 'label', label: '指标', width: '160px' },
   ...dashboard.selectedRecords.map((record, index) => ({
     key: String(record.id),
-    label: `${record.module_name} (${record.tag || record.version})`,
+    label: runLabel(record),
     value: row => record[row.key],
     format: value => formatValue(value),
     numeric: true,
@@ -84,9 +86,11 @@ const columns = computed(() => [
   width: 60px;
 }
 :deep(.color-bad) {
-  background: color-mix(in srgb, #d84a4a 25%, var(--color-surface));
+  background: var(--color-danger-background);
+  color: var(--color-danger);
 }
 :deep(.color-good) {
-  background: color-mix(in srgb, #2ca66f 24%, var(--color-surface));
+  background: var(--color-success-background);
+  color: var(--color-success);
 }
 </style>

@@ -1,19 +1,18 @@
 export function getCsrfToken() {
-  const name = 'csrftoken='
-  const decoded = decodeURIComponent(document.cookie)
-  const parts = decoded.split(';')
-  for (let part of parts) {
-    part = part.trim()
-    if (part.startsWith(name)) {
-      return part.substring(name.length)
-    }
-  }
-  return ''
+  return readCookie('csrftoken') || ''
 }
 
 export function readCookie(name) {
-  const value = `; ${document.cookie}`
-  const parts = value.split(`; ${name}=`)
-  if (parts.length === 2) return parts.pop().split(';').shift()
+  const prefix = `${encodeURIComponent(name)}=`
+  for (const part of document.cookie.split(';')) {
+    const cookie = part.trim()
+    if (cookie.startsWith(prefix)) {
+      try {
+        return decodeURIComponent(cookie.slice(prefix.length))
+      } catch {
+        return cookie.slice(prefix.length)
+      }
+    }
+  }
   return null
 }

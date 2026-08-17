@@ -1,18 +1,27 @@
 """Django URL Configuration for QoR Recorder.
 
 包含所有从 Flask 蓝图迁移过来的 URL 路由。
+
+页面层有两种模式 (由 settings.FRONTEND_MODE 控制):
+  - vue   (默认): Vue SPA 构建产物由 Django 直接托管 (轻量单服务部署),
+                   legacy 页面保留在 /legacy/ 前缀下
+  - legacy:        Django 模板渲染的页面
 """
 import os
+from pathlib import Path
 
 from django.conf import settings
-from django.conf.urls.static import static
-from django.urls import path
+from django.urls import path, re_path
+from django.views.static import serve as static_serve
 
 from django_app.api import views as api_views
 from django_app import api_v2
 from django_app.core import views as core_views
 
-urlpatterns = [
+# =========================================================================
+# API 路由 (vue / legacy 两种模式共用)
+# =========================================================================
+api_urlpatterns = [
     path('health/live', api_v2.live, name='liveness'),
     path('health/ready', api_v2.health, name='readiness'),
     path('health', api_v2.health, name='health'),
@@ -27,23 +36,15 @@ urlpatterns = [
          api_v2.violations, name='api_v2_violations'),
     path('api/v2/projects/<int:project_id>/records/<str:record_id>/notes',
          api_v2.notes, name='api_v2_notes'),
-    # =========================================================================
-    # 页面视图
-    # =========================================================================
-    path('', core_views.dashboard, name='dashboard'),
-    # Explicit rollback path retained while Nginx serves the Vue SPA.
-    path('legacy/', core_views.dashboard, name='legacy_dashboard_root'),
-    path('legacy/dashboard/', core_views.dashboard, name='legacy_dashboard'),
-    path('login/', core_views.login_view, name='login'),
-    path('logout/', core_views.logout_view, name='logout'),
-    path('change_password/', core_views.change_password_page, name='change_password_page'),
-    path('dashboard/', core_views.dashboard, name='dashboard'),
-    path('compare/', core_views.compare, name='compare'),
-    path('review/', core_views.review_page, name='review'),
-    path('admin/', core_views.admin_page, name='admin_page'),
-    path('qor_record/<int:record_id>/', core_views.qor_record_detail_page, name='qor_record_detail_page'),
-    path('dbadmin/', core_views.db_admin, name='db_admin'),
-    path('dbadmin/<path:subpath>/', core_views.db_admin, name='db_admin_subpath'),
+    path('api/v2/projects/<int:project_id>/records/<str:record_id>/annotation',
+         api_v2.record_annotation, name='api_v2_record_annotation'),
+    path(
+        'api/v2/projects/<int:project_id>/records/<str:record_id>/annotation/images/<int:image_id>',
+        api_v2.annotation_image,
+        name='api_v2_annotation_image',
+    ),
+    path('api/v2/annotations/batch',
+         api_v2.annotation_batch, name='api_v2_annotation_batch'),
 
     # =========================================================================
     # QoR 数据查询 API
@@ -78,6 +79,13 @@ urlpatterns = [
     path('api/reviews/subsystem/<int:rid>', api_views.subsystem_review_detail, name='subsystem_review_detail'),
     path('api/reviews/subsystem/<int:rid>/submit', api_views.submit_subsystem_review, name='submit_subsystem_review'),
     path('api/reviews/subsystem/<int:rid>/review', api_views.review_subsystem_review, name='review_subsystem_review'),
+    # Project Review is the public name; subsystem routes remain compatible.
+    path('api/reviews/project', api_views.list_subsystem_reviews, name='list_project_reviews'),
+    path('api/reviews/project/<int:rid>', api_views.subsystem_review_detail, name='project_review_detail'),
+    path('api/reviews/project/<int:rid>/submit', api_views.submit_subsystem_review, name='submit_project_review'),
+    path('api/reviews/project/<int:rid>/review', api_views.review_subsystem_review, name='review_project_review'),
+    path('api/reviews/weekly', api_views.weekly_review_overview, name='weekly_review_overview'),
+    path('api/reviews/weekly/star', api_views.weekly_review_star, name='weekly_review_star'),
     path('api/reviews/snapshots', api_views.list_snapshots, name='list_snapshots'),
     path('api/reviews/snapshot/<int:rid>', api_views.snapshot_detail, name='snapshot_detail'),
     path('api/reviews/snapshot/<int:rid>/upload', api_views.upload_snapshot_file, name='upload_snapshot_file'),
@@ -113,6 +121,8 @@ urlpatterns = [
     # =========================================================================
     # Admin API - 备份管理
     # =========================================================================
+    path('api/admin/review-hierarchy/status', api_views.admin_review_hierarchy_status, name='admin_review_hierarchy_status'),
+    path('api/admin/review-hierarchy/module-owner', api_views.admin_review_hierarchy_module_owner, name='admin_review_hierarchy_module_owner'),
     path('api/admin/backups', api_views.admin_list_backups, name='admin_list_backups'),
     path('api/admin/backups/verify', api_views.admin_verify_all_backups, name='admin_verify_all_backups'),
 
@@ -136,12 +146,18 @@ urlpatterns = [
     path('api/admin/upload_csv_preview', api_views.admin_upload_csv_preview, name='admin_upload_csv_preview'),
     path('api/admin/qor/<int:record_id>/release', api_views.admin_toggle_release, name='admin_toggle_release'),
     path('api/admin/qor/<int:record_id>/release_dir', api_views.admin_update_release_dir, name='admin_update_release_dir'),
+    path('api/admin/qor/batch_release_dir', api_views.admin_batch_update_release_dir, name='admin_batch_update_release_dir'),
     path('api/admin/qor/<int:record_id>/description', api_views.admin_update_version_description, name='admin_update_version_description'),
     path('api/admin/qor/batch_release', api_views.admin_batch_release, name='admin_batch_release'),
     path('api/admin/users', api_views.admin_list_users, name='admin_list_users'),
     path('api/admin/users/batch', api_views.admin_batch_create_users, name='admin_batch_create_users'),
     path('api/admin/users/<int:user_id>/reset-password', api_views.admin_reset_user_password, name='admin_reset_user_password'),
-    path('api/admin/user/password', api_views.user_change_own_password, name='user_change_own_password'),
+    path('api/user/password', api_views.user_change_own_password, name='user_change_own_password'),
+    path(
+        'api/admin/user/password',
+        api_views.user_change_own_password,
+        name='admin_user_change_own_password_legacy',
+    ),
 
     # =========================================================================
     # API v1 - 项目
@@ -182,6 +198,7 @@ urlpatterns = [
     # =========================================================================
     path('api/v1/auth/login', api_views.api_v1_login, name='api_v1_login'),
     path('api/v1/auth/me', api_views.api_v1_me, name='api_v1_me'),
+    path('api/v1/auth/logout', api_views.api_v1_logout, name='api_v1_logout'),
 
     # =========================================================================
     # Violations API
@@ -202,10 +219,71 @@ urlpatterns = [
 ]
 
 # =========================================================================
-# 静态文件 (始终在开发模式下提供)
+# Legacy 页面路由 (仅 FRONTEND_MODE=legacy 时使用)
 # =========================================================================
-from django.views.static import serve
-urlpatterns += [
-    path('static/<path:path>', serve, {'document_root': settings.STATIC_ROOT}),
-    path('uploads/<path:path>', serve, {'document_root': settings.MEDIA_ROOT}),
+legacy_page_urlpatterns = [
+    path('', core_views.dashboard, name='dashboard'),
+    path('legacy/', core_views.dashboard, name='legacy_dashboard_root'),
+    path('legacy/dashboard/', core_views.dashboard, name='legacy_dashboard'),
+    path('login/', core_views.login_view, name='login'),
+    path('logout/', core_views.logout_view, name='logout'),
+    path('change_password/', core_views.change_password_page, name='change_password_page'),
+    path('dashboard/', core_views.dashboard, name='dashboard'),
+    path('compare/', core_views.compare, name='compare'),
+    path('review/', core_views.review_page, name='review'),
+    path('admin/', core_views.admin_page, name='admin_page'),
+    path('qor_record/<int:record_id>/', core_views.qor_record_detail_page, name='qor_record_detail_page'),
+    path('dbadmin/', core_views.db_admin, name='db_admin'),
+    path('dbadmin/<path:subpath>/', core_views.db_admin, name='db_admin_subpath'),
 ]
+
+# =========================================================================
+# 静态文件
+# =========================================================================
+static_urlpatterns = [
+    path('static/<path:path>', static_serve, {'document_root': settings.STATIC_ROOT}),
+    path('uploads/<path:path>', static_serve, {'document_root': settings.MEDIA_ROOT}),
+]
+
+# =========================================================================
+# Vue SPA 托管 (FRONTEND_MODE=vue)
+# =========================================================================
+def _vue_spa(request, path=''):
+    """提供 Vue 构建产物: 真实文件直接返回, 其余路径回退到 index.html。"""
+    dist = settings.FRONTEND_DIST_DIR
+    index = dist / 'index.html'
+    if path:
+        target = (dist / path).resolve()
+        try:
+            target.relative_to(dist.resolve())
+        except ValueError:
+            target = dist
+        if target.is_file():
+            return static_serve(request, path, document_root=str(dist))
+    return static_serve(request, 'index.html', document_root=str(dist))
+
+
+# 所有非 API/静态资源路径均回退到 Vue SPA (history fallback)
+_vue_spa_urlpatterns = [
+    path('', _vue_spa, name='spa_root'),
+    re_path(
+        r'^(?P<path>(?!api/|static/|uploads/|health|legacy/|export|tools/|dbadmin/).*)$',
+        _vue_spa,
+        name='spa_fallback',
+    ),
+]
+
+
+if settings.FRONTEND_MODE == 'vue':
+    # 轻量单服务: Django 同时提供 API 与 Vue SPA, 页面层不再走 Django 模板
+    urlpatterns = (
+        api_urlpatterns
+        + _vue_spa_urlpatterns
+        + static_urlpatterns
+    )
+else:
+    urlpatterns = (
+        api_urlpatterns
+        + legacy_page_urlpatterns
+        + static_urlpatterns
+    )

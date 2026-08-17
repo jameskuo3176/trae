@@ -84,4 +84,15 @@ describe('Dashboard Store', () => {
     expect(store.selectedRecords).toHaveLength(1)
     expect(store.selectedRecords[0].name).toBe('a')
   })
+
+  it('keeps duplicate backend ids independently selectable across projects', () => {
+    const store = useDashboardStore()
+    store.setRecords([
+      { id: 1, project_id: 'alpha', name: 'alpha run' },
+      { id: 1, project_id: 'beta', name: 'beta run' }
+    ])
+    store.toggleSelect(store.selectionKey(store.records[0]))
+    expect(store.selectedRecords.map(record => record.name)).toEqual(['alpha run'])
+    expect(store.selectedIds.size).toBe(1)
+  })
 })

@@ -5,6 +5,7 @@ import { dashboardApi } from '@/api/dashboard'
 import { violationsApi } from '@/api/violations'
 import DataTable from '@/components/common/DataTable.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
+import SourceFileLink from '@/components/common/SourceFileLink.vue'
 
 const ViolationDiffPanel = defineAsyncComponent(() => import('./ViolationDiffPanel.vue'))
 const dashboard = useDashboardStore()
@@ -98,9 +99,10 @@ async function loadDiff() {
   loading.value = true
   try {
     diffRows.value = await violationsApi.diff({
-      base_record_id: dashboard.baselineId || dashboard.selectedRecords[0].id,
-      target_record_id: dashboard.selectedRecords.find(r => String(r.id) !== dashboard.baselineId)
-        ?.id
+      base_record_id: dashboard.baselineRecord?.id || dashboard.selectedRecords[0].id,
+      target_record_id: dashboard.selectedRecords.find(
+        record => dashboard.selectionKey(record) !== dashboard.baselineId
+      )?.id
     })
   } catch (requestError) {
     error.value = requestError.message
@@ -189,7 +191,11 @@ watch(group, () => {
       empty-text="Select a module/version run to load violations."
       filename="violations.csv"
       copy-on-click
-    />
+    >
+      <template #cell-source_file="{ row, value }">
+        <SourceFileLink :path="value" :line="row.source_line || row.line" />
+      </template>
+    </DataTable>
   </section>
 </template>
 
@@ -234,7 +240,7 @@ watch(group, () => {
 }
 .error-line {
   padding: 12px;
-  color: #ff8c8c;
+  color: var(--color-danger);
 }
 .violation-chart {
   min-height: 180px;

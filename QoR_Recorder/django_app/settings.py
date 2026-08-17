@@ -38,6 +38,7 @@ UPLOAD_FOLDER = str(Path(
 BACKUP_DIR = str(Path(
     os.environ.get('BACKUP_DIR', str(DATA_DIR / 'backups'))
 ).resolve())
+AUTO_BACKUP_ENABLED = os.environ.get('AUTO_BACKUP_ENABLED', '0') == '1'
 MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB
 
 # 确保数据目录存在
@@ -266,14 +267,19 @@ SECURE_HSTS_PRELOAD = os.environ.get('SECURE_HSTS_PRELOAD', '0') == '1'
 # ===========================================================================
 # CSRF
 # ===========================================================================
-CSRF_COOKIE_HTTPONLY = True
+# Django's documented AJAX contract reads this non-secret cookie and echoes it
+# in X-CSRFToken. The authenticated session cookie remains HttpOnly.
+CSRF_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', '0') == '1'
 # Django expects browser clients to send the cookie token as X-CSRFToken.
 CSRF_HEADER_NAME = 'HTTP_X_CSRFTOKEN'
 CSRF_TRUSTED_ORIGINS = [
     value.strip()
-    for value in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
+    for value in os.environ.get(
+        'CSRF_TRUSTED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173',
+    ).split(',')
     if value.strip()
 ]
 # Trust only the proxy's scheme header; production ingress must overwrite it.
@@ -283,7 +289,10 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # 静态文件 / 媒体文件
 # ===========================================================================
 STATIC_URL = '/static/'
-STATIC_ROOT = str(PARENT_DIR / 'static')
+# collectstatic 输出目录 (生产部署用)
+STATIC_ROOT = str(PARENT_DIR / 'staticfiles')
+# 开发环境直接从源码目录提供静态文件 (echarts 等 vendor 资源)
+STATICFILES_DIRS = [str(PARENT_DIR / 'static')]
 MEDIA_URL = '/uploads/'
 MEDIA_ROOT = UPLOAD_FOLDER
 
@@ -328,6 +337,10 @@ FRONTEND_MODE = os.environ.get('FRONTEND_MODE', 'vue').strip().lower()
 if FRONTEND_MODE not in ('vue', 'legacy'):
     raise RuntimeError('FRONTEND_MODE must be vue or legacy')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', '/').strip() or '/'
+# Vue 构建产物目录 (轻量单服务部署时由 Django 直接托管)
+FRONTEND_DIST_DIR = Path(
+    os.environ.get('FRONTEND_DIST', str(PARENT_DIR.parent / 'frontend-vue' / 'dist'))
+).resolve()
 
 # ===========================================================================
 # 日志

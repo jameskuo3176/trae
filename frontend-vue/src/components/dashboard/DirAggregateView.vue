@@ -130,9 +130,11 @@ const columns = computed(() => [
   gap: 4px;
 }
 :deep(.color-bad) {
-  background: color-mix(in srgb, #d84a4a 25%, var(--color-surface));
+  background: var(--color-danger-background);
+  color: var(--color-danger);
 }
 :deep(.color-good) {
-  background: color-mix(in srgb, #2ca66f 24%, var(--color-surface));
+  background: var(--color-success-background);
+  color: var(--color-success);
 }
 </style>

@@ -5,6 +5,7 @@ defineProps({
   labelMode: { type: String, default: 'both' },
   chartType: { type: String, default: 'bar' },
   tableWidth: { type: Number, default: 0 },
+  tableFontSize: { type: Number, default: 12 },
   activeView: { type: String, default: 'charts' }
 })
 defineEmits([
@@ -13,6 +14,7 @@ defineEmits([
   'update:labelMode',
   'update:chartType',
   'update:tableWidth',
+  'update:tableFontSize',
   'update:activeView'
 ])
 const views = [
@@ -80,6 +82,19 @@ const views = [
         @input="$emit('update:tableWidth', Number($event.target.value))"
       />
       <small>{{ tableWidth || 'auto' }}</small></label
+    >
+    <label
+      ><span>Table font</span>
+      <input
+        type="range"
+        min="10"
+        max="18"
+        step="1"
+        aria-label="Table font size"
+        :value="tableFontSize"
+        @input="$emit('update:tableFontSize', Number($event.target.value))"
+      />
+      <small>{{ tableFontSize }}px</small></label
     >
   </section>
 </template>

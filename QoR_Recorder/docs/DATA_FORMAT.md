@@ -1309,8 +1309,8 @@ A: 优先级: `record.version` > `upload.version`, `record.full_dir` > `upload.f
 ### 6.6.2 字段映射 (DC 报告 → QorRecord)
 
 **核心原则: 1 个 DC 报告 = 1 个 run = 1 条 QorRecord.** run 内的多个 scenarios × path_groups
-全部进 `record.extra.scenarios` 审计; QorRecord 扁平字段 (wns/tns/nvp) 取 `timing.default` 的
-worst-case 聚合.
+全部进 `record.extra.scenarios` 审计; QorRecord 扁平字段取 `timing.default` 聚合:
+WNS 取所有 Path Group 的最小值，TNS 仅累加负值，NVP 求和。
 
 | DC 上游字段 | QorRecord 字段 | 说明 |
 |-------------|----------------|------|
@@ -1463,7 +1463,7 @@ Dashboard 在原"图表区域"之前默认展示 **DC 报告表格视图**:
 - `register_count = misc.fgcg.total_flops` 字段精确断言
 - `raw_dc_report` 字段存储完整 DC JSON (含 top_module/timing/area/misc)
 - `Module` 按 `top_module` 自动创建
-- 聚合正确性 (WNS=min, TNS=min, NVP=sum)
+- 聚合正确性 (WNS=min, TNS=负值求和, NVP=sum)
 - clocks 字段正确性 (取第一个 scenario 的 path_groups)
 - extra.scenarios 全量审计 (2 scenarios × 3 path_groups)
 - 幂等性 (re-upload: saved=0, updated=1)
