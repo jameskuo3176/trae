@@ -1,5 +1,8 @@
 # QoR Recorder 用户使用指南
 
+> **运维入口（部署 / Makefile 上传 / 可视化 / 升级）**：请优先阅读 [`OPERATIONS.md`](OPERATIONS.md)。
+> 生产 Compose / 离线：[`../deploy/README.md`](../deploy/README.md)。数据格式：[`DATA_FORMAT.md`](DATA_FORMAT.md)。
+
 ## 1. 系统简介
 
 QoR Recorder 是一款面向 IC 设计团队的综合质量数据管理系统。它能帮您：
@@ -13,9 +16,11 @@ QoR Recorder 是一款面向 IC 设计团队的综合质量数据管理系统。
 
 ## 2. 快速开始
 
+> Ubuntu 部署、Makefile 上传、可视化与升级的最短路径见 [`OPERATIONS.md`](OPERATIONS.md)。
+
 ### 2.1 访问系统
 
-1. 打开浏览器，访问 `http://<服务器IP>:8000`（Django 默认端口；生产为 `https://qor.example.com`）
+1. 打开浏览器，访问 `http://<服务器IP>:8000`（本机 Gunicorn 默认端口；Compose/Nginx 生产多为 `http://<IP>/` 或 `https://qor.example.com`）
 2. 使用管理员分配的账号登录
 
 **出厂默认账号**（系统首次初始化时创建；生产环境**必须**修改，登录后强制改密）：
@@ -220,22 +225,29 @@ item,description,full_dir
 
 ### 4.7 命令行 / Makefile 自动化上传
 
-适合 DC 综合流程结束后自动上传，无需登录 Web。详细格式见 [DATA_FORMAT.md](DATA_FORMAT.md)。
+适合 DC 综合流程结束后自动上传。完整步骤（API Key、环境变量、Makefile）见 **[`OPERATIONS.md`](OPERATIONS.md) §2**；列格式见 [DATA_FORMAT.md](DATA_FORMAT.md)。
+
+**API Key 前提（与代码一致）**：
+
+- 通过 `POST /api/v1/auth/login` 登录签发（`qor_` 前缀，`read,upload`），**默认约 7 天过期**
+- Vue 管理页**目前没有**「API Key 管理」UI；可用 curl 取 key 写入 `~/.qor_api_key`
+- 强制改密未完成时，API Key 上传会被 403
+- 脚本默认 `QOR_SERVER=http://localhost:5000`，请改成实际地址（应用默认端口多为 **8000**，或经 Nginx 的 HTTPS 域名）
 
 **脚本方式**：
 
 ```bash
-export QOR_API_KEY=qor_xxxxxxxx
+export QOR_API_KEY="$(cat ~/.qor_api_key)"
+export QOR_SERVER=http://127.0.0.1:8000
 ./scripts/upload_qor.sh <project_id> <version> <csv> [data_type] [options]
 
 # data_type: qor (默认) / power / violation / notes
-# --release: 标记为已发布
-# --full-dir <DIR>: Run 目录路径 (notes 类型, 默认 $PWD)
+# --json / --release / --full-dir <DIR> 等见 upload_qor.sh -h
 ```
 
 **Makefile 方式**（推荐用于 DC flow）：
 
-将 `scripts/Makefile.example` 复制到 run 目录，配置变量后：
+将 `scripts/Makefile.example` 复制到 run 目录，配置 `QOR_SERVER` / `PROJECT_ID` / `UPLOAD_SCRIPT` 后：
 
 ```bash
 make upload           # 仅上传 QoR
@@ -457,25 +469,19 @@ TileReview / GroupReview / SubsystemReview / ReviewSnapshot / ReviewFile
 
 ## 7. 数据对比与导出
 
-### 7.1 对比页面
+### 7.1 对比与表格视图（Vue Dashboard）
 
-点击导航栏「对比」进入对比页面，可：
+当前 Vue 前台**没有**独立的「对比」导航路由。跨版本/跨 run 对比在 **`/dashboard`** 内完成，例如：
 
-- 选择多个模块和多个指标
-- 生成对比表格
-- 查看各模块在各指标上的排名
+- DC 报告表格、合并表 / 转置表、目录聚合等视图
+- 违例路径「两 run 对比」模式（见第 6 节）
+- 单条记录页 `/record/<id>` 的同 module+version 横向对比
+
+Legacy 仍保留 `/compare/`（以及 `/legacy/dashboard/`）供回滚验证，日常请用 Vue Dashboard。
 
 ### 7.2 导出数据
 
-在对比页面或 Dashboard 点击「导出」按钮：
-
-1. 选择模块（可多选）
-2. 选择指标（可多选）
-3. 选择版本范围
-4. 选择格式：Excel (.xlsx) 或 CSV
-5. 点击导出，浏览器下载文件
-
-**导出内容**：项目、模块、版本、记录时间 + 选中的指标列。
+在 Dashboard 相关表格/面板中使用导出能力（如 DC 报告 CSV 导出等，以当前界面按钮为准）。API 层另有对比导出端点供程序调用；具体列与格式见 [`DATA_FORMAT.md`](DATA_FORMAT.md) 与开发文档。
 
 ## 8. 个人主题设置
 
@@ -710,33 +716,35 @@ QoR Recorder 提供两级删除：
 - **软删除**：admin → 项目管理 → 删除（设 `status=hidden`），admin → 已隐藏项目 → 恢复
 - **硬删除**：admin → 已隐藏项目 → 硬删除（需输入 `confirm=true`），同时删除对应 `qor_p_<id>.db`
 
-### 11.5 多数据库后端切换（DB_TYPE）
+### 11.5 多数据库后端切换（DB_TYPE + PERSISTENCE_MODE）
 
-通过单一环境变量 `DB_TYPE` 切换后端：
+`DB_TYPE` 控制 Django ORM 元数据后端；`PERSISTENCE_MODE` 控制 QoR 重数据：
 
-| DB_TYPE  | 含义              | 必填额外配置        |
+| DB_TYPE  | 含义（元数据）     | 必填额外配置        |
 |----------|-------------------|---------------------|
 | `sqlite` | SQLite（默认）     | 无                  |
 | `sql`    | MySQL/PostgreSQL  | `DATABASE_URL`      |
-| `mongodb`| MongoDB           | `MONGODB_URI`       |
+| `mongodb`| 元数据仍用 SQLite；重数据默认 `PERSISTENCE_MODE=mongo` | `MONGODB_URI` |
+
+| PERSISTENCE_MODE | 含义 |
+|------------------|------|
+| `mongo`（Compose 默认） | API 读 Mongo；上传镜像写 Mongo（失败则中止） |
+| `orm` | 仅项目 SQLite/SQL |
+| `hybrid` | 迁移过渡：Mongo 优先 + ORM 回退 |
 
 ```bash
-# SQLite (默认)
+# Compose 推荐：元数据 SQLite + 重数据 Mongo
 DB_TYPE=sqlite
+PERSISTENCE_MODE=mongo
+MONGODB_URI=mongodb://mongo:27017
 
-# MySQL
+# MySQL 元数据
 DB_TYPE=sql
 DATABASE_URL=mysql+pymysql://user:pass@localhost:3306/qor_recorder?charset=utf8mb4
-
-# MongoDB
-DB_TYPE=mongodb
-MONGODB_URI=mongodb://localhost:27017
-MONGODB_DB=qor_recorder
+PERSISTENCE_MODE=mongo
 ```
 
-切换后端后执行 `python manage.py migrate` 自动建库/迁移（Django 5.2 配置需包含 `CONN_HEALTH_CHECKS`）。
-
-**注意**：MongoDB 模式下，主库走 SQLite（只读回退），业务库走 Mongo + 双写架构（`PERSISTENCE_MODE=hybrid`）。详见 `docs/MIGRATION_V4.md`（如存在）。
+切换后端后执行 `python manage.py migrate`。历史重数据迁 Mongo：`migrate_global_modules` → `migrate_sqlite_to_mongo`（见 `docs/OPERATIONS.md`）。
 
 ### 11.6 角色权限（v5.0）
 
@@ -775,8 +783,8 @@ MONGODB_DB=qor_recorder
 - 系统管理员：请联系您的团队管理员
 - 数据问题：检查 CSV 格式与编码
 - 功能建议：反馈给开发团队
-- **生产部署**: 参考 [`deploy/README.md`](../deploy/README.md) 与 [`DATA_FORMAT.md`](DATA_FORMAT.md) §20
+- **生产部署 / 上传 / 升级**: 参考 [`OPERATIONS.md`](OPERATIONS.md)、[`deploy/README.md`](../deploy/README.md)、[`DATA_FORMAT.md`](DATA_FORMAT.md) §20
 
 ***
 
-*文档版本：6.0 | 最后更新：2026-08-17（同步 Django 架构 / 账号密码现状）*
+*文档版本：6.1 | 最后更新：2026-08-18（对齐运维文档 OPERATIONS.md / API Key 登录签发）*

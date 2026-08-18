@@ -24,10 +24,12 @@
 > **v4.0 更新（2026-07-28）**:
 > - 引入**按项目分库**架构：每个项目独立 DB 文件 (`qor_p_<id>.db`)，主库只存系统级数据
 > - 引入**多数据库后端**支持：通过 `DB_TYPE` 环境变量一键切换 sqlite / sql (MySQL/PostgreSQL) / mongodb
-> - 引入**MongoDB dual-write** 抽象层：业务库走 Mongo，主库走 SQLite 兜底
+> - 引入 **PERSISTENCE_MODE**（`orm` / `mongo` / `hybrid`）：重数据经 `repositories.py`；Compose 默认 `mongo`（API 只读 Mongo）。`hybrid` 仅迁移过渡。
+> - Django 元数据仍用 SQLite/SQL（不使用 djongo 作 ORM 主库）
 > - 提供 `migrate_to_per_project_db.py` 历史数据迁移工具
 > - 提供 `migrate_sqlite_to_mongo.py` SQLite → MongoDB 迁移工具
-> - `db_init.py --check` 验证配置；`db_init.py --seed` 初始化+demo 数据
+> - 初始化：`python manage.py migrate` + `python manage.py init_default_data`（仓库无 `db_init.py`）
+> - 运维手册：[`OPERATIONS.md`](OPERATIONS.md)
 > - 项目软删除（`status=hidden`）+ 已隐藏项目恢复
 
 > **v3.0 更新（2026-07-28）**:
@@ -184,7 +186,9 @@ with app.app_context():
 | `mongodb`| MongoDB        | `MONGODB_URI`      | 已有 Mongo 基础设施  |
 
 > SQLite 模式下, `data/` 下会同时存在主库 `qor_recorder.db` 和若干 `qor_p_<id>.db`.
-> 切换到 `sql` / `mongodb` 后, 这些业务表合并到对应后端, `qor_p_<id>.db` 不再生成.
+> Compose 推荐：`DB_TYPE=sqlite` + `PERSISTENCE_MODE=mongo` — 元数据/评审仍在 SQLite；
+> QoR 重数据以 Mongo 为准（API v2）。项目库仍会生成（模块/评审/导入兼容行），但日常读路径不依赖其中的重数据副本。
+> `DB_TYPE=sql` 时元数据进 MySQL/PostgreSQL；Django 从不把 Mongo 当作完整 ORM 主库。
 
 ---
 
@@ -192,30 +196,39 @@ with app.app_context():
 
 ### 2.0 API Key 准备（必读, 实际部署第一步）
 
-`upload_qor.sh` / curl / Makefile 都依赖 API Key 认证. 部署完成后:
+`upload_qor.sh` / curl / Makefile 都依赖 API Key 认证。
 
-1. 用 admin 登录 Web 界面
-2. 进入「管理 → API Key 管理」或访问 `/admin#apikeys`
-3. 点击「创建 API Key」, 输入名称 (如 `dc-bot`), 选择 scope:
-   - `upload`: 可调用 `/api/v1/upload`, `/api/v1/qor/upload`
-   - `read`: 只能查询, 不能上传
-4. **保存生成的 key**（格式 `qor_xxxxxxxx`）, 仅显示一次
-5. 写入 CI / Makefile 环境:
+**当前实现（以代码为准）**：
+
+- 登录 `POST /api/v1/auth/login` 成功后签发明文 key（前缀 `qor_`），`scopes=read,upload`，**默认 7 天过期**
+- 浏览器登录后前端会持久化该 key（localStorage `qor-auth`）
+- 后端提供 `GET /api/v1/apikeys`（列出）与撤销接口；**Vue `/admin` 目前没有「API Key 管理」页面**（勿按旧文档找「管理 → API Key」）
+- 运维步骤汇总见 [`OPERATIONS.md`](OPERATIONS.md) §2
+
+推荐用 curl 取 key 后写入文件：
 
 ```bash
-# 方式 A: 环境变量
-export QOR_API_KEY=qor_xxxxxxxxxxxxxxxx
-
-# 方式 B: 文件 (推荐, 避免泄漏到 shell history)
-echo "qor_xxxxxxxxxxxxxxxx" > ~/.qor_api_key
+SERVER=http://127.0.0.1:8000   # 按实际入口修改；应用默认端口 8000
+RESP=$(curl -sS -X POST "$SERVER/api/v1/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"你的用户名","password":"你的密码"}')
+echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['api_key'])" \
+  > ~/.qor_api_key
 chmod 600 ~/.qor_api_key
+
+# 方式 A: 环境变量
+export QOR_API_KEY="$(cat ~/.qor_api_key)"
+export QOR_SERVER="$SERVER"
+
+# 方式 B: 仅文件（Makefile.example 默认读 ~/.qor_api_key）
 ```
 
 **API Key 与 CSRF**:
 
 - 带 `X-API-Key` 的请求**跳过 CSRF 校验**, 适合 DC 流程后台调用
-- 仅 session 认证 (浏览器) 的请求**仍需 CSRF token** (前端 `AppUI.api()` 自动注入)
+- 仅 session 认证 (浏览器) 的请求**仍需 CSRF token** (前端自动注入 `X-CSRFToken`)
 - 若 `user.must_change_password=True`, 即使 API Key 也被 403 拒绝, 必须先改密
+- key 过期后重新登录即可获得新 key
 
 ### 2.1 方式 A：脚本（推荐用于 Makefile / CI）
 
@@ -236,7 +249,7 @@ chmod 600 ~/.qor_api_key
 | 变量            | 必填 | 默认值                  | 说明                                   |
 |-----------------|------|-------------------------|----------------------------------------|
 | `QOR_API_KEY`   | ✅   | -                       | API Key（格式 `qor_xxxxxxxx`）         |
-| `QOR_SERVER`    | -    | `http://localhost:5000` | 服务器地址                             |
+| `QOR_SERVER`    | -    | `http://localhost:5000` | 服务器地址（**请改为实际入口**；应用默认多为 `:8000`） |
 | `QOR_MODULE_ID` | -    | -                       | 模块 ID（不传则从 CSV 的 module_name 识别） |
 | `QOR_RELEASE`   | -    | `0`                     | 设为 `1` 等同 `--release`              |
 | `QOR_FULL_DIR`  | -    | -                       | 等同 `--full-dir`                      |
@@ -1555,11 +1568,12 @@ DELETE /api/modules/<id>/collaborators/<user_id>
 # 1. 健康检查
 curl -s http://<host>:5000/health   # 应返回 200
 
-# 2. 验证 API Key 有效
-curl -s -H "X-API-Key: qor_xxx" http://<host>:5000/api/v1/projects
+# 2. 验证 API Key 有效（端口按实际；Compose 经 Nginx 通常为 80）
+curl -s -H "X-API-Key: qor_xxx" http://<host>:8000/api/v1/projects
 
-# 3. 检查数据库连通 (使用 db_init.py 内置校验)
-python db_init.py --check
+# 3. 检查 Django 配置
+python manage.py check
+python manage.py migrate --check
 # 期望输出: DB_TYPE + DATABASE_URL + 各项目 DB 文件存在性
 
 # 4. 检查项目库生成情况
@@ -1587,7 +1601,7 @@ ls -la data/qor_p_*.db   # 应有 1 个主库 + N 个项目库
 | `/api/v1/admin/projects/<id>/hard_delete`  | POST | admin   | 硬删除项目（confirm=true）        |
 | `/api/v1/admin/projects/<id>/restore`      | POST | admin   | 恢复软删除项目                    |
 | `/api/v1/locks`                            | GET/POST/DELETE | upload | 数据锁管理                |
-| `/api/v1/apikeys`                          | GET/POST/DELETE | read | API Key 管理                 |
+| `/api/v1/apikeys`                          | GET / 撤销 | 登录用户 | 列出/撤销自己的 Key；**新建主要靠登录签发**（无独立创建 UI） |
 | `/api/v1/alerts/rules`                     | GET/POST/DELETE | upload | 告警规则管理               |
 | `/api/v1/alerts/events`                    | GET  | read    | 告警事件                          |
 | `/api/run_notes`                           | GET  | read    | 获取 Run 备注                     |
@@ -2059,51 +2073,35 @@ GET /review
 
 ### 20.2 部署步骤（精简版）
 
+> **完整可操作步骤（中文）**：[`OPERATIONS.md`](OPERATIONS.md) §1。
+> Docker Compose / 离线镜像：[`../deploy/README.md`](../deploy/README.md)。
+> 仓库**没有** `db_init.py`；Nginx 示例为 `deploy/nginx.conf`（非 `deploy/nginx/`）。
+
 ```bash
-# 1. 创建用户与目录
-sudo useradd -r -s /sbin/nologin -M -d /opt/qor_recorder qor
-sudo mkdir -p /opt/qor_recorder && sudo chown qor:qor /opt/qor_recorder
+# —— 推荐：Docker Compose（在 QoR_Recorder/ 下）——
+cp .env.example .env   # 设置 SECRET_KEY、ALLOWED_HOSTS 等
+docker compose build && docker compose up -d
+curl -s http://localhost/health
 
-# 2. 部署代码
+# —— 或：systemd 本机（路径与 deploy/qor_recorder.service 一致）——
+# 1. 用户与目录
+sudo useradd -r -s /sbin/nologin -M -d /opt/qor_recorder qor || true
+sudo mkdir -p /opt/qor_recorder/{data,uploads,backups,logs,mongodbdir}
+# 2. 部署 QoR_Recorder 代码到 /opt/qor_recorder，chown qor:qor
+# 3. venv + 依赖（start.sh 不会自动 pip install）
 cd /opt/qor_recorder
-sudo -u qor git clone <your-repo-url> .
-
-# 3. 安装依赖
 sudo -u qor python3 -m venv venv
 sudo -u qor bash -c 'source venv/bin/activate && pip install -r requirements.txt'
-
-# 4. 写 .env (关键 4 项)
+# 4. .env（SECRET_KEY、HOST=127.0.0.1、PORT=8000、DEBUG=0 …）
 sudo -u qor cp .env.example .env
-SECRET=$(openssl rand -hex 32)
-sudo -u qor bash -c "cat >> .env <<EOF
-SECRET_KEY=$SECRET
-HOST=127.0.0.1
-DEBUG=0
-SESSION_COOKIE_SECURE=1
-DB_TYPE=sqlite
-EOF"
-
-# 5. 创建数据/上传/备份目录
-sudo -u qor mkdir -p data uploads backups logs
-
-# 6. 初始化数据库 (含 admin/release/viewer 默认账户)
-sudo -u qor bash -c 'source venv/bin/activate && python db_init.py'
-
-# 7. 安装 systemd 单元
-sudo cp deploy/qor_recorder.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now qor_recorder
-
-# 8. 配置 Nginx 反代 (参考 deploy/README.md §7)
-sudo cp deploy/nginx/qor_recorder.conf /etc/nginx/conf.d/
-sudo nginx -t && sudo systemctl reload nginx
-
-# 9. (可选) 配置 HTTPS 证书
-sudo certbot --nginx -d qor.example.com
-
-# 10. 验证
-curl -s http://localhost/health
-curl -s -H "X-API-Key: $(cat /home/qor/.qor_api_key)" http://localhost/api/v1/projects
+# 5. 迁移 + 默认账号（admin/user/release/viewer）
+sudo -u qor bash -c 'source venv/bin/activate && python manage.py migrate --noinput'
+sudo -u qor bash -c 'source venv/bin/activate && python manage.py init_default_data'
+# 6. 构建 frontend-vue/dist，并配置 FRONTEND_DIST 或 Nginx root
+# 7. systemd + Nginx（upstream 改为 127.0.0.1:8000，参考 deploy/nginx.conf）
+sudo install -m 0644 deploy/qor_recorder.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now qor_recorder
+curl -s http://127.0.0.1:8000/health
 ```
 
 ### 20.3 应用管理员（IC 团队）首次使用
@@ -2115,34 +2113,33 @@ curl -s -H "X-API-Key: $(cat /home/qor/.qor_api_key)" http://localhost/api/v1/pr
 #    admin  / admin@2026   → 强密码
 #    release / release@2026 → 强密码
 #    viewer  / viewer@2026  → 强密码
-#    (首次登录强制跳转 /change_password)
+#    (强制改密；改密前写操作/API 上传均 403)
 
-# 2. 创建 API Key (用于 DC 流程自动化上传)
-#    管理 → API Key → 创建 → name=dc-bot, scope=upload
-#    保存到:
-#    echo "qor_xxx" > /home/dc/.qor_api_key && chmod 600 /home/dc/.qor_api_key
+# 2. 获取 API Key（登录签发，约 7 天有效；无 Admin「API Key」页）
+#    curl POST /api/v1/auth/login → 取响应中的 api_key
+#    echo "qor_xxx" > ~/.qor_api_key && chmod 600 ~/.qor_api_key
+#    详见 OPERATIONS.md §2.1
 
 # 3. 创建项目 (与 IC 项目代号一致)
-#    管理 → 项目 → 新建
-#    自动生成 qor_p_<id>.db
+#    /admin → 项目管理 → 新建 → 自动生成项目库文件
 
 # 4. 创建模块 (与 RTL 顶层模块名一致)
-#    管理 → 项目 → 进入 → 模块 → 新建
-#    填写 owner_id (数据归属人) + collaborators (协作者)
+#    /admin → 模块管理 → 新建；配置 owner / 协作者
 
 # 5. 邀请协作者 / 客户
-#    协作者: 创建 owner 角色用户, 在模块中授权
-#    客户:   创建 viewer 角色用户, 推已发布数据后, 仅 viewer 可见
+#    协作者: owner 用户 + 模块授权
+#    客户: viewer 用户；仅可见 is_released=True 的数据
 ```
 
 ### 20.4 业务用户（综合工程师）集成
 
-将 `scripts/Makefile.example` 复制到 DC run 目录, 修改 `PROJECT_ID` / `API_KEY_FILE`:
+将 `scripts/Makefile.example` 复制到 DC run 目录, 修改 `PROJECT_ID` / `API_KEY_FILE` / `QOR_SERVER`（脚本默认端口 5000，应用多为 **8000** 或 Nginx 域名）：
 
 ```makefile
 # Makefile (简化)
 PROJECT_ID = 1
 API_KEY_FILE = /home/dc/.qor_api_key
+QOR_SERVER = https://qor.example.com
 UPLOAD_SCRIPT = /opt/qor_recorder/scripts/upload_qor.sh
 QOR_CSV = $(PWD)/qor_report.csv
 VIOLATION_CSVS = $(wildcard $(PWD)/violations/*_violations.csv)
@@ -2150,6 +2147,7 @@ RUN_DIR = $(PWD)
 ```
 
 ```bash
+# 先按 OPERATIONS.md §2.1 登录签发 API Key（约 7 天），写入 API_KEY_FILE
 # DC 综合流程结束后
 make upload-all   # 上传 QoR + 功耗 + 违例 + 备注
 make release      # 上传并标记为已发布 (对外可见)
@@ -2220,6 +2218,6 @@ sudo systemctl start qor_recorder
 
 ---
 
-**文档版本**: 5.0
-**最后更新**: 2026-07-30（v5.0: 三级角色模型 + 模块协作 + 时钟多选）
+**文档版本**: 5.1
+**最后更新**: 2026-08-18（对齐 Django 部署命令 / 登录签发 API Key / 链接 OPERATIONS.md）
 **维护**: QoR Recorder Team

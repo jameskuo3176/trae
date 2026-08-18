@@ -1,6 +1,9 @@
 # QoR Recorder production and offline deployment
 
-The production stack is Django/Gunicorn + MongoDB + Nginx/Vue. The canonical
+> **中文运维手册**（Ubuntu 部署、Makefile 上传、前台/后台、可视化、升级）：
+> [`docs/OPERATIONS.md`](../docs/OPERATIONS.md)
+
+The production stack is Django/Gunicorn + PostgreSQL + MongoDB + Nginx/Vue. The canonical
 Vue source is the repository-level `frontend-vue/` directory. The image build
 copies its compiled `dist/` into the Nginx image; it does not create another
 source tree.
@@ -15,7 +18,7 @@ cp .env.example .env
 docker compose build
 docker compose up -d
 docker compose ps
-docker compose logs -f django nginx mongo
+docker compose logs -f django nginx postgres mongo
 ```
 
 `docker-compose.yml` deliberately uses repository root (`..`) as its build
@@ -24,13 +27,14 @@ sibling `frontend-vue/` source if the context is only `QoR_Recorder/`.
 
 Persistent host directories are:
 
-- `data/`: relational SQLite/global and per-project databases
+- `postgres_data` named volume: Django users/projects/permissions/review metadata
+- `data/`: retained legacy SQLite inputs only; the default runtime does not create project DB files
 - `uploads/`: uploaded/review files
 - `backups/`: application-created backups
 - `mongodbdir/`: MongoDB files (all ignored except its README)
 
-Back up all four directories together while writers are stopped, or use the
-application backup plus `mongodump` for a consistent online backup. Never run
+Back up PostgreSQL with `pg_dump`, Mongo with `mongodump`, and uploads together
+while writers are stopped (or under a coordinated snapshot). Never run
 `docker compose down -v` as a backup procedure.
 
 The public endpoint is Nginx on `HTTP_PORT` (default 80). Django and MongoDB
@@ -39,15 +43,39 @@ have no host port. Nginx serves Vue with history fallback and proxies `/api`,
 
 ## Persistence and frontend cutover
 
-`PERSISTENCE_MODE` controls heavy QoR records:
+Two layers (do not conflate `DB_TYPE` with heavy-record storage):
 
-- `orm`: relational/project SQLite only
-- `mongo`: MongoDB only for heavy records
-- `hybrid`: MongoDB first with ORM compatibility fallback
+| Layer | Store | Contents |
+|-------|-------|----------|
+| Django ORM (`DB_TYPE`) | PostgreSQL (Compose default) | Users, projects, permissions, module metadata, reviews, dashboard config |
+| Heavy QoR (`PERSISTENCE_MODE`) | MongoDB (Compose default `mongo`) | Records, raw reports, violations, run notes |
 
-Reviews and configuration remain relational. Compose defaults to `hybrid`;
-set the value explicitly in production. Mongo is `mongodb://mongo:27017`
-inside Compose.
+`PERSISTENCE_MODE` values:
+
+- `mongo` (**Compose default**): API v2 reads Mongo; project SQLite creation/routing is disabled
+- `orm`: relational/project SQLite only (no Mongo)
+- `hybrid`: Mongo-first reads with ORM fallback; best-effort Mongo mirror — **cutover only**, not a long-term default
+
+Django does not use Mongo as a full ORM primary database (no djongo). Compose uses
+`DB_TYPE=sql` (PostgreSQL) for metadata and `PERSISTENCE_MODE=mongo` for heavy data. Mongo
+URI inside Compose is `mongodb://mongo:27017`.
+
+After stopping writers and backing up SQLite, migrate the main metadata database,
+then canonical modules and project heavy rows:
+
+```bash
+docker compose exec django python manage.py migrate
+docker compose exec django python manage.py migrate_sqlite_metadata_to_postgres --source /app/data/qor_recorder.db
+docker compose exec django python manage.py migrate_sqlite_metadata_to_postgres --source /app/data/qor_recorder.db --execute
+docker compose exec django python manage.py migrate_project_metadata_to_postgres
+docker compose exec django python manage.py migrate_project_metadata_to_postgres --execute
+docker compose exec django python manage.py migrate_global_modules
+docker compose exec django python manage.py migrate_global_modules --execute
+docker compose exec django python manage.py migrate_sqlite_to_mongo
+docker compose exec django python manage.py migrate_sqlite_to_mongo --execute
+```
+
+See `docs/FINAL_MIGRATION_RUNBOOK.md` and `docs/OPERATIONS.md`.
 
 Vue is the default production frontend. The Django template is intentionally
 retained at `/legacy/dashboard/` for rollback verification. `FRONTEND_MODE`
@@ -101,7 +129,7 @@ There are no CDN or runtime package downloads. Prepare artifacts on a connected
 machine with the same CPU architecture and OS family:
 
 1. Pull the pinned base/service images (`node:20-alpine`,
-   `python:3.11-slim`, `nginx:1.27-alpine`, `mongo:7.0`) and export them with
+   `python:3.11-slim`, `nginx:1.27-alpine`, `postgres:16-alpine`, `mongo:7.0`) and export them with
    `docker save`.
 2. Build `qor-recorder-django` and `qor-recorder-web` while package registries
    are available, then export those final images. This is the preferred and
@@ -141,7 +169,8 @@ a registry in the offline environment.
 
 ## Upgrade and checks
 
-Before upgrading, back up relational data, uploads, backups, and MongoDB. Build
+Before upgrading, run `pg_dump`, `mongodump`, and back up uploads plus retained
+legacy SQLite inputs. Build
 new images without stopping the old stack, then run:
 
 ```bash
