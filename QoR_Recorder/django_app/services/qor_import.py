@@ -50,8 +50,14 @@ def associate_global_module(project, legacy_module):
 
 
 def mirror_heavy_document(project_id, instance):
-    """Best-effort Mongo side of hybrid writes after the ORM save succeeds."""
-    if getattr(settings, 'PERSISTENCE_MODE', 'orm') == 'orm':
+    """Mirror heavy ORM rows into Mongo after the relational save succeeds.
+
+    - orm: no-op
+    - mongo: Mongo is required for API v2; failures propagate
+    - hybrid: best-effort mirror so ORM remains readable during Mongo outages
+    """
+    mode = getattr(settings, 'PERSISTENCE_MODE', 'orm')
+    if mode == 'orm':
         return
     try:
         from django_app.repositories import get_record_repository
@@ -83,10 +89,15 @@ def mirror_heavy_document(project_id, instance):
             })
             value.pop('qor_record_id', None)
             repository.upsert_note(value)
-    except Exception:
-        # Hybrid mode keeps the relational write available during Mongo outages.
+    except Exception as exc:
         _log.exception('Mongo mirror failed for %s id=%s', type(instance).__name__, instance.pk)
-
+        if mode == 'mongo':
+            from django_app.repositories import RepositoryError
+            raise RepositoryError(
+                f'Mongo write required under PERSISTENCE_MODE=mongo '
+                f'({type(instance).__name__} id={instance.pk})'
+            ) from exc
+        # hybrid: keep the relational write available during Mongo outages.
 
 # ---------------------------------------------------------------------------
 # 路径规范化: 校验 full_dir / release_dir 是否为绝对路径
@@ -643,6 +654,9 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                 mirror_heavy_document(project.id, qor)
                 saved_count += 1
         except Exception as e:
+            from django_app.repositories import RepositoryError
+            if isinstance(e, RepositoryError):
+                raise
             import traceback
             _log.error("save_records_to_db: 处理记录时出错 - record keys: %s, error: %s, traceback: %s",
                        list(record.keys())[:10] if record else 'N/A', str(e), traceback.format_exc())
@@ -844,7 +858,10 @@ def save_violations_to_db(records, project, module_id, version, source_filename,
             vp.save()
             mirror_heavy_document(project.id, vp)
             saved_count += 1
-        except Exception:
+        except Exception as e:
+            from django_app.repositories import RepositoryError
+            if isinstance(e, RepositoryError):
+                raise
             skipped_count += 1
             continue
 
@@ -962,7 +979,10 @@ def save_notes_to_db(records, project, module_id, version, source_filename, full
             note.save()
             mirror_heavy_document(project.id, note)
             saved_count += 1
-        except Exception:
+        except Exception as e:
+            from django_app.repositories import RepositoryError
+            if isinstance(e, RepositoryError):
+                raise
             skipped_count += 1
             continue
 

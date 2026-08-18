@@ -71,9 +71,21 @@ def project_db_path(project_id):
     return legacy_path
 
 
-def _get_project_db_alias(project_id):
-    """返回项目 DB 的 Django 连接别名"""
+def _get_legacy_project_db_alias(project_id):
+    """Return the explicit legacy SQLite alias used by migration tools."""
     return f'project_{project_id}'
+
+
+def _uses_legacy_project_databases():
+    """Only compatibility modes are allowed to touch project SQLite at runtime."""
+    return getattr(settings, 'PERSISTENCE_MODE', 'mongo') in ('orm', 'hybrid')
+
+
+def _get_project_db_alias(project_id):
+    """Return the runtime alias; Mongo steady state keeps relations in PostgreSQL."""
+    if not _uses_legacy_project_databases():
+        return 'default'
+    return _get_legacy_project_db_alias(project_id)
 
 
 # =========================================================================
@@ -84,7 +96,17 @@ def get_project_engine(project_id):
 
     返回 Django 连接别名对应的 engine。
     """
-    alias = _get_project_db_alias(project_id)
+    if not _uses_legacy_project_databases():
+        return connections['default']
+    path = project_db_path(project_id)
+    if not os.path.exists(path):
+        create_project_db(project_id)
+    return get_legacy_project_engine(project_id)
+
+
+def get_legacy_project_engine(project_id):
+    """Open an existing project SQLite database for migration/compatibility."""
+    alias = _get_legacy_project_db_alias(project_id)
 
     # 检查是否已在 Django connections 中注册
     if alias in connections.databases:
@@ -92,8 +114,10 @@ def get_project_engine(project_id):
 
     path = project_db_path(project_id)
     if not os.path.exists(path):
-        # 自动创建项目 DB
-        create_project_db(project_id)
+        raise OperationalError(
+            f'Legacy project database does not exist: {path}. '
+            'Mongo mode never creates project SQLite files.'
+        )
 
     # 动态注册到 Django connections
     with _lock:
@@ -130,6 +154,11 @@ def create_project_db(project_id):
     ORM 创建项目模型对应的表。
     """
     path = project_db_path(project_id)
+    if not _uses_legacy_project_databases():
+        raise OperationalError(
+            'Project SQLite creation is disabled in mongo mode; '
+            'use PostgreSQL metadata and MongoDB heavy storage.'
+        )
     with _lock:
         if os.path.exists(path):
             return path
@@ -145,7 +174,7 @@ def create_project_db(project_id):
         conn.close()
 
         # 2. 注册到 Django 并创建表
-        alias = _get_project_db_alias(project_id)
+        alias = _get_legacy_project_db_alias(project_id)
         connections.databases[alias] = {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': path,
@@ -326,6 +355,8 @@ class ProjectDBRouter:
         """
         project_model_names = {name.lower() for name in PROJECT_MODEL_NAMES}
         if db == 'default':
+            if not _uses_legacy_project_databases():
+                return True
             if app_label == 'core' and model_name:
                 return model_name.lower() not in project_model_names
             return True

@@ -1,6 +1,8 @@
 """Persistence boundary for heavy QoR data.
 
-Reviews and configuration intentionally remain in Django's relational ORM.
+Reviews, users, projects, and configuration remain in Django's relational ORM
+(SQLite or SQL). Heavy QoR rows (records / raw reports / violations / notes)
+are selected via PERSISTENCE_MODE: orm | mongo | hybrid.
 """
 from __future__ import annotations
 
@@ -9,7 +11,9 @@ from typing import Any, Mapping, Protocol
 
 from django.conf import settings
 
-from django_app.core.db_routing import _get_project_db_alias, get_project_engine
+from django_app.core.db_routing import (
+    _get_legacy_project_db_alias, get_legacy_project_engine,
+)
 
 log = logging.getLogger(__name__)
 
@@ -43,8 +47,8 @@ def _global_id(project_id: int, legacy_module_id: int) -> int | None:
 class ORMRecordRepository:
     """Compatibility adapter over existing per-project SQLite rows."""
     def _alias(self, project_id: int) -> str:
-        get_project_engine(project_id)
-        return _get_project_db_alias(project_id)
+        get_legacy_project_engine(project_id)
+        return _get_legacy_project_db_alias(project_id)
 
     def _document(self, project_id: int, record) -> dict:
         value = record.to_dict()
@@ -216,10 +220,19 @@ class MongoRecordRepository:
     def upsert_record(self, document):
         value = dict(document)
         raw = value.pop('raw_dc_report', None)
-        identity = {
-            'project_id': value['project_id'],
-            'legacy_id': str(value.get('legacy_id') or value.get('id')),
-        }
+        legacy_id = value.get('legacy_id') or value.get('id')
+        if legacy_id not in (None, ''):
+            identity = {
+                'project_id': value['project_id'],
+                'legacy_id': str(legacy_id),
+            }
+        else:
+            identity = {
+                'project_id': value['project_id'],
+                'module_id': value.get('module_id'),
+                'version': value.get('version'),
+                'full_dir': value.get('full_dir') or '',
+            }
         value.pop('id', None)
         result = self.db.qor_records.update_one(identity, {'$set': value}, upsert=True)
         row = self.db.qor_records.find_one(identity, {'_id': 1})
@@ -240,14 +253,33 @@ class MongoRecordRepository:
     def _upsert_child(self, collection_name, document):
         value = dict(document)
         value['record_id'] = self._record_reference(value['project_id'], value['record_id'])
-        legacy_id = str(value.pop('id', value.get('legacy_id', '')))
-        value['legacy_id'] = legacy_id
+        legacy_id = value.pop('id', value.get('legacy_id'))
+        if legacy_id not in (None, ''):
+            legacy_id = str(legacy_id)
+            value['legacy_id'] = legacy_id
+            identity = {'project_id': value['project_id'], 'legacy_id': legacy_id}
+        elif collection_name == 'violation_paths':
+            identity = {
+                'project_id': value['project_id'],
+                'record_id': value['record_id'],
+                'timing_group': value.get('timing_group') or '',
+                'startpoint': value.get('startpoint') or '',
+                'endpoint': value.get('endpoint') or '',
+            }
+        else:
+            identity = {
+                'project_id': value['project_id'],
+                'record_id': value['record_id'],
+                'full_dir': value.get('full_dir') or '',
+                'seq': value.get('seq', 0),
+                'item': value.get('item') or '',
+            }
         result = self.db[collection_name].update_one(
-            {'project_id': value['project_id'], 'legacy_id': legacy_id},
+            identity,
             {'$set': value}, upsert=True,
         )
         row = self.db[collection_name].find_one(
-            {'project_id': value['project_id'], 'legacy_id': legacy_id}, {'_id': 1}
+            identity, {'_id': 1}
         )
         return str(row['_id'])
 
@@ -259,7 +291,11 @@ class MongoRecordRepository:
 
 
 class HybridRecordRepository:
-    """Mongo-primary reads and dual writes with explicit failure reporting."""
+    """Cutover adapter: Mongo-primary reads, dual writes via import mirror.
+
+    Prefer PERSISTENCE_MODE=mongo for steady state; keep hybrid only while
+    migrating historical ORM rows.
+    """
     def __init__(self, orm=None, mongo=None):
         self.orm = orm or ORMRecordRepository()
         self.mongo = mongo or MongoRecordRepository()
