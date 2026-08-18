@@ -11,8 +11,8 @@ from django.db.migrations.recorder import MigrationRecorder
 
 from django_app.core.db_routing import (
     PROJECT_MODEL_NAMES,
-    _get_project_db_alias,
-    get_project_engine,
+    _get_legacy_project_db_alias,
+    get_legacy_project_engine,
     project_db_path,
 )
 from django_app.core.models import Project
@@ -316,8 +316,8 @@ class Command(BaseCommand):
                 raise CommandError(
                     f'Project {project.id} database does not exist: {path}'
                 )
-            connection = get_project_engine(project.id)
-            alias = _get_project_db_alias(project.id)
+            connection = get_legacy_project_engine(project.id)
+            alias = _get_legacy_project_db_alias(project.id)
             initial_models = _migration_models(
                 connection,
                 CORE_INITIAL[1],

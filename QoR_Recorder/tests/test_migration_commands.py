@@ -13,6 +13,7 @@ from django_app.core.management.commands.migrate_project_databases import (
     _normalize_legacy_nulls,
 )
 from django_app.core.models import GlobalModule
+from django_app.core.db_routing import _get_project_db_alias, get_project_engine
 
 
 @pytest.mark.django_db
@@ -28,6 +29,30 @@ def test_sqlite_to_mongo_dry_run_does_not_connect():
     output = StringIO()
     call_command('migrate_sqlite_to_mongo', stdout=output)
     assert 'DRY-RUN' in output.getvalue()
+
+
+def test_postgresql_url_settings_are_parsed_without_sqlite_fallback(monkeypatch):
+    from django_app import settings as app_settings
+
+    monkeypatch.setattr(app_settings, 'DB_TYPE', app_settings.DB_TYPE_SQL)
+    monkeypatch.setenv(
+        'DATABASE_URL',
+        'postgresql://qor:p%40ss@db.internal:55432/qor_meta?sslmode=require',
+    )
+    config = app_settings._build_database_config()['default']
+    assert config['ENGINE'] == 'django.db.backends.postgresql'
+    assert config['NAME'] == 'qor_meta'
+    assert config['PASSWORD'] == 'p@ss'
+    assert config['HOST'] == 'db.internal'
+    assert config['PORT'] == '55432'
+    assert config['OPTIONS'] == {'sslmode': 'require'}
+
+
+@pytest.mark.django_db
+def test_mongo_runtime_routes_project_models_to_relational_default(settings):
+    settings.PERSISTENCE_MODE = 'mongo'
+    assert _get_project_db_alias(123) == 'default'
+    assert get_project_engine(123).alias == 'default'
 
 
 @pytest.mark.django_db(transaction=True)
