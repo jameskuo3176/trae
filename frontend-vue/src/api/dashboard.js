@@ -26,6 +26,14 @@ export const dashboardApi = {
   record(projectId, recordId, signal) {
     return apiClient.get(`/v2/projects/${projectId}/records/${recordId}`, { signal }).then(unwrap)
   },
+  setRisk(projectId, recordId, rating) {
+    return apiClient
+      .put(`/v2/projects/${projectId}/records/${recordId}/risk`, { rating })
+      .then(unwrap)
+  },
+  clearRisk(projectId, recordId) {
+    return apiClient.delete(`/v2/projects/${projectId}/records/${recordId}/risk`).then(unwrap)
+  },
   rawReport(projectId, recordId, signal) {
     return apiClient
       .get(`/v2/projects/${projectId}/records/${recordId}/raw`, { signal })

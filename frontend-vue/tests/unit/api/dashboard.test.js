@@ -3,7 +3,7 @@ import apiClient from '@/api/client'
 import { dashboardApi } from '@/api/dashboard'
 
 vi.mock('@/api/client', () => ({
-  default: { get: vi.fn(), post: vi.fn() }
+  default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }
 }))
 
 describe('dashboard API contract', () => {
@@ -36,9 +36,20 @@ describe('dashboard API contract', () => {
     })
 
     await expect(dashboardApi.rawReport(5, '30')).resolves.toEqual(raw)
-    expect(apiClient.get).toHaveBeenCalledWith(
-      '/v2/projects/5/records/30/raw',
-      { signal: undefined }
-    )
+    expect(apiClient.get).toHaveBeenCalledWith('/v2/projects/5/records/30/raw', {
+      signal: undefined
+    })
+  })
+
+  it('sets and clears a record risk judgement', async () => {
+    apiClient.put.mockResolvedValue({ data: { data: { rating: 'high' } } })
+    apiClient.delete.mockResolvedValue({ data: { data: { rating: 'medium' } } })
+
+    await expect(dashboardApi.setRisk(5, '30', 'high')).resolves.toEqual({ rating: 'high' })
+    await expect(dashboardApi.clearRisk(5, '30')).resolves.toEqual({ rating: 'medium' })
+    expect(apiClient.put).toHaveBeenCalledWith('/v2/projects/5/records/30/risk', {
+      rating: 'high'
+    })
+    expect(apiClient.delete).toHaveBeenCalledWith('/v2/projects/5/records/30/risk')
   })
 })

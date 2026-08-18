@@ -35,6 +35,17 @@ describe('weekly review API contract', () => {
     expect(apiClient.post).toHaveBeenCalledWith('/reviews/project', { project_id: 4 })
   })
 
+  it('uses the shared record risk endpoint for manual judgement', async () => {
+    apiClient.put.mockResolvedValue({ data: { data: { rating: 'low' } } })
+    apiClient.delete.mockResolvedValue({ data: { data: { rating: 'medium' } } })
+    await reviewApi.setRisk(4, 12, 'low')
+    await reviewApi.clearRisk(4, 12)
+    expect(apiClient.put).toHaveBeenCalledWith('/v2/projects/4/records/12/risk', {
+      rating: 'low'
+    })
+    expect(apiClient.delete).toHaveBeenCalledWith('/v2/projects/4/records/12/risk')
+  })
+
   it('scopes every detail and workflow action by project id', async () => {
     apiClient.get.mockResolvedValue({ data: { id: 1 } })
     apiClient.post.mockResolvedValue({ data: { id: 1 } })

@@ -16,6 +16,8 @@ vi.mock('@/api/review', () => ({
     detail: vi.fn(),
     selectStar: vi.fn(),
     clearStar: vi.fn(),
+    setRisk: vi.fn(),
+    clearRisk: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     remove: vi.fn(),
@@ -287,6 +289,36 @@ describe('ReviewView timing controls', () => {
     expect(wrapper.get('.frozen-notice').text()).toContain('Snapshot 8')
     expect(wrapper.get('.aggregate-version-select').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('查看实时预览')
+  })
+
+  it('edits and resets the selected version risk judgement', async () => {
+    const overview = newprojectOverview()
+    overview.groups[0].modules[0].risk = {
+      rating: 'medium',
+      auto_rating: 'medium',
+      manual_rating: null,
+      source: 'automatic',
+      details: [],
+      can_edit: true
+    }
+    reviewApi.setRisk.mockResolvedValue({
+      ...overview.groups[0].modules[0].risk,
+      rating: 'high',
+      manual_rating: 'high',
+      source: 'manual'
+    })
+    reviewApi.clearRisk.mockResolvedValue(overview.groups[0].modules[0].risk)
+    const wrapper = await mountReview(overview)
+    const control = wrapper.get('.risk-cell select')
+
+    await control.setValue('high')
+    await flushPromises()
+    expect(reviewApi.setRisk).toHaveBeenCalledWith('7', 101, 'high')
+    expect(wrapper.get('.risk-cell').text()).toContain('high')
+
+    await control.setValue('')
+    await flushPromises()
+    expect(reviewApi.clearRisk).toHaveBeenCalledWith('7', 101)
   })
 
   it('opens the review editor and submits multiline review content', async () => {

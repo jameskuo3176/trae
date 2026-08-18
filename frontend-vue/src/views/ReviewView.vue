@@ -12,6 +12,7 @@ import ReviewAggregateMatrix from '@/components/review/ReviewAggregateMatrix.vue
 import ReviewModuleDetail from '@/components/review/ReviewModuleDetail.vue'
 import SourceFileLink from '@/components/common/SourceFileLink.vue'
 import TableFontSizeControl from '@/components/common/TableFontSizeControl.vue'
+import RiskRatingControl from '@/components/common/RiskRatingControl.vue'
 
 const projects = ref([])
 const route = useRoute()
@@ -62,6 +63,7 @@ const reviewForm = ref({
   decisions: '',
   nextSteps: ''
 })
+const riskSavingKey = ref('')
 
 const COLUMN_WIDTHS_KEY = 'qor-review-aggregate-column-widths-v1'
 
@@ -109,7 +111,8 @@ function starSourceLabel(module) {
 }
 
 function apiErrorMessage(error, fallback) {
-  return error.response?.data?.error || error.response?.data?.detail || error.message || fallback
+  const apiError = error.response?.data?.error
+  return apiError?.message || apiError || error.response?.data?.detail || error.message || fallback
 }
 
 function formatUploadTime(value) {
@@ -425,7 +428,7 @@ const aggregateColumns = computed(() => {
       })
     )
   columns.push(
-    { key: 'risk', label: '风险', group: 'Review Status / Actions', width: 92, min: 72 },
+    { key: 'risk', label: '风险', group: 'Review Status / Actions', width: 230, min: 180 },
     { key: 'upload', label: '上传时间', group: 'Review Status / Actions', width: 150, min: 120 },
     { key: 'actions', label: '操作', group: 'Review Status / Actions', width: 126, min: 108 }
   )
@@ -713,6 +716,22 @@ async function toggleStar(module) {
     await loadReviewData()
   } catch (e) {
     error.value = apiErrorMessage(e, '取消星标失败')
+  }
+}
+
+async function updateModuleRisk(module, rating) {
+  if (!module.star || !module.risk?.can_edit) return
+  const key = `${projectId.value}:${module.star.id}`
+  riskSavingKey.value = key
+  error.value = ''
+  try {
+    module.risk = rating
+      ? await reviewApi.setRisk(projectId.value, module.star.id, rating)
+      : await reviewApi.clearRisk(projectId.value, module.star.id)
+  } catch (e) {
+    error.value = apiErrorMessage(e, '风险等级保存失败')
+  } finally {
+    riskSavingKey.value = ''
   }
 }
 
@@ -1157,9 +1176,12 @@ async function confirmReviewAction() {
                     {{ formatMetricValue(module.star?.[column.key]) }}
                   </td>
                   <td v-if="pathIndex === 0" class="risk-cell" :rowspan="pathGroups.length">
-                    <span :class="['risk', `risk-${module.risk.rating}`]">
-                      {{ module.risk.rating }}
-                    </span>
+                    <RiskRatingControl
+                      :risk="module.risk"
+                      :disabled="!module.risk.can_edit"
+                      :busy="riskSavingKey === `${projectId}:${module.star?.id}`"
+                      @change="updateModuleRisk(module, $event)"
+                    />
                   </td>
                   <td v-if="pathIndex === 0" class="upload-cell" :rowspan="pathGroups.length">
                     {{ formatUploadTime(module.upload_time) }}
@@ -1318,10 +1340,20 @@ async function confirmReviewAction() {
             </div>
 
             <ul v-if="module.risk.details?.length" class="risk-details">
-              <li v-for="detail in module.risk.details" :key="detail.metric">
-                {{ detail.metric }}: {{ detail.reason }}
+              <li
+                v-for="detail in module.risk.details"
+                :key="`${detail.timing_type}:${detail.scenario}:${detail.path_group}`"
+              >
+                {{ detail.path_group }}: {{ detail.reason }}
               </li>
             </ul>
+            <RiskRatingControl
+              v-if="module.star"
+              :risk="module.risk"
+              :disabled="!module.risk.can_edit"
+              :busy="riskSavingKey === `${projectId}:${module.star.id}`"
+              @change="updateModuleRisk(module, $event)"
+            />
           </ReviewModuleDetail>
         </div>
       </ReviewAggregateMatrix>

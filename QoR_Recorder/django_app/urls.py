@@ -30,6 +30,8 @@ api_urlpatterns = [
     path('api/v2/records', api_v2.records, name='api_v2_records'),
     path('api/v2/projects/<int:project_id>/records/<str:record_id>',
          api_v2.record_detail, name='api_v2_record_detail'),
+    path('api/v2/projects/<int:project_id>/records/<str:record_id>/risk',
+         api_v2.record_risk, name='api_v2_record_risk'),
     path('api/v2/projects/<int:project_id>/records/<str:record_id>/raw',
          api_v2.raw_report, name='api_v2_raw_report'),
     path('api/v2/projects/<int:project_id>/records/<str:record_id>/violations',

@@ -23,7 +23,8 @@ from django_app.services.review_hierarchy import (
     get_effective_risk_thresholds,
     load_hierarchy,
 )
-from django_app.services.risk_rating import rate_record, shanghai_week_window
+from django_app.services.risk_rating import shanghai_week_window
+from django_app.services.record_risk import assess_module_history
 
 
 SNAPSHOT_SCHEMA_VERSION = 1
@@ -234,20 +235,24 @@ def build_weekly_overview(project_id, week_start=None):
             carried_forward = bool(selected and not weekly_candidates)
             baseline = _baseline_record(project, project_module, start, alias)
             risk = (
-                rate_record(_record_payload(selected), _record_payload(baseline), thresholds)
-                if selected and baseline and selected.id != baseline.id
-                else {
-                    'rating': 'unrated',
-                    'details': [],
-                    'reason': (
-                        'no selected run'
-                        if not selected
-                        else 'carried forward from latest upload'
-                        if carried_forward
-                        else 'no historical baseline'
-                    ),
-                }
-            )
+                assess_module_history(project.id, project_module.module_id).get(
+                    str(selected.id)
+                )
+                if selected
+                else None
+            ) or {
+                'rating': 'unrated',
+                'auto_rating': 'unrated',
+                'manual_rating': None,
+                'source': 'automatic',
+                'details': [],
+                'summary': {
+                    'worst_wns': None,
+                    'worst_tns': None,
+                    'eligible_path_group_count': 0,
+                },
+                'reason': 'no selected run',
+            }
             modules.append({
                 'module_id': project_module.module_id,
                 'module_name': project_module.module.name,

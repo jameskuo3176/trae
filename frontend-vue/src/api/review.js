@@ -10,6 +10,16 @@ export const reviewApi = {
   clearStar(payload) {
     return apiClient.delete('/reviews/weekly/star', { data: payload }).then(r => r.data)
   },
+  setRisk(projectId, recordId, rating) {
+    return apiClient
+      .put(`/v2/projects/${projectId}/records/${recordId}/risk`, { rating })
+      .then(r => r.data.data)
+  },
+  clearRisk(projectId, recordId) {
+    return apiClient
+      .delete(`/v2/projects/${projectId}/records/${recordId}/risk`)
+      .then(r => r.data.data)
+  },
   list(type, params) {
     return apiClient.get(`/reviews/${type}`, { params }).then(r => r.data.items || [])
   },

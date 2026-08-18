@@ -429,6 +429,49 @@ class WeeklyRunSelection(models.Model):
         ]
 
 
+class RecordRiskAssessment(models.Model):
+    """Auditable user judgement for one project-scoped QoR version.
+
+    Automatic ratings are deterministic and are intentionally not persisted.
+    This row stores only the user's judgement so recalculation can continue to
+    respect it when later versions arrive.
+    """
+    RISK_CHOICES = [
+        ('low', 'Low'),
+        ('medium', 'Medium'),
+        ('high', 'High'),
+    ]
+
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name='record_risk_assessments',
+    )
+    module = models.ForeignKey(
+        GlobalModule, on_delete=models.CASCADE, related_name='record_risk_assessments',
+    )
+    record_id = models.CharField(max_length=64)
+    manual_rating = models.CharField(max_length=10, choices=RISK_CHOICES)
+    rated_by = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name='record_risk_assessments',
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'record_risk_assessments'
+        constraints = [
+            models.UniqueConstraint(
+                fields=('project', 'record_id'),
+                name='uq_project_record_risk_assessment',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=('project', 'module', 'updated_at'),
+                name='risk_project_module_idx',
+            ),
+        ]
+
+
 class LegacyModuleMapping(models.Model):
     """Rollback-safe mapping; no legacy project row is modified automatically."""
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='legacy_module_mappings')

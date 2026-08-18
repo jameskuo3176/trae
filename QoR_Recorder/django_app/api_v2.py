@@ -20,6 +20,11 @@ from django_app.core.db_routing import _get_project_db_alias, get_project_engine
 from django_app.repositories import get_record_repository, mongo_readiness
 from django_app.services.qor_import import associate_global_module
 from django_app.services.path_derivation import PathDerivationError, derive_version
+from django_app.services.record_risk import (
+    clear_manual_rating,
+    enrich_record_risks,
+    set_manual_rating,
+)
 
 
 def _error(code, message, status=400, details=None):
@@ -268,6 +273,21 @@ def records(request):
     }
     projects = {pid: _project(pid) for pid in project_ids}
     unmapped = _resolve_record_module_identities(items)
+    repository = get_record_repository()
+
+    def load_history(project_id, history_module_id):
+        rows, _ = repository.list_records(
+            project_id,
+            module_id=history_module_id,
+            offset=0,
+            limit=10000,
+        )
+        for row in rows:
+            row.setdefault('project_id', project_id)
+        _resolve_record_module_identities(rows)
+        return rows
+
+    enrich_record_risks(items, request.user, history_loader=load_history)
     for item in items:
         item_project_id = int(item.get('project_id') or project_ids[0])
         owner = owners.get(item.get('owner_id'))
@@ -306,6 +326,10 @@ def _record_child(request, project_id, record_id, method):
         return _error('repository_error', 'record query failed', 503, {'reason': str(exc)})
     if value is None:
         return _error('not_found', 'record not found', 404)
+    if method == 'get_record':
+        value.setdefault('project_id', project_id)
+        _resolve_record_module_identities([value])
+        enrich_record_risks([value], request.user)
     return JsonResponse({'ok': True, 'data': value})
 
 
@@ -313,6 +337,56 @@ def _record_child(request, project_id, record_id, method):
 @api_auth_required('read')
 def record_detail(request, project_id, record_id):
     return _record_child(request, project_id, record_id, 'get_record')
+
+
+@require_http_methods(['PUT', 'DELETE'])
+@api_auth_required('read')
+def record_risk(request, project_id, record_id):
+    project = _project(project_id)
+    if project is None:
+        return _error('not_found', 'project not found', 404)
+    if not _can_view(request.user, project_id):
+        return _error('forbidden', 'project access denied', 403)
+    if (
+        getattr(request, 'auth_method', None) == 'api_key'
+        and not request.api_key.has_scope('upload')
+    ):
+        return _error('forbidden', 'API Key requires upload scope', 403)
+    repository = get_record_repository()
+    try:
+        record = repository.get_record(project_id, record_id)
+    except Exception as exc:
+        return _error('repository_error', 'record query failed', 503, {'reason': str(exc)})
+    if record is None:
+        return _error('not_found', 'record not found', 404)
+    record.setdefault('project_id', project_id)
+    _resolve_record_module_identities([record])
+    module_id = record.get('module_id')
+    if module_id is None:
+        return _error('unmapped_module', 'record has no GlobalModule mapping', 409)
+    try:
+        if request.method == 'DELETE':
+            clear_manual_rating(
+                request.user, project, int(module_id), str(record_id),
+            )
+        else:
+            try:
+                body = json.loads(request.body or b'{}')
+            except (TypeError, json.JSONDecodeError):
+                return _error('invalid_json', 'valid JSON is required')
+            set_manual_rating(
+                request.user,
+                project,
+                int(module_id),
+                str(record_id),
+                body.get('rating'),
+            )
+        enrich_record_risks([record], request.user)
+    except PermissionError as exc:
+        return _error('forbidden', str(exc), 403)
+    except ValueError as exc:
+        return _error('invalid_rating', str(exc))
+    return JsonResponse({'ok': True, 'data': record['risk']})
 
 
 @require_GET

@@ -309,7 +309,7 @@ def test_snapshot_is_idempotent_integrity_checked_and_freezes_later_changes(week
         assert second.id == first.id
         assert first.verify_integrity()
         assert json.loads(first.frozen_data)['groups'][0]['modules'][0]['risk']['rating'] == (
-            'unrated'
+            'low'
         )
         assert ReviewSnapshot.objects.using(item['alias']).filter(
             project_id=item['project'].id,

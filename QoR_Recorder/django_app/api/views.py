@@ -69,6 +69,7 @@ from django_app.services.review_hierarchy import (
 )
 from django_app.services.timing_normalization import normalize_timing_sections
 from django_app.services.risk_rating import shanghai_week_window
+from django_app.services.record_risk import assess_module_history, can_edit_risk
 
 
 logger = logging.getLogger(__name__)
@@ -1661,6 +1662,23 @@ def weekly_review_overview(request):
                 )
             )
             for module in group.get('modules', []):
+                star = module.get('star')
+                if star:
+                    current_risk = assess_module_history(
+                        pid, int(module['module_id']),
+                    ).get(str(star.get('id')))
+                    if current_risk:
+                        module['risk'] = current_risk
+                module.setdefault('risk', {
+                    'rating': 'unrated',
+                    'auto_rating': 'unrated',
+                    'manual_rating': None,
+                    'source': 'automatic',
+                    'details': [],
+                })
+                module['risk']['can_edit'] = can_edit_risk(
+                    request.user, Project.objects.get(pk=pid), int(module['module_id']),
+                )
                 module['can_select_star'] = bool(
                     not payload.get('is_frozen')
                     and not payload.get('frozen_snapshot')

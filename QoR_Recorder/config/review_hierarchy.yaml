@@ -1,6 +1,5 @@
-version: "2026-08-12"
+version: '2026-08-12'
 timezone: Asia/Shanghai
-
 risk_thresholds:
   tns_setup:
     medium_percent: 10
@@ -11,10 +10,6 @@ risk_thresholds:
   utilization:
     medium_percent: 3
     high_percent: 8
-
-# YAML is the source of truth. Validate and synchronize with:
-#   python manage.py sync_review_hierarchy --check
-#   python manage.py sync_review_hierarchy --apply
 projects:
   demo_ai_accel:
     owner: admin
@@ -42,7 +37,6 @@ projects:
             release_owner: release
           vec_reg:
             release_owner: release
-
   demo_dsp_engine:
     owner: admin
     groups:
@@ -63,7 +57,6 @@ projects:
             release_owner: release
           twiddle_rom:
             release_owner: release
-
   demo_eth_mac:
     owner: admin
     groups:
@@ -82,7 +75,6 @@ projects:
             release_owner: release
           pma:
             release_owner: release
-
   demo_riscv_soc:
     owner: admin
     groups:
@@ -101,7 +93,6 @@ projects:
             release_owner: release
           regfile:
             release_owner: release
-
   demo_video_codec:
     owner: admin
     groups:
@@ -124,7 +115,6 @@ projects:
             release_owner: release
           transform:
             release_owner: release
-
   newproject:
     owner: admin
     groups:
@@ -132,6 +122,6 @@ projects:
         owner: release
         modules:
           demoA:
-            release_owner: release
+            release_owner: user
           demoB:
             release_owner: release

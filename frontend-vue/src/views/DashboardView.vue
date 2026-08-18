@@ -17,6 +17,7 @@ import { useTheme } from '@/composables/useTheme'
 import FilterBar from '@/components/filters/FilterBar.vue'
 import DashboardConfigBar from '@/components/dashboard/DashboardConfigBar.vue'
 import DashboardStats from '@/components/dashboard/DashboardStats.vue'
+import RiskOverviewPanel from '@/components/dashboard/RiskOverviewPanel.vue'
 import ChartSettingsPanel from '@/components/dashboard/ChartSettingsPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 
@@ -95,6 +96,7 @@ const stats = computed(() => ({
 const sections = computed(() => {
   const list = [
     { id: 'section-stats', label: '统计概览' },
+    { id: 'section-risk', label: '版本风险' },
     { id: 'section-dc', label: 'DC 报告' }
   ]
   if (settings.activeView === 'charts') {
@@ -218,6 +220,9 @@ provide('chartSettings', {
         <p>Select a project or relax the module, version, and directory filters.</p>
       </section>
       <template v-else>
+        <section id="section-risk" class="anchor-target">
+          <RiskOverviewPanel />
+        </section>
         <ChartSettingsPanel
           v-model:orientation="settings.orientation"
           v-model:height="settings.height"
