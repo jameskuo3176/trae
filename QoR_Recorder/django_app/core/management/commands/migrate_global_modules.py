@@ -4,7 +4,9 @@ from contextlib import nullcontext
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from django_app.core.db_routing import _get_project_db_alias, get_project_engine
+from django_app.core.db_routing import (
+    _get_legacy_project_db_alias, get_legacy_project_engine,
+)
 from django_app.core.models import (
     GlobalModule, LegacyModuleMapping, Module, Project, ProjectModule,
     normalize_module_name,
@@ -27,8 +29,8 @@ class Command(BaseCommand):
                 raise CommandError('project not found')
         report = {'projects': 0, 'legacy_modules': 0, 'global_modules': 0, 'mappings': 0}
         for project in projects:
-            get_project_engine(project.id)
-            alias = _get_project_db_alias(project.id)
+            get_legacy_project_engine(project.id)
+            alias = _get_legacy_project_db_alias(project.id)
             legacy_rows = list(Module.objects.using(alias).all().order_by('id'))
             report['projects'] += 1
             report['legacy_modules'] += len(legacy_rows)
