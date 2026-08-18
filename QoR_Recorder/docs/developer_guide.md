@@ -216,31 +216,32 @@ def query_records_by_projects(proj_id_list=None, ...):
 
 ### 3.5 多数据库后端切换（DB_TYPE + PERSISTENCE_MODE）
 
-| DB_TYPE | 含义 | 必填额外配置 | PERSISTENCE_MODE |
+| DB_TYPE | 含义（Django 元数据） | 必填额外配置 | 默认 PERSISTENCE_MODE |
 |---|---|---|---|
-| `sqlite` | SQLite（默认） | 无 | `orm`（默认） |
-| `sql` | MySQL/PostgreSQL | `DATABASE_URL` | `orm` |
-| `mongodb` | MongoDB | `MONGODB_URI` | `hybrid`（默认）/ `mongo` |
+| `sqlite` | SQLite（默认） | 无 | `orm`（本地）；Compose 显式设 `mongo` |
+| `sql` | MySQL/PostgreSQL | `DATABASE_URL` | `orm`（可改 `mongo`） |
+| `mongodb` | 元数据仍 SQLite；不引入 djongo | `MONGODB_URI` | `mongo` |
 
 ```bash
-# SQLite + ORM (默认)
+# 本地纯 SQLite
 DB_TYPE=sqlite PERSISTENCE_MODE=orm python manage.py runserver
 
-# MySQL / PostgreSQL
-DB_TYPE=sql DATABASE_URL='mysql+pymysql://root:pwd@localhost:3306/qor_recorder' \
-  python manage.py migrate
-
-# MongoDB (heavy-data repository + relational metadata)
-PERSISTENCE_MODE=hybrid MONGODB_URI=mongodb://localhost:27017 \
+# Compose / 推荐生产：元数据 SQLite + 重数据 Mongo
+DB_TYPE=sqlite PERSISTENCE_MODE=mongo MONGODB_URI=mongodb://localhost:27017 \
   python manage.py runserver
+
+# MySQL 元数据 + Mongo 重数据
+DB_TYPE=sql DATABASE_URL='mysql+pymysql://root:pwd@localhost:3306/qor_recorder' \
+  PERSISTENCE_MODE=mongo MONGODB_URI=mongodb://localhost:27017 \
+  python manage.py migrate
 ```
 
-**MongoDB 模式特殊性**：
+**职责拆分**：
 
-- 主库仍走 SQLite（只读回退），Mongo 主要承担业务数据
-- 通过 `repositories.py` 抽象层实现 dual-write（同时写 Mongo + SQLite）
-- 读优先 Mongo，SQLite 兜底
-- 迁移脚本 `manage.py migrate_sqlite_to_mongo` 支持历史数据从 SQLite 迁到 Mongo
+- SQLite/SQL：用户、项目、权限、模块元数据、评审、看板配置
+- Mongo（`PERSISTENCE_MODE=mongo`）：QoR records / raw reports / violations / notes；API v2 只读 Mongo
+- `hybrid` 仅迁移过渡（Mongo 优先 + ORM 回退）；勿作长期默认
+- 历史数据：`manage.py migrate_sqlite_to_mongo`
 
 ### 3.6 前端架构（Vue 3 SPA）
 
@@ -492,8 +493,8 @@ DB_TYPE=sqlite PERSISTENCE_MODE=orm python manage.py runserver
 DB_TYPE=sql DATABASE_URL='mysql+pymysql://root:pwd@localhost:3306/qor_recorder' \
   python manage.py migrate
 
-# Mongo heavy-data repository + relational metadata
-PERSISTENCE_MODE=hybrid MONGODB_URI=mongodb://localhost:27017 \
+# Mongo heavy-data repository + relational metadata (recommended)
+PERSISTENCE_MODE=mongo MONGODB_URI=mongodb://localhost:27017 \
   python manage.py runserver
 ```
 
@@ -624,7 +625,7 @@ if bus_grouping:
 ### 9.2 已实现的扩展
 - ✅ 项目软删除（`status=hidden`）与两级删除
 - ✅ 项目锁定（物理只读 + 状态校验）
-- ✅ MongoDB dual-write 抽象层（`repositories.py`）
+- ✅ MongoDB 仓储抽象层（`repositories.py`，默认 `PERSISTENCE_MODE=mongo`）
 - ✅ API Key 认证（DC 流程自动化）
 - ✅ 主题自定义（CSS 变量 + 服务端注入）
 - ✅ 三级 Review 工作流 + 冻结快照 + 风险评级
@@ -670,7 +671,7 @@ if bus_grouping:
 | 跨库无 FK | Django 跨库查询不会自动加 FK 约束；用逻辑外键 + 迭代合并 |
 | 项目库 schema_editor 建表 | 项目库表结构简单，无需迁移版本爆炸；主库仍走 Django migrations |
 | 跨项目查询用迭代合并 | 跨库 JOIN 不可用；按项目迭代 + 内存排序是当前最简单可靠方案 |
-| MongoDB dual-write | 兼容旧代码 + 平滑迁移；SQLite 作为兜底保证系统不会因为 Mongo 故障停机 |
+| Mongo 重数据仓储 | API v2 只读 Mongo；元数据仍 SQLite/SQL；`hybrid` 仅迁移过渡 |
 | Vue 3 SPA 重构 | 大 HTML（6000+ 行内联 JS）难以维护且无法浏览器缓存；组件化提升可维护性 |
 
 ## 11. 周评审、YAML 层级、gvim、备份恢复（2026 overhaul）

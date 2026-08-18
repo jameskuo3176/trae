@@ -108,8 +108,9 @@ Violation objects consistently use string `id` and `record_id`, include
 Relational SQL remains authoritative for users, projects, global modules,
 project-module associations, mappings, reviews, and configuration. QoR records,
 raw reports, violation paths, and run notes are accessed only through the
-repository layer. `PERSISTENCE_MODE=orm|mongo|hybrid` selects the adapter;
-hybrid reads Mongo first and falls back to ORM.
+repository layer. `PERSISTENCE_MODE=orm|mongo|hybrid` selects the adapter
+(Compose defaults to `mongo`). `hybrid` (cutover only) reads Mongo first and
+falls back to ORM.
 
 Migration commands are non-destructive and dry-run by default:
 
