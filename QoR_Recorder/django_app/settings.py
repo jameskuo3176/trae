@@ -1,13 +1,14 @@
 """Django settings for QoR Recorder.
 
 数据库后端支持 (通过单一变量 DB_TYPE 切换):
-  - DB_TYPE=sqlite   (默认)  本地文件, WAL 模式, 零运维
-  - DB_TYPE=sql      MySQL / MariaDB / PostgreSQL (需要 DATABASE_URL)
-  - DB_TYPE=mongodb  MongoDB (走 dual-write, 兼容 SQLite 只读回退)
+  - DB_TYPE=sql      (默认) PostgreSQL（也保留 MySQL 兼容）
+  - DB_TYPE=sqlite   仅供迁移/回滚兼容，不是生产默认
+  - DB_TYPE=mongodb  已弃用的兼容别名；Django 元数据仍使用 PostgreSQL
 
 切换方式 (推荐):
   1. 设置环境变量 DB_TYPE (sqlite / sql / mongodb)
-  2. 对应设置 DATABASE_URL (sql) 或 MONGODB_URI (mongodb)
+  2. 设置 DATABASE_URL，或 POSTGRES_DB/USER/PASSWORD/HOST/PORT
+  3. 重数据用 PERSISTENCE_MODE=mongo|orm|hybrid（Compose 默认 mongo）
 
 配置加载顺序 (优先级从高到低):
   1. 系统环境变量
@@ -16,6 +17,7 @@
 """
 import os
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlparse
 
 # ===========================================================================
 # 项目路径
@@ -103,7 +105,7 @@ def _detect_db_type():
         return DB_TYPE_SQL
     if url.startswith('mongodb'):
         return DB_TYPE_MONGODB
-    return DB_TYPE_SQLITE
+    return DB_TYPE_SQL
 
 
 DB_TYPE = _detect_db_type()
@@ -178,13 +180,6 @@ TEMPLATES = [
 # ===========================================================================
 def _build_database_config():
     """构建 Django DATABASES 配置"""
-    if DB_TYPE == DB_TYPE_MONGODB:
-        return {
-            'default': {
-                'ENGINE': 'django.db.backends.sqlite3',
-                'NAME': str(DATA_DIR / 'qor_recorder.db'),
-            },
-        }
     if DB_TYPE == DB_TYPE_SQLITE:
         return {
             'default': {
@@ -195,47 +190,51 @@ def _build_database_config():
                 },
             },
         }
-    # DB_TYPE == 'sql'
+    # DB_TYPE == 'sql'，以及历史 DB_TYPE=mongodb 兼容值。MongoDB 从不作为
+    # Django ORM 后端；该值只影响重数据仓储。
     uri = os.environ.get('DATABASE_URL', '').strip()
     if not uri:
-        raise RuntimeError(
-            'DB_TYPE=sql 需要设置 DATABASE_URL 环境变量'
-        )
-    if uri.startswith('mysql://'):
-        uri = uri.replace('mysql://', 'mysql+pymysql://', 1)
-    if uri.startswith('postgres://'):
-        uri = uri.replace('postgres://', 'postgresql+psycopg2://', 1)
+        name = os.environ.get('POSTGRES_DB', 'qor_recorder').strip()
+        user = os.environ.get('POSTGRES_USER', 'qor').strip()
+        password = os.environ.get('POSTGRES_PASSWORD', '')
+        if not password:
+            raise RuntimeError(
+                'PostgreSQL requires DATABASE_URL or POSTGRES_PASSWORD'
+            )
+        return {'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': name,
+            'USER': user,
+            'PASSWORD': password,
+            'HOST': os.environ.get('POSTGRES_HOST', 'localhost').strip(),
+            'PORT': os.environ.get('POSTGRES_PORT', '5432').strip(),
+            'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
+            'CONN_HEALTH_CHECKS': True,
+        }}
 
-    # 解析 DATABASE_URL
-    import re
-    m = re.match(
-        r'^(?P<engine>[\w+]+)://(?:(?P<user>[^:@]+)?(?::(?P<password>[^@]+))?@)?(?P<host>[^:/]+)(?::(?P<port>\d+))?/(?P<name>[^?]+)',
-        uri,
-    )
-    if m:
-        engine = m.group('engine')
-        if 'postgresql' in engine:
-            django_engine = 'django.db.backends.postgresql'
-        elif 'mysql' in engine:
-            django_engine = 'django.db.backends.mysql'
-        else:
-            django_engine = 'django.db.backends.sqlite3'
-        return {
-            'default': {
-                'ENGINE': django_engine,
-                'NAME': m.group('name'),
-                'USER': m.group('user') or '',
-                'PASSWORD': m.group('password') or '',
-                'HOST': m.group('host') or 'localhost',
-                'PORT': m.group('port') or '',
-            },
-        }
-    return {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': str(DATA_DIR / 'qor_recorder.db'),
-        },
+    parsed = urlparse(uri)
+    scheme = parsed.scheme.split('+', 1)[0].lower()
+    engines = {
+        'postgres': 'django.db.backends.postgresql',
+        'postgresql': 'django.db.backends.postgresql',
+        'mysql': 'django.db.backends.mysql',
     }
+    if scheme not in engines or not parsed.hostname or not parsed.path.strip('/'):
+        raise RuntimeError('DATABASE_URL must be a PostgreSQL or MySQL URL')
+    options = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    config = {
+        'ENGINE': engines[scheme],
+        'NAME': unquote(parsed.path.lstrip('/')),
+        'USER': unquote(parsed.username or ''),
+        'PASSWORD': unquote(parsed.password or ''),
+        'HOST': parsed.hostname,
+        'PORT': str(parsed.port or (5432 if scheme in ('postgres', 'postgresql') else 3306)),
+        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
+        'CONN_HEALTH_CHECKS': True,
+    }
+    if options:
+        config['OPTIONS'] = options
+    return {'default': config}
 
 
 DATABASES = _build_database_config()
@@ -324,10 +323,11 @@ MONGODB_DATA_DIR = Path(
 ).resolve()
 MONGODB_TIMEOUT_MS = int(os.environ.get('MONGODB_TIMEOUT_MS', '2000'))
 
-# orm: project SQLite only; mongo: Mongo only; hybrid: Mongo-first with ORM
-# fallback. DB_TYPE remains accepted for legacy deployments.
-_default_persistence = 'hybrid' if DB_TYPE == DB_TYPE_MONGODB else 'orm'
-PERSISTENCE_MODE = os.environ.get('PERSISTENCE_MODE', _default_persistence).strip().lower()
+# orm: project SQLite only for heavy QoR rows.
+# mongo: API v2 reads Mongo; import mirrors heavy rows to Mongo (required).
+# hybrid: Mongo-first reads with ORM fallback (cutover/compat only).
+# Users / projects / reviews / config always stay on Django DATABASES.
+PERSISTENCE_MODE = os.environ.get('PERSISTENCE_MODE', 'mongo').strip().lower()
 if PERSISTENCE_MODE not in ('orm', 'mongo', 'hybrid'):
     raise RuntimeError('PERSISTENCE_MODE must be orm, mongo, or hybrid')
 

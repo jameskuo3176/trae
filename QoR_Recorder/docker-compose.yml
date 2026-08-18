@@ -21,9 +21,15 @@ services:
       SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-0}
       SECURE_HSTS_INCLUDE_SUBDOMAINS: ${SECURE_HSTS_INCLUDE_SUBDOMAINS:-0}
       SECURE_HSTS_PRELOAD: ${SECURE_HSTS_PRELOAD:-0}
-      DB_TYPE: ${DB_TYPE:-sqlite}
+      # PostgreSQL stores Django metadata; Mongo stores heavy QoR documents.
+      DB_TYPE: ${DB_TYPE:-sql}
       DATABASE_URL: ${DATABASE_URL:-}
-      PERSISTENCE_MODE: ${PERSISTENCE_MODE:-hybrid}
+      POSTGRES_DB: ${POSTGRES_DB:-qor_recorder}
+      POSTGRES_USER: ${POSTGRES_USER:-qor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in QoR_Recorder/.env}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      PERSISTENCE_MODE: ${PERSISTENCE_MODE:-mongo}
       MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017}
       MONGODB_DB: ${MONGODB_DB:-qor_recorder}
       MONGODB_TIMEOUT_MS: ${MONGODB_TIMEOUT_MS:-2000}
@@ -39,6 +45,8 @@ services:
       - ./uploads:/app/uploads
       - ./backups:/app/backups
     depends_on:
+      postgres:
+        condition: service_healthy
       mongo:
         condition: service_healthy
     restart: unless-stopped
@@ -52,6 +60,23 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: qor-recorder-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-qor_recorder}
+      POSTGRES_USER: ${POSTGRES_USER:-qor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in QoR_Recorder/.env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-qor} -d ${POSTGRES_DB:-qor_recorder}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 10
 
   mongo:
     image: mongo:7.0
@@ -91,3 +116,6 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+volumes:
+  postgres_data:

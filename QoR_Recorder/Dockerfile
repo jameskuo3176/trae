@@ -53,7 +53,7 @@ WORKDIR /app
 COPY --from=python-builder /opt/venv /opt/venv
 COPY QoR_Recorder/ ./
 RUN mkdir -p /app/data /app/uploads /app/backups /app/static \
-    && python manage.py collectstatic --noinput
+    && DB_TYPE=sqlite PERSISTENCE_MODE=orm python manage.py collectstatic --noinput
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
