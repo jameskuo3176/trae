@@ -1,0 +1,92 @@
+# QoR Recorder - Linux JSON 上传体验
+#
+# 前置条件:
+#   1. GNU make (>= 3.82) 与 bash
+#   2. curl 与 python3
+#   3. 在 Web 管理页创建具有 upload scope 的 API Key
+#
+# 用法:
+#   export QOR_API_KEY="qor_xxxxxxxxxxxxxxxx"
+#   make -f Makefile.linux health
+#   make -f Makefile.linux upload PROJECT_ID=6
+#   make -f Makefile.linux release PROJECT_ID=6
+
+.ONESHELL:
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+
+QOR_SERVER ?= http://127.0.0.1:8000
+PROJECT_ID ?= 6
+MODULE_NAME ?= windows_upload_demo
+VERSION ?= linux_$(shell date +%Y%m%d_%H%M%S)
+JSON_FILE ?= upload-demo.json
+QOR_API_KEY ?=
+MARK_RELEASED ?= false
+
+.DEFAULT_GOAL := help
+.PHONY: help health check upload release
+
+help:
+	@echo 'QoR Recorder Linux JSON upload demo'
+	@echo ''
+	@echo '  make -f Makefile.linux health'
+	@echo '  make -f Makefile.linux upload PROJECT_ID=6'
+	@echo '  make -f Makefile.linux release PROJECT_ID=6'
+	@echo ''
+	@echo 'Before upload, set the API key:'
+	@echo '  export QOR_API_KEY="qor_xxxxxxxxxxxxxxxx"'
+	@echo ''
+	@echo "Current server:  $(QOR_SERVER)"
+	@echo "Current project: $(PROJECT_ID)"
+	@echo "Current module:  $(MODULE_NAME)"
+
+health:
+	@curl -fsS "$(QOR_SERVER)/health" && echo ""
+
+check:
+	@if [ -z "$(QOR_API_KEY)" ]; then \
+		echo 'Error: QOR_API_KEY is empty. Run: export QOR_API_KEY="qor_xxx"' >&2; exit 1; \
+	fi
+	@if [ ! -f "$(JSON_FILE)" ]; then \
+		echo "Error: JSON file not found: $(JSON_FILE)" >&2; exit 1; \
+	fi
+	@echo '[OK] Configuration is ready.'
+
+upload: check
+	@QOR_SERVER="$(QOR_SERVER)" \
+	  PROJECT_ID="$(PROJECT_ID)" \
+	  MODULE_NAME="$(MODULE_NAME)" \
+	  VERSION="$(VERSION)" \
+	  JSON_FILE="$(JSON_FILE)" \
+	  QOR_API_KEY="$(QOR_API_KEY)" \
+	  MARK_RELEASED="$(MARK_RELEASED)" \
+	  python3 - <<'PY'
+	import json, os, urllib.request
+	with open(os.environ['JSON_FILE'], encoding='utf-8') as f:
+	    p = json.load(f)
+	p['upload']['project_id'] = int(os.environ['PROJECT_ID'])
+	p['upload']['module_name'] = os.environ['MODULE_NAME']
+	p['upload']['version'] = 'regr_' + os.environ['VERSION']
+	p['upload']['full_dir'] = '/demo/windows/regr_' + os.environ['VERSION'] + '/main/' + os.environ['MODULE_NAME']
+	p['upload']['release_dir'] = p['upload']['full_dir']
+	p['upload']['mark_released'] = os.environ['MARK_RELEASED'].lower() == 'true'
+	p['records'][0]['module_name'] = os.environ['MODULE_NAME']
+	body = json.dumps(p).encode('utf-8')
+	req = urllib.request.Request(
+	    os.environ['QOR_SERVER'] + '/api/v1/qor/upload',
+	    data=body, method='POST',
+	    headers={'X-API-Key': os.environ['QOR_API_KEY'],
+	             'Content-Type': 'application/json; charset=utf-8'})
+	try:
+	    with urllib.request.urlopen(req) as r:
+	        print('[OK] Upload succeeded')
+	        print(json.dumps(json.load(r), indent=2, ensure_ascii=False))
+	except urllib.error.HTTPError as e:
+	    print('Upload failed (HTTP %s): %s' % (e.code, e.read().decode('utf-8', 'replace')))
+	    exit(1)
+	PY
+
+release:
+	@$(MAKE) -f Makefile.linux upload PROJECT_ID=$(PROJECT_ID) MODULE_NAME=$(MODULE_NAME) \
+		VERSION=$(VERSION) JSON_FILE=$(JSON_FILE) QOR_SERVER=$(QOR_SERVER) \
+		QOR_API_KEY=$(QOR_API_KEY) MARK_RELEASED=true

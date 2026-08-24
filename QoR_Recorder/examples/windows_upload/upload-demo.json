@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "upload": {
+    "project_id": 1,
+    "module_name": "windows_upload_demo",
+    "version": "regr_windows_demo",
+    "full_dir": "/demo/windows/regr_windows_demo/main/windows_upload_demo",
+    "release_dir": "/demo/windows/regr_windows_demo/main/windows_upload_demo",
+    "mark_released": false,
+    "uploader_note": "Windows Makefile JSON upload demo"
+  },
+  "records": [
+    {
+      "module_name": "windows_upload_demo",
+      "version_description": "Windows JSON upload experience",
+      "source_file": "upload-demo.json",
+      "comment": "Created by examples/windows_upload/Makefile",
+      "area": {
+        "total": 128500.25,
+        "combinational": 73400.5,
+        "sequential": 48100.75,
+        "black_box": 7000.0,
+        "macro": 7000.0
+      },
+      "timing": {
+        "setup": {
+          "wns": -0.086,
+          "tns": -3.42,
+          "nvp": 12
+        },
+        "hold": {
+          "wns": -0.018,
+          "tns": -0.31,
+          "nvp": 4
+        }
+      },
+      "power": {
+        "internal": 0.82,
+        "switching": 0.46,
+        "leakage": 0.09,
+        "total": 1.37
+      },
+      "cells": {
+        "cell_count": 58210,
+        "instance_count": 58040,
+        "net_count": 62115,
+        "sequential_cell_count": 14320
+      },
+      "frequency": {
+        "target": 1000,
+        "achieved": 920
+      },
+      "ratios": {
+        "mbb_ratio": 0.12,
+        "clock_gating_ratio": 0.76,
+        "utilization": 0.68
+      },
+      "congestion": {
+        "h": 0.08,
+        "v": 0.11,
+        "b": 0.04,
+        "max": 0.11
+      },
+      "clocks": {
+        "CORE_CLK": {
+          "period": 1.0,
+          "wns": -0.086,
+          "tns": -3.42,
+          "nvp": 12,
+          "path": "u_cpu/u_reg_1 -> u_cpu/u_reg_2"
+        }
+      },
+      "extra": {
+        "platform": "Windows",
+        "purpose": "upload_demo"
+      }
+    }
+  ]
+}

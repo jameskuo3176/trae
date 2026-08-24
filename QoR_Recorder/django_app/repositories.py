@@ -152,7 +152,7 @@ def get_mongo_database():
 
 
 def ensure_mongo_indexes(database=None):
-    db = database or get_mongo_database()
+    db = database if database is not None else get_mongo_database()
     db.qor_records.create_index([('project_id', 1), ('module_id', 1), ('version', 1)])
     db.qor_records.create_index([('project_id', 1), ('recorded_at', -1)])
     db.qor_records.create_index([('project_id', 1), ('full_dir', 1)])
@@ -163,7 +163,7 @@ def ensure_mongo_indexes(database=None):
 
 class MongoRecordRepository:
     def __init__(self, database=None):
-        self.db = database or get_mongo_database()
+        self.db = database if database is not None else get_mongo_database()
 
     @staticmethod
     def _clean(document):

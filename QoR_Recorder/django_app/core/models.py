@@ -1,6 +1,5 @@
 """Django ORM 数据模型
 
-与 Flask SQLAlchemy 版本 models.py 保持一致, 转换为 Django ORM。
 
 数据库分布:
   主库 (default): User, Project, ProjectMember, DataLock, ApiKey, 
@@ -60,33 +59,6 @@ THEME_PRESETS = {
         'background': '#121212', 'surface': '#1e1e1e',
         'surface_hover': '#2a2a2a', 'text': '#e0e0e0',
         'text_secondary': '#9e9e9e', 'border': '#333333',
-        'navbar_text': 'rgba(255, 255, 255, 0.85)',
-        'navbar_text_active': '#ffffff',
-    },
-    'green': {
-        'name': 'green',
-        'primary': '#1b5e20', 'primary_gradient_end': '#2e7d32',
-        'background': '#f1f8e9', 'surface': '#ffffff',
-        'surface_hover': '#f5f5f5', 'text': '#333333',
-        'text_secondary': '#666666', 'border': '#e8e8e8',
-        'navbar_text': 'rgba(255, 255, 255, 0.85)',
-        'navbar_text_active': '#ffffff',
-    },
-    'purple': {
-        'name': 'purple',
-        'primary': '#4a148c', 'primary_gradient_end': '#6a1b9a',
-        'background': '#f3e5f5', 'surface': '#ffffff',
-        'surface_hover': '#f5f5f5', 'text': '#333333',
-        'text_secondary': '#666666', 'border': '#e8e8e8',
-        'navbar_text': 'rgba(255, 255, 255, 0.85)',
-        'navbar_text_active': '#ffffff',
-    },
-    'orange': {
-        'name': 'orange',
-        'primary': '#bf360c', 'primary_gradient_end': '#d84315',
-        'background': '#fff3e0', 'surface': '#ffffff',
-        'surface_hover': '#f5f5f5', 'text': '#333333',
-        'text_secondary': '#666666', 'border': '#e8e8e8',
         'navbar_text': 'rgba(255, 255, 255, 0.85)',
         'navbar_text_active': '#ffffff',
     },
