@@ -1,0 +1,13 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 虚拟环境
+.venv/
+venv/
+
+# 测试输出
+*.out.txt
+
+# 进程/输入法产生的日志
+debug.log
