@@ -20,7 +20,6 @@ import csv
 import os
 import re
 import sys
-from dataclasses import dataclass, field
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor, QBrush, QFont, QPalette
@@ -39,60 +38,76 @@ VERSION = u'1.0.0'
 # =====================================================================
 
 
-@dataclass
-class Violation:
-    timing_group: str = 'default'
-    startpoint: str = ''
-    endpoint: str = ''
-    slack: float = None
-    depth: int = None
-    pure_depth: int = None
-    cell_delay: float = None
-    net_delay: float = None
-    et_slack: float = None
-    st_slack: float = None
-    st_fanin: int = None
-    st_fanout: int = None
-    et_fanin: int = None
-    et_fanout: int = None
-    type: str = ''
-    source_file: str = ''
+class Violation(object):
+    """一条违例路径（兼容 Python 3.5+，无需 dataclasses）。"""
+
+    def __init__(self, timing_group='default', startpoint='', endpoint='',
+                 slack=None, depth=None, pure_depth=None, cell_delay=None,
+                 net_delay=None, et_slack=None, st_slack=None,
+                 st_fanin=None, st_fanout=None, et_fanin=None,
+                 et_fanout=None, type='', source_file=''):
+        self.timing_group = timing_group
+        self.startpoint = startpoint
+        self.endpoint = endpoint
+        self.slack = slack
+        self.depth = depth
+        self.pure_depth = pure_depth
+        self.cell_delay = cell_delay
+        self.net_delay = net_delay
+        self.et_slack = et_slack
+        self.st_slack = st_slack
+        self.st_fanin = st_fanin
+        self.st_fanout = st_fanout
+        self.et_fanin = et_fanin
+        self.et_fanout = et_fanout
+        self.type = type
+        self.source_file = source_file
 
 
-@dataclass
-class ParseResult:
-    path: str
-    timing_group: str
-    rows: list = field(default_factory=list)
-    skipped: int = 0
-    columns: list = field(default_factory=list)
+class ParseResult(object):
+    """CSV 解析结果。"""
+
+    def __init__(self, path, timing_group, rows=None, skipped=0, columns=None):
+        self.path = path
+        self.timing_group = timing_group
+        self.rows = rows if rows is not None else []
+        self.skipped = skipped
+        self.columns = columns if columns is not None else []
 
 
-@dataclass
-class DiffRow:
-    status: str                 # 'new' | 'fixed' | 'persistent'
-    timing_group: str
-    startpoint: str
-    endpoint: str
-    base_slack: float = None    # 旧版 slack
-    target_slack: float = None  # 新版 slack
-    delta: float = None         # target - base（持续违例时有效）
-    base_depth: int = None
-    target_depth: int = None
+class DiffRow(object):
+    """一行差异结果。"""
+
+    def __init__(self, status, timing_group, startpoint, endpoint,
+                 base_slack=None, target_slack=None, delta=None,
+                 base_depth=None, target_depth=None):
+        self.status = status             # 'new' | 'fixed' | 'persistent'
+        self.timing_group = timing_group
+        self.startpoint = startpoint
+        self.endpoint = endpoint
+        self.base_slack = base_slack     # 旧版 slack
+        self.target_slack = target_slack # 新版 slack
+        self.delta = delta               # target - base（持续违例时有效）
+        self.base_depth = base_depth
+        self.target_depth = target_depth
 
 
-@dataclass
-class DiffResult:
-    old: ParseResult
-    new: ParseResult
-    bus_merge: bool
-    all_rows: list = field(default_factory=list)
-    new_count: int = 0
-    fixed_count: int = 0
-    persistent_count: int = 0
-    improved_count: int = 0
-    worsened_count: int = 0
-    same_count: int = 0
+class DiffResult(object):
+    """两版对比的完整结果。"""
+
+    def __init__(self, old, new, bus_merge, all_rows=None, new_count=0,
+                 fixed_count=0, persistent_count=0, improved_count=0,
+                 worsened_count=0, same_count=0):
+        self.old = old
+        self.new = new
+        self.bus_merge = bus_merge
+        self.all_rows = all_rows if all_rows is not None else []
+        self.new_count = new_count
+        self.fixed_count = fixed_count
+        self.persistent_count = persistent_count
+        self.improved_count = improved_count
+        self.worsened_count = worsened_count
+        self.same_count = same_count
 
 
 # =====================================================================
