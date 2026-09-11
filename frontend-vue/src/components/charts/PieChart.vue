@@ -82,5 +82,6 @@ const charts = computed(() =>
   font-size: 13px;
   text-align: center;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 </style>

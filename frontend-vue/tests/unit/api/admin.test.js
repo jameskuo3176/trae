@@ -9,6 +9,18 @@ vi.mock('@/api/client', () => ({
 describe('admin release directory API contract', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  it('sends CSV files to the server preview endpoint', async () => {
+    const formData = new FormData()
+    formData.append('file', new File(['a,b\n1,2\n'], 'qor.csv'))
+    apiClient.post.mockResolvedValue({ data: { total_rows: 1 } })
+
+    await adminApi.previewCsvUpload(formData)
+
+    expect(apiClient.post).toHaveBeenCalledWith('/admin/upload_csv_preview', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+  })
+
   it('sends the project identity with the local record id', async () => {
     apiClient.post.mockResolvedValue({ data: { ok: true } })
 
@@ -31,10 +43,7 @@ describe('admin release directory API contract', () => {
 
     await adminApi.batchUpdateReleaseDir(payload)
 
-    expect(apiClient.post).toHaveBeenCalledWith(
-      '/admin/qor/batch_release_dir',
-      payload
-    )
+    expect(apiClient.post).toHaveBeenCalledWith('/admin/qor/batch_release_dir', payload)
   })
 
   it('loads review hierarchy status through the read-only endpoint', async () => {
@@ -58,9 +67,20 @@ describe('admin release directory API contract', () => {
 
     await adminApi.updateReviewHierarchyModuleOwner(payload)
 
-    expect(apiClient.post).toHaveBeenCalledWith(
-      '/admin/review-hierarchy/module-owner',
-      payload
-    )
+    expect(apiClient.post).toHaveBeenCalledWith('/admin/review-hierarchy/module-owner', payload)
+  })
+
+  it('previews or applies one project YAML through the scoped endpoint', async () => {
+    const payload = {
+      project: 'projectA',
+      project_yaml: 'owner: admin\ngroups: {}',
+      config_checksum: 'abc123',
+      dry_run: true
+    }
+    apiClient.post.mockResolvedValue({ data: { ok: true, dry_run: true } })
+
+    await adminApi.importReviewHierarchyProjectYaml(payload)
+
+    expect(apiClient.post).toHaveBeenCalledWith('/admin/review-hierarchy/project-yaml', payload)
   })
 })

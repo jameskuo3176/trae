@@ -1,12 +1,14 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useDashboardConfigsStore } from '@/stores/dashboardConfigs'
 import { useAuthStore } from '@/stores/auth'
+import { useDashboardConfigState } from '@/composables/useDashboardConfigState'
 
 const props = defineProps({ modelValue: { type: Object, required: true } })
-const emit = defineEmits(['update:modelValue'])
+const emit = defineEmits(['update:modelValue', 'applied'])
 const configs = useDashboardConfigsStore()
 const auth = useAuthStore()
+const { snapshot, apply: applyState } = useDashboardConfigState()
 const name = ref('')
 const makeDefault = ref(false)
 const canSave = computed(() => !auth.isViewer)
@@ -15,19 +17,55 @@ const selected = computed(() =>
 )
 
 async function apply() {
+  if (!configs.activeId) {
+    emit('applied', null)
+    return
+  }
   const detail = await configs.loadConfig()
   const payload = detail?.config || selected.value?.config
-  if (payload) emit('update:modelValue', { ...props.modelValue, ...payload })
+  if (!payload) {
+    emit('applied', null)
+    return
+  }
+  // Replace settings (not shallow-merge leftovers) and restore filters/selection.
+  const settingsTarget = { ...props.modelValue }
+  await applyState(payload, settingsTarget)
+  emit('update:modelValue', { ...settingsTarget })
+  emit('applied', payload)
 }
+
 async function save() {
   if (!name.value.trim()) return
-  await configs.save(name.value.trim(), props.modelValue, makeDefault.value)
+  const payload = snapshot(props.modelValue)
+  await configs.save(name.value.trim(), payload, makeDefault.value)
   name.value = ''
 }
-onMounted(async () => {
+
+async function remove() {
+  if (!configs.activeId || !canSave.value) return
+  const label = selected.value?.name || 'this configuration'
+  if (!window.confirm(`Delete saved configuration "${label}"? This cannot be undone.`)) return
+  const ok = await configs.remove(configs.activeId)
+  if (!ok) return
+  await apply()
+}
+
+const canDelete = computed(() => canSave.value && Boolean(configs.activeId))
+
+const didApply = ref(false)
+
+/** Parent-driven bootstrap so filters/data load after projects are ready. */
+async function bootstrap() {
+  didApply.value = false
   await configs.load()
-  if (configs.activeId) await apply()
-})
+  if (!configs.activeId) return false
+  await apply()
+  // 404 / missing detail clears activeId — treat as not applied so parent loads defaults.
+  didApply.value = Boolean(configs.activeId)
+  return didApply.value
+}
+
+defineExpose({ bootstrap, didApply, apply })
 </script>
 
 <template>
@@ -55,6 +93,15 @@ onMounted(async () => {
         @click="save"
       >
         Save current
+      </button>
+      <button
+        v-if="canDelete"
+        class="btn btn-sm"
+        type="button"
+        :disabled="configs.loading"
+        @click="remove"
+      >
+        Delete
       </button>
     </template>
     <span v-else class="config-note">Read-only dashboard</span>

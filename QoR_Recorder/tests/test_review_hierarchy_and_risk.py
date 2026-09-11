@@ -380,7 +380,9 @@ projects:
     assert response.status_code == 200
     assert response.json()['validation'] == {'valid': True, 'errors': []}
     assert response.json()['permissions']['can_edit_module_owner'] is False
+    assert response.json()['permissions']['can_import_project_yaml'] is False
     assert response.json()['owner_options'] == []
+    assert response.json()['import_project_options'] == []
     assert client.post('/api/admin/review-hierarchy/status').status_code == 405
 
     admin = User.objects.create_user(username='admin-status', role='admin')
@@ -390,6 +392,10 @@ projects:
     assert response.json()['validation'] == {'valid': True, 'errors': []}
     assert response.json()['projects'][0]['effective_thresholds']['tns_setup']
     assert response.json()['permissions']['can_edit_module_owner'] is True
+    assert response.json()['permissions']['can_import_project_yaml'] is True
+    assert {
+        project['name'] for project in response.json()['import_project_options']
+    } == {'projectA', 'unrelated'}
     assert any(
         option['username'] == 'release-owner'
         for option in response.json()['owner_options']
@@ -548,6 +554,257 @@ def test_yaml_replace_failure_rolls_back_database_owner(
     hierarchy_env['project_module'].refresh_from_db()
     assert hierarchy_env['project_module'].owner_id == old_owner_id
     assert config.read_bytes() == original
+
+
+@pytest.mark.django_db
+def test_project_yaml_preview_is_zero_write(
+    hierarchy_env, tmp_path, client, monkeypatch,
+):
+    config = tmp_path / 'hierarchy.yaml'
+    _write_hierarchy_config(config)
+    _data, checksum = load_hierarchy(config)
+    original = config.read_bytes()
+    before = {
+        'groups': ReviewGroup.objects.count(),
+        'links': ReviewGroupModule.objects.count(),
+        'states': ReviewHierarchySyncState.objects.count(),
+        'owner': hierarchy_env['project_module'].owner_id,
+    }
+    monkeypatch.setattr(
+        'django_app.services.review_hierarchy.DEFAULT_CONFIG_PATH',
+        config,
+    )
+    admin = User.objects.create_user(username='yaml-preview-admin', role='admin')
+    client.force_login(admin)
+
+    response = client.post(
+        '/api/admin/review-hierarchy/project-yaml',
+        data={
+            'project': 'projectA',
+            'project_yaml': """
+owner: project-owner
+groups:
+  replacement:
+    owner: group-owner
+    modules:
+      moduleA:
+        release_owner: release-owner
+""",
+            'config_checksum': checksum,
+            'dry_run': True,
+        },
+        content_type='application/json',
+    )
+
+    assert response.status_code == 200
+    assert response.json()['dry_run'] is True
+    assert response.json()['project'] == 'projectA'
+    assert response.json()['plan']['changes']['group_creates'] == 1
+    assert response.json()['plan']['changes']['group_deletes'] == 2
+    assert response.json()['yaml_diff']['groups'] == {
+        'added': ['replacement'],
+        'updated': [],
+        'removed': ['groupA'],
+    }
+    assert response.json()['yaml_diff']['modules'] == {
+        'added': [],
+        'updated': [],
+        'moved': [{'name': 'moduleA', 'from': 'groupA', 'to': 'replacement'}],
+        'removed': [],
+    }
+    assert config.read_bytes() == original
+    assert {
+        'groups': ReviewGroup.objects.count(),
+        'links': ReviewGroupModule.objects.count(),
+        'states': ReviewHierarchySyncState.objects.count(),
+        'owner': ProjectModule.objects.get(
+            pk=hierarchy_env['project_module'].pk,
+        ).owner_id,
+    } == before
+
+
+@pytest.mark.django_db
+def test_project_yaml_apply_replaces_target_and_preserves_other_yaml(
+    hierarchy_env, tmp_path, client, monkeypatch,
+):
+    config = tmp_path / 'hierarchy.yaml'
+    data = _config()
+    data['projects']['deleted-project-kept-in-yaml'] = {
+        'owner': 'preserve-verbatim',
+        'custom': {'value': 7},
+    }
+    config.write_text(yaml.safe_dump(data, sort_keys=False), encoding='utf-8')
+    _data, checksum = load_hierarchy(config)
+    monkeypatch.setattr(
+        'django_app.services.review_hierarchy.DEFAULT_CONFIG_PATH',
+        config,
+    )
+    admin = User.objects.create_user(username='yaml-apply-admin', role='admin')
+    client.force_login(admin)
+
+    response = client.post(
+        '/api/admin/review-hierarchy/project-yaml',
+        data={
+            'project': 'projectA',
+            'project_yaml': """
+projects:
+  projectA:
+    owner: project-owner
+    imported_marker: true
+    groups:
+      replacement:
+        owner: group-owner
+        description: Imported in one operation
+        modules:
+          moduleA:
+            release_owner: release-owner
+""",
+            'config_checksum': checksum,
+            'dry_run': False,
+        },
+        content_type='application/json',
+    )
+
+    assert response.status_code == 200
+    assert response.json()['dry_run'] is False
+    saved = yaml.safe_load(config.read_text(encoding='utf-8'))
+    assert saved['projects']['projectA']['imported_marker'] is True
+    assert set(saved['projects']['projectA']['groups']) == {'replacement'}
+    assert saved['projects']['deleted-project-kept-in-yaml'] == {
+        'owner': 'preserve-verbatim',
+        'custom': {'value': 7},
+    }
+    assert ReviewGroup.objects.filter(
+        project=hierarchy_env['project'], name='replacement',
+    ).exists()
+    assert not ReviewGroup.objects.filter(
+        project=hierarchy_env['project'], name__in=('groupA', 'stale'),
+    ).exists()
+    assert ReviewGroup.objects.filter(pk=hierarchy_env['other_group'].pk).exists()
+    assert response.json()['status']['current_db_diff']['in_sync'] is True
+
+
+@pytest.mark.django_db
+def test_project_yaml_import_rejects_conflict_and_full_file(
+    hierarchy_env, tmp_path, client, monkeypatch,
+):
+    config = tmp_path / 'hierarchy.yaml'
+    _write_hierarchy_config(config)
+    original = config.read_bytes()
+    monkeypatch.setattr(
+        'django_app.services.review_hierarchy.DEFAULT_CONFIG_PATH',
+        config,
+    )
+    admin = User.objects.create_user(username='yaml-invalid-admin', role='admin')
+    client.force_login(admin)
+
+    conflict = client.post(
+        '/api/admin/review-hierarchy/project-yaml',
+        data={
+            'project': 'projectA',
+            'project_yaml': 'owner: project-owner\ngroups: {}',
+            'config_checksum': 'stale-checksum',
+            'dry_run': True,
+        },
+        content_type='application/json',
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()['code'] == 'config_conflict'
+
+    _data, checksum = load_hierarchy(config)
+    full_file = client.post(
+        '/api/admin/review-hierarchy/project-yaml',
+        data={
+            'project': 'projectA',
+            'project_yaml': (
+                'version: "2"\nprojects:\n'
+                '  projectA:\n    owner: project-owner\n    groups: {}\n'
+            ),
+            'config_checksum': checksum,
+            'dry_run': True,
+        },
+        content_type='application/json',
+    )
+    assert full_file.status_code == 400
+    assert 'paste only one project' in full_file.json()['error']
+    assert config.read_bytes() == original
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('role', ['owner', 'viewer'])
+def test_non_admin_cannot_import_project_yaml(
+    hierarchy_env, tmp_path, client, monkeypatch, role,
+):
+    config = tmp_path / 'hierarchy.yaml'
+    _write_hierarchy_config(config)
+    original = config.read_bytes()
+    monkeypatch.setattr(
+        'django_app.services.review_hierarchy.DEFAULT_CONFIG_PATH',
+        config,
+    )
+    actor = User.objects.create_user(username=f'yaml-{role}', role=role)
+    client.force_login(actor)
+
+    response = client.post(
+        '/api/admin/review-hierarchy/project-yaml',
+        data={'project_yaml': 'owner: project-owner\ngroups: {}'},
+        content_type='application/json',
+    )
+
+    assert response.status_code == 403
+    assert config.read_bytes() == original
+
+
+@pytest.mark.django_db
+def test_project_yaml_replace_failure_rolls_back_database(
+    hierarchy_env, tmp_path, client, monkeypatch,
+):
+    config = tmp_path / 'hierarchy.yaml'
+    _write_hierarchy_config(config)
+    _data, checksum = load_hierarchy(config)
+    original = config.read_bytes()
+    original_group_ids = set(
+        ReviewGroup.objects.filter(
+            project=hierarchy_env['project'],
+        ).values_list('id', flat=True)
+    )
+    monkeypatch.setattr(
+        'django_app.services.review_hierarchy.DEFAULT_CONFIG_PATH',
+        config,
+    )
+    monkeypatch.setattr(
+        'django_app.services.review_hierarchy.os.replace',
+        lambda _source, _target: (_ for _ in ()).throw(OSError('read-only')),
+    )
+    admin = User.objects.create_user(username='yaml-failure-admin', role='admin')
+    client.force_login(admin)
+
+    response = client.post(
+        '/api/admin/review-hierarchy/project-yaml',
+        data={
+            'project': 'projectA',
+            'project_yaml': """
+owner: project-owner
+groups:
+  replacement:
+    owner: group-owner
+    modules:
+      moduleA:
+        release_owner: release-owner
+""",
+            'config_checksum': checksum,
+            'dry_run': False,
+        },
+        content_type='application/json',
+    )
+
+    assert response.status_code == 500
+    assert config.read_bytes() == original
+    assert set(
+        ReviewGroup.objects.filter(
+            project=hierarchy_env['project'],
+        ).values_list('id', flat=True)
+    ) == original_group_ids
 
 
 @pytest.mark.django_db

@@ -1243,7 +1243,10 @@ A: 无. 任意 JSON 值. 服务端会存入 `extra_fields` JSON 字段, 详情�
 A: 会的. 数组中每条 record 创建一个独立的 QorRecord, 但共享 `upload.version` (若 record 自带 version, 则以 record 为准).
 
 **Q: 缺省时 version / full_dir 取哪个?**
-A: 优先级: `record.version` > `upload.version`, `record.full_dir` > `upload.full_dir`. 顶层 `upload` 提供"批次默认值", 降低重复.
+A: 优先级: `record.version` > `upload.version`, `record.full_dir` > `upload.full_dir`. 历史
+§6.5 文件可用 `upload.directory` 作为 `upload.full_dir` 的别名；入口会规范化为
+`upload.full_dir`。两个字段都非空时必须相同，否则拒绝上传；空白 `full_dir` 会回退到
+非空 `directory`。顶层 `upload` 提供"批次默认值", 降低重复.
 
 ---
 
@@ -1268,7 +1271,7 @@ A: 优先级: `record.version` > `upload.version`, `record.full_dir` > `upload.f
   "generated_at": "ISO 8601",
   "stage": "Synthesis",           // 或 PnR / STA / Route
   "top_module": "modulea_t",      // → module (自动)
-  "run": {"directory": "cfg1_rundir"},   // → full_dir
+  "run": {"directory": "cfg1_rundir"},   // 也可写 full_dir；两者均 → full_dir
 
   "timing": {
     "default": {                  // mandatory
@@ -1315,7 +1318,7 @@ WNS 取所有 Path Group 的最小值，TNS 仅累加负值，NVP 求和。
 | DC 上游字段 | QorRecord 字段 | 说明 |
 |-------------|----------------|------|
 | `top_module` | `module.name` (自动创建/查找) | **无须 `--module-name` 覆盖** |
-| `run.directory` | `qor_records.full_dir` | run 目录, 1 run = 1 record |
+| `run.full_dir` / `run.directory` | `qor_records.full_dir` | 两者为别名；冲突时拒绝，1 run = 1 record |
 | `area.tile.area.total` | `qor_records.area_total` | tile 视角整 chip 面积 |
 | `area.tile.area.sequential` | `area_sequential` | |
 | `area.tile.area.macro` | `area_macro` + `area_black_box` | DC 的 macro 等价 §6.5 black_box |

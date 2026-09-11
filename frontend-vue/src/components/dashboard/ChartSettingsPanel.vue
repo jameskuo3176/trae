@@ -60,6 +60,8 @@ const views = [
         <option value="both">Module + tag</option>
         <option value="module">Module</option>
         <option value="tag">Tag</option>
+        <option value="version">Version</option>
+        <option value="version_tag">Version + tag</option>
         <option value="module_tag_dir">Module + tag + directory</option>
       </select></label
     >

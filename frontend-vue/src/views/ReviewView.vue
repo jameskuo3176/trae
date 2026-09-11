@@ -1124,9 +1124,7 @@ async function confirmReviewAction() {
                         type="button"
                         class="aggregate-star-button"
                         :disabled="!module.can_select_star"
-                        :aria-label="
-                          module.star_explicit ? '取消本周评审星标' : '设为本周评审星标'
-                        "
+                        :aria-label="module.star_explicit ? '取消本周评审星标' : '设为本周评审星标'"
                         :title="
                           module.star_explicit ? '点击取消本周评审星标' : '点击确认本周评审 Run'
                         "

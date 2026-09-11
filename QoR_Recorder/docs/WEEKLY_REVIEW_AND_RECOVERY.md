@@ -73,7 +73,22 @@ and modules that have not been bridged to `GlobalModule`.
 Admins can inspect the read-only status under **管理后台 → 评审层级状态**. It
 shows the config path/version/checksum, validation errors, last-applied state,
 current database diff, configured ownership, module grouping, and effective
-thresholds. The browser cannot edit or apply YAML.
+thresholds. Administrators can also use **粘贴项目 YAML** to replace one
+project subtree. The browser validates and previews the scoped database diff
+before confirmation; other projects and top-level settings are preserved.
+Groups and module links omitted from the pasted project are removed after the
+administrator confirms. The full-file CLI workflow remains available.
+
+For a systemd deployment, the service user must be able to create temporary
+files and atomically replace the YAML inside `config/`. Keep
+`/opt/qor_recorder/config` in the unit's `ReadWritePaths` and assign the
+directory to the service account:
+
+```bash
+sudo chown -R qor:qor /opt/qor_recorder/config
+sudo systemctl daemon-reload
+sudo systemctl restart qor_recorder
+```
 
 ## Weekly review rules
 

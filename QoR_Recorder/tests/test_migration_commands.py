@@ -12,7 +12,8 @@ from django_app.core.management.commands.migrate_project_databases import (
     _legacy_null_counts,
     _normalize_legacy_nulls,
 )
-from django_app.core.models import GlobalModule
+from django_app.core.db_routing import _get_project_db_alias, get_project_engine
+from django_app.core.models import GlobalModule, Module, Project
 
 
 @pytest.mark.django_db
@@ -130,3 +131,54 @@ def test_weekly_selection_source_repair_is_idempotent():
 
     assert run(['id', 'record_id']) == [(model, field)]
     assert run(['id', 'record_id', 'source']) == []
+
+
+@pytest.mark.parametrize(
+    'migration_name',
+    [
+        '0002_global_modules',
+        '0011_repair_foreign_key_column_names',
+    ],
+)
+def test_foreign_key_column_repairs_use_backend_introspection(migration_name):
+    migration = importlib.import_module(
+        f'django_app.core.migrations.{migration_name}'
+    )
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Introspection:
+        def table_names(self):
+            return ['projects', 'data_locks']
+
+        def get_table_description(self, cursor, table):
+            columns = {
+                'projects': ['id', 'locked_by_id', 'hidden_by_id'],
+                'data_locks': ['id', 'locked_by_id'],
+            }
+            return [SimpleNamespace(name=name) for name in columns[table]]
+
+    executed = []
+    connection = SimpleNamespace(
+        introspection=Introspection(),
+        cursor=lambda: Cursor(),
+    )
+    schema_editor = SimpleNamespace(
+        connection=connection,
+        quote_name=lambda name: f'`{name}`',
+        execute=executed.append,
+    )
+
+    migration._rename_column_if_needed(
+        schema_editor, 'projects', 'locked_by_id', 'locked_by'
+    )
+
+    assert executed == [
+        'ALTER TABLE `projects` '
+        'RENAME COLUMN `locked_by_id` TO `locked_by`'
+    ]

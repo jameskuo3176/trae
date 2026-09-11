@@ -16,7 +16,7 @@
 SHELL := cmd.exe
 .SHELLFLAGS := /D /S /C
 
-QOR_SERVER ?= http://127.0.0.1:8000
+QOR_SERVER ?= http://127.0.0.1:5000
 PROJECT_ID ?= 1
 MODULE_NAME ?= windows_upload_demo
 VERSION ?= windows_$(shell powershell.exe -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss")

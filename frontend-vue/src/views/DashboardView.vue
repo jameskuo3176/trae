@@ -61,11 +61,25 @@ const settings = reactive({
   tableFontSize: tableFontSize.value,
   activeView: 'charts'
 })
+const configBarRef = ref(null)
+
+function replaceSettings(next) {
+  Object.keys(settings).forEach(key => {
+    if (!(key in next)) delete settings[key]
+  })
+  Object.assign(settings, next)
+}
 
 onMounted(async () => {
   await loadProjects()
-  await Promise.all([loadModules(), loadVersions()])
-  await loadDashboardData()
+  const applied = await configBarRef.value?.bootstrap?.()
+  if (!applied) {
+    await Promise.all([
+      loadModules(),
+      loadVersions({ selectLatest: filters.projectIds.length > 0 })
+    ])
+    await loadDashboardData()
+  }
   window.addEventListener('scroll', onWindowScroll, { passive: true })
   updateActiveSection()
 })
@@ -188,8 +202,9 @@ provide('chartSettings', {
     </aside>
     <div class="dashboard-content">
       <DashboardConfigBar
+        ref="configBarRef"
         :model-value="settings"
-        @update:model-value="Object.assign(settings, $event)"
+        @update:model-value="replaceSettings"
       />
       <FilterBar />
       <section v-if="dashboard.diagnostics.length" class="diagnostic-state" role="status">
@@ -246,7 +261,11 @@ provide('chartSettings', {
           >
             <TransposedTableView />
           </div>
-          <div v-else-if="settings.activeView === 'aggregate'" id="section-view" class="anchor-target">
+          <div
+            v-else-if="settings.activeView === 'aggregate'"
+            id="section-view"
+            class="anchor-target"
+          >
             <DirAggregateView />
           </div>
           <div
@@ -257,14 +276,18 @@ provide('chartSettings', {
             <DirModulesView />
           </div>
           <div v-else class="charts-grid">
-            <section id="section-chart-area" class="chart-block anchor-target"><AreaChart /></section>
+            <section id="section-chart-area" class="chart-block anchor-target">
+              <AreaChart />
+            </section>
             <section id="section-chart-timing" class="chart-block anchor-target">
               <TimingChart />
             </section>
             <section id="section-chart-power" class="chart-block anchor-target">
               <PowerChart />
             </section>
-            <section id="section-chart-cell" class="chart-block anchor-target"><CellChart /></section>
+            <section id="section-chart-cell" class="chart-block anchor-target">
+              <CellChart />
+            </section>
             <section id="section-chart-mbb" class="chart-block anchor-target">
               <PhysicalMetricChart
                 metric="mbb_ratio"
@@ -326,6 +349,10 @@ provide('chartSettings', {
   display: flex;
   gap: 16px;
   align-items: flex-start;
+  position: relative;
+  left: 50%;
+  width: min(1920px, calc(100vw - 32px));
+  transform: translateX(-50%);
   padding: 8px 0 18px;
 }
 .dashboard-content {
@@ -394,6 +421,11 @@ provide('chartSettings', {
 @media (max-width: 1100px) {
   .dashboard-toc {
     display: none;
+  }
+}
+@media (max-width: 600px) {
+  .dashboard-page {
+    width: calc(100vw - 16px);
   }
 }
 .error-state {

@@ -36,9 +36,12 @@ async function updateRisk(record, rating) {
     <div class="risk-grid">
       <article v-for="record in rows" :key="`${record.project_id}:${record.id}`">
         <div>
-          <strong>{{ record.module_name || '-' }} · {{ record.tag || record.version }}</strong>
+          <strong>
+            {{ record.module_name || '-' }} ·
+            {{ [record.version, record.tag].filter(Boolean).join(' · ') || `#${record.id}` }}
+          </strong>
           <small>
-            WNS {{ record.risk.summary?.worst_wns ?? '-' }} · TNS
+            Run #{{ record.id }} · WNS {{ record.risk.summary?.worst_wns ?? '-' }} · TNS
             {{ record.risk.summary?.worst_tns ?? '-' }}
           </small>
         </div>
@@ -60,7 +63,7 @@ async function updateRisk(record, rating) {
 }
 .risk-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 .risk-grid article {
   display: flex;

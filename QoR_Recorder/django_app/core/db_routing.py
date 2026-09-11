@@ -459,6 +459,48 @@ def _map_module_ids_to_projects(module_id_set, proj_id_list=None):
     return project_module_map
 
 
+def _parse_module_ids_filter(module_ids_str, proj_id_list):
+    """Parse module_ids that may be bare ints or project:module composites.
+
+    Composite tokens (e.g. ``10:3``) pin a module to one project so multi-project
+    multi-module filters do not collide on per-project autoincrement IDs.
+    Bare ints keep the legacy lookup across ``proj_id_list``.
+    """
+    if not module_ids_str:
+        return None, list(proj_id_list)
+
+    bare_ids = set()
+    composite_map = {}
+    for token in module_ids_str.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        if ':' in token:
+            left, right = token.split(':', 1)
+            if left.strip().isdigit() and right.strip().isdigit():
+                pid = int(left)
+                mid = int(right)
+                if proj_id_list and pid not in proj_id_list:
+                    continue
+                composite_map.setdefault(pid, set()).add(mid)
+        elif token.isdigit():
+            bare_ids.add(int(token))
+
+    project_module_map = {}
+    for pid, mids in composite_map.items():
+        project_module_map.setdefault(pid, set()).update(mids)
+    if bare_ids:
+        mapped = _map_module_ids_to_projects(bare_ids, proj_id_list)
+        for pid, mids in mapped.items():
+            project_module_map.setdefault(pid, set()).update(mids)
+
+    if not project_module_map:
+        return {}, []
+
+    query_proj_list = [pid for pid in proj_id_list if pid in project_module_map]
+    return project_module_map, query_proj_list
+
+
 def query_records_by_projects(
     proj_id_list=None,
     module_ids_str='',
@@ -473,7 +515,7 @@ def query_records_by_projects(
 
     参数:
       proj_id_list:  list[int], 限定项目; None = 全部有 DB 的项目
-      module_ids_str: 逗号分隔的 module ID 字符串
+      module_ids_str: 逗号分隔的 module ID / ``projectId:moduleId`` 字符串
       versions_str:   逗号分隔的版本字符串
       owner_id:       int
       release_only:   True = 仅 is_released
@@ -484,9 +526,6 @@ def query_records_by_projects(
     if proj_id_list is None:
         proj_id_list = _resolve_project_ids()
 
-    mod_id_filter = None
-    if module_ids_str:
-        mod_id_filter = set(int(x) for x in module_ids_str.split(',') if x.strip().isdigit())
     ver_filter = None
     if versions_str:
         ver_filter = set(v.strip() for v in versions_str.split(',') if v.strip())
@@ -497,11 +536,12 @@ def query_records_by_projects(
     # 当指定了 module_ids 时, 必须先解析每个 module 属于哪个项目,
     # 因为各项目库的 module ID 独立自增, 直接用 module_id__in 在所有
     # 项目中过滤会误匹配其他项目中相同 ID 的模块.
+    # Tokens may be bare IDs or project:module composites.
     project_module_map = None
-    if mod_id_filter:
-        project_module_map = _map_module_ids_to_projects(mod_id_filter, proj_id_list)
-        # 只查询实际包含所选模块的项目
-        query_proj_list = [pid for pid in proj_id_list if pid in project_module_map]
+    if module_ids_str:
+        project_module_map, query_proj_list = _parse_module_ids_filter(
+            module_ids_str, proj_id_list
+        )
     else:
         query_proj_list = list(proj_id_list)
 
@@ -518,7 +558,7 @@ def query_records_by_projects(
             qs = QorRecord.objects.using(alias).select_related('module').all()
             if release_only:
                 qs = qs.filter(is_released=True)
-            if mod_id_filter and project_module_map:
+            if project_module_map is not None:
                 # 仅使用该项目中实际存在的 module ID 子集
                 pid_mods = project_module_map.get(pid, set())
                 if not pid_mods:

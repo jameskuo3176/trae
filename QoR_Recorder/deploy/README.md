@@ -77,7 +77,7 @@ than append untrusted, forwarded headers. Do not publish Gunicorn directly.
 
 For host Nginx/systemd deployment, build `frontend-vue` and copy only `dist/`
 to a web root such as `/var/www/qor-recorder`; adapt `deploy/nginx.conf` by
-changing its upstream from `django:8000` to `127.0.0.1:8000`.
+changing its upstream from `django:5000` to `127.0.0.1:5000`.
 
 ## systemd deployment
 

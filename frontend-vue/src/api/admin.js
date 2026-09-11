@@ -47,6 +47,14 @@ export const adminApi = {
       .then(r => r.data)
   },
 
+  previewCsvUpload(formData) {
+    return apiClient
+      .post('/admin/upload_csv_preview', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      .then(r => r.data)
+  },
+
   getRecordOwners(params = {}) {
     return apiClient.get('/admin/records/owners', { params }).then(r => r.data)
   },
@@ -75,6 +83,10 @@ export const adminApi = {
 
   updateReviewHierarchyModuleOwner(data) {
     return apiClient.post('/admin/review-hierarchy/module-owner', data).then(r => r.data)
+  },
+
+  importReviewHierarchyProjectYaml(data) {
+    return apiClient.post('/admin/review-hierarchy/project-yaml', data).then(r => r.data)
   },
 
   toggleRelease(recordId, projectId) {

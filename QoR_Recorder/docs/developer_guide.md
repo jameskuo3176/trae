@@ -472,7 +472,7 @@ python manage.py migrate
 python manage.py check
 
 # 4. 启动 API（开发）
-python manage.py runserver 127.0.0.1:8000
+python manage.py runserver 127.0.0.1:5000
 
 # 5. 另一终端启动 Vue 前端
 cd ../frontend-vue

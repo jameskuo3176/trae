@@ -22,7 +22,7 @@ const cartesianOption = {
 }
 const records = [
   { id: 'a', module_name: 'cpu', version: 'v1', full_dir: '/work/a' },
-  { id: 'b', module_name: 'gpu', tag: 'v2', full_dir: '/work/b' }
+  { id: 'b', module_name: 'gpu', version: 'v2', tag: 'gpu_v2', full_dir: '/work/b' }
 ]
 
 function mountChart(settings = {}) {
@@ -74,10 +74,27 @@ describe('BaseChart', () => {
     const rendered = chartMocks.setOption.mock.calls.at(-1)[1]
     expect(rendered.xAxis.type).toBe('value')
     expect(rendered.yAxis.type).toBe('category')
-    expect(rendered.yAxis.data[0]).toBe('cpu · v1 · /work/a')
+    expect(rendered.yAxis.data[0]).toBe('cpu\nv1\n/work/a')
     expect(rendered.grid).toMatchObject({ containLabel: true, left: 18 })
-    expect(rendered.yAxis.axisLabel).toMatchObject({ overflow: 'truncate', width: 220 })
+    expect(rendered.yAxis.axisLabel).toMatchObject({
+      overflow: 'break',
+      width: 240,
+      lineHeight: 14
+    })
     expect(rendered.series[0]).toMatchObject({ type: 'line', showSymbol: true })
+  })
+
+  it('renders version and version + tag labels without empty separators', async () => {
+    const { provided } = mountChart()
+    provided.labelMode.value = 'version'
+    await nextTick()
+    await nextTick()
+    expect(chartMocks.setOption.mock.calls.at(-1)[1].xAxis.data).toEqual(['v1', 'v2'])
+
+    provided.labelMode.value = 'version_tag'
+    await nextTick()
+    await nextTick()
+    expect(chartMocks.setOption.mock.calls.at(-1)[1].xAxis.data).toEqual(['v1', 'v2\ngpu_v2'])
   })
 
   it('replaces the canvas with an equivalent table in table mode', async () => {
@@ -87,7 +104,8 @@ describe('BaseChart', () => {
     expect(wrapper.find('#test-chart').exists()).toBe(false)
     expect(wrapper.find('.chart-table').exists()).toBe(true)
     expect(wrapper.get('.chart-table').attributes('style')).toContain('font-size: 16px')
-    expect(wrapper.text()).toContain('cpu · v1')
+    expect(wrapper.text()).toContain('cpu')
+    expect(wrapper.text()).toContain('v1')
     expect(wrapper.text()).toContain('20')
     expect(chartMocks.dispose).toHaveBeenCalledWith('test-chart')
   })

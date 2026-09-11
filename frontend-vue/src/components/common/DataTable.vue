@@ -184,7 +184,7 @@ defineExpose({ exportText, download })
   top: 0;
   z-index: 2;
   padding: 0;
-  white-space: nowrap;
+  white-space: pre-line;
   border-right: 1px solid var(--color-border);
 }
 .data-table td {

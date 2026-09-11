@@ -335,9 +335,9 @@ RUN mkdir -p data uploads logs backups \
 
 USER qor
 
-EXPOSE 8000
+EXPOSE 5000
 ENTRYPOINT ["/usr/bin/tini","--"]
-CMD ["gunicorn", "django_app.wsgi:application", "--bind", "0.0.0.0:8000"]
+CMD ["gunicorn", "django_app.wsgi:application", "--bind", "0.0.0.0:5000"]
 ```
 
 **体积对比**:

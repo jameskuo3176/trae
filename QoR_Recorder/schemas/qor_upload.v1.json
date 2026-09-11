@@ -21,7 +21,8 @@
         "module_name":    { "type": "string", "maxLength": 128 },
         "module_id":      { "type": "integer", "minimum": 1 },
         "mark_released":  { "type": "boolean" },
-        "full_dir":       { "type": "string", "maxLength": 1024 },
+        "full_dir":       { "type": "string", "maxLength": 1024, "description": "规范 run 路径；与 directory 同时非空时必须相同" },
+        "directory":      { "type": "string", "maxLength": 1024, "description": "历史 full_dir 别名；服务端接收后规范化为 full_dir" },
         "release_dir":    { "type": "string", "maxLength": 1024 },
         "uploader_note":  { "type": "string", "maxLength": 1024 }
       },
@@ -110,7 +111,10 @@
         "cell_count":            { "type": "integer", "minimum": 0 },
         "instance_count":        { "type": "integer", "minimum": 0 },
         "net_count":             { "type": "integer", "minimum": 0 },
-        "sequential_cell_count": { "type": "integer", "minimum": 0 }
+        "sequential_cell_count": { "type": "integer", "minimum": 0 },
+        "ram_cell_count":        { "type": "integer", "minimum": 0 },
+        "macro_cell_count":      { "type": "integer", "minimum": 0 },
+        "register_count":        { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false
     },
@@ -147,6 +151,10 @@
         "period": { "type": "number", "minimum": 0, "maximum": 1e3 },
         "wns":    { "type": "number", "minimum": -1e3, "maximum": 1e3 },
         "tns":    { "type": "number", "minimum": -1e3, "maximum": 1e3 },
+        "nvp":    { "type": "integer", "minimum": 0, "maximum": 1e9 },
+        "hold_wns": { "type": "number", "minimum": -1e3, "maximum": 1e3 },
+        "hold_tns": { "type": "number", "minimum": -1e3, "maximum": 1e3 },
+        "hold_nvp": { "type": "integer", "minimum": 0, "maximum": 1e9 },
         "path":   { "type": "string",  "maxLength": 1024 }
       },
       "additionalProperties": false

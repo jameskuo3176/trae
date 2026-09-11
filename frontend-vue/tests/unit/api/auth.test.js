@@ -23,4 +23,3 @@ describe('auth API contract', () => {
     expect(result.must_change_password).toBe(false)
   })
 })
-

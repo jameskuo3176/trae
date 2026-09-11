@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { adminApi } from '@/api/admin'
+import ProjectYamlImportDialog from '@/components/admin/ProjectYamlImportDialog.vue'
 
 const props = defineProps({
   status: { type: Object, required: true }
@@ -16,8 +17,10 @@ const rowErrors = ref({})
 const rowSuccess = ref({})
 const treeInitialized = ref(false)
 const selectedProject = ref('')
+const yamlDialogOpen = ref(false)
 
 const canEdit = computed(() => props.status.permissions?.can_edit_module_owner === true)
+const canImportYaml = computed(() => props.status.permissions?.can_import_project_yaml === true)
 const ownerOptions = computed(() => props.status.owner_options || [])
 const displayedProjects = computed(() =>
   selectedProject.value
@@ -27,8 +30,7 @@ const displayedProjects = computed(() =>
 
 const projectKey = project => project.name
 const groupKey = (project, group) => `${project.name}::${group.name}`
-const moduleKey = (project, group, module) =>
-  `${project.name}::${group.name}::${module.name}`
+const moduleKey = (project, group, module) => `${project.name}::${group.name}::${module.name}`
 const moduleCount = project =>
   (project.groups || []).reduce((count, group) => count + (group.modules?.length || 0), 0)
 
@@ -133,6 +135,11 @@ function formatDateTime(value) {
   if (Number.isNaN(date.getTime())) return String(value)
   return date.toLocaleString()
 }
+
+function handleYamlApplied(status) {
+  yamlDialogOpen.value = false
+  emit('updated', status)
+}
 </script>
 
 <template>
@@ -144,9 +151,15 @@ function formatDateTime(value) {
         <p>Project → Group → Module → Release Owner</p>
       </div>
       <div class="hierarchy-state">
-        <span
-          :class="['status-badge', status.validation.valid ? 'is-valid' : 'is-invalid']"
+        <button
+          v-if="canImportYaml"
+          class="yaml-import-trigger"
+          type="button"
+          @click="yamlDialogOpen = true"
         >
+          粘贴项目 YAML
+        </button>
+        <span :class="['status-badge', status.validation.valid ? 'is-valid' : 'is-invalid']">
           {{ status.validation.valid ? '配置有效' : '配置无效' }}
         </span>
         <span
@@ -196,9 +209,7 @@ function formatDateTime(value) {
         <dt>最后应用变更</dt>
         <dd>
           {{
-            status.last_applied?.summary
-              ? `${status.last_applied.summary.total_changes} 项`
-              : '-'
+            status.last_applied?.summary ? `${status.last_applied.summary.total_changes} 项` : '-'
           }}
         </dd>
       </div>
@@ -260,10 +271,7 @@ function formatDateTime(value) {
           <details class="threshold-details">
             <summary>Effective thresholds</summary>
             <div>
-              <span
-                v-for="(levels, metric) in project.effective_thresholds"
-                :key="metric"
-              >
+              <span v-for="(levels, metric) in project.effective_thresholds" :key="metric">
                 <b>{{ metric }}</b>
                 medium {{ levels.medium_percent }}% · high {{ levels.high_percent }}%
               </span>
@@ -315,9 +323,7 @@ function formatDateTime(value) {
                   class="owner-editor"
                   @submit.prevent="saveOwner(project, group, module)"
                 >
-                  <label :for="`owner-${moduleKey(project, group, module)}`">
-                    新 Owner
-                  </label>
+                  <label :for="`owner-${moduleKey(project, group, module)}`"> 新 Owner </label>
                   <select
                     :id="`owner-${moduleKey(project, group, module)}`"
                     v-model="ownerDrafts[moduleKey(project, group, module)]"
@@ -337,9 +343,7 @@ function formatDateTime(value) {
                       savingKey === moduleKey(project, group, module)
                     "
                   >
-                    {{
-                      savingKey === moduleKey(project, group, module) ? '保存中…' : '保存'
-                    }}
+                    {{ savingKey === moduleKey(project, group, module) ? '保存中…' : '保存' }}
                   </button>
                   <button
                     class="owner-cancel"
@@ -384,6 +388,15 @@ function formatDateTime(value) {
       </section>
     </div>
     <p v-else class="hierarchy-empty">没有可显示的有效评审层级。</p>
+
+    <ProjectYamlImportDialog
+      :open="yamlDialogOpen"
+      :projects="status.import_project_options || status.projects"
+      :config-checksum="status.config_checksum || ''"
+      :initial-project="selectedProject"
+      @close="yamlDialogOpen = false"
+      @applied="handleYamlApplied"
+    />
   </section>
 </template>
 
@@ -426,6 +439,19 @@ function formatDateTime(value) {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
+}
+.yaml-import-trigger {
+  padding: 5px 10px;
+  border: 1px solid var(--color-primary);
+  border-radius: 3px;
+  background: var(--color-primary);
+  color: var(--color-surface);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.yaml-import-trigger:hover {
+  filter: brightness(1.06);
 }
 .status-badge,
 .node-count,

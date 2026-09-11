@@ -17,6 +17,7 @@ vi.mock('@/api/admin', () => ({
   adminApi: {
     getReviewHierarchyStatus: vi.fn(),
     updateReviewHierarchyModuleOwner: vi.fn(),
+    importReviewHierarchyProjectYaml: vi.fn(),
     getRecordOwners: vi.fn().mockResolvedValue([]),
     listHiddenProjects: vi.fn().mockResolvedValue([])
   }
@@ -33,7 +34,17 @@ const hierarchyStatus = (canEdit = true, releaseOwner = 'release-owner') => ({
     summary: { total_changes: 4 }
   },
   current_db_diff: { in_sync: false, total_changes: 2 },
-  permissions: { can_edit_module_owner: canEdit },
+  permissions: {
+    can_edit_module_owner: canEdit,
+    can_import_project_yaml: canEdit
+  },
+  import_project_options: canEdit
+    ? [
+        { id: 1, name: 'projectA', status: 'active' },
+        { id: 2, name: 'projectB', status: 'locked' },
+        { id: 3, name: 'projectNotConfigured', status: 'active' }
+      ]
+    : [],
   owner_options: canEdit
     ? [
         { id: 8, username: 'release-owner', display_name: 'Release Owner' },
@@ -227,5 +238,91 @@ describe('Admin hierarchy status', () => {
 
     expect(wrapper.get('.row-message.is-error').text()).toContain('YAML 目录只读')
     expect(wrapper.find('.owner-editor').exists()).toBe(true)
+  })
+
+  it('previews and confirms replacement of one project YAML', async () => {
+    adminApi.importReviewHierarchyProjectYaml
+      .mockResolvedValueOnce({
+        ok: true,
+        dry_run: true,
+        project: 'projectA',
+        config_checksum: 'next-checksum',
+        plan: {
+          desired: { projects: 1, groups: 1, modules: 1 },
+          changes: {
+            group_creates: 1,
+            group_deletes: 1,
+            module_link_deletes: 1
+          },
+          total_changes: 3
+        },
+        yaml_diff: {
+          groups: { added: ['new-group'], updated: [], removed: ['old-group'] },
+          modules: { added: [], updated: [], moved: [], removed: ['old-module'] }
+        }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        dry_run: false,
+        project: 'projectA',
+        status: {
+          ...hierarchyStatus(),
+          config_checksum: 'next-checksum',
+          current_db_diff: { in_sync: true, total_changes: 0 }
+        }
+      })
+    const wrapper = await mountHierarchy()
+
+    await wrapper.get('.yaml-import-trigger').trigger('click')
+    expect(
+      wrapper
+        .get('#yaml-import-project')
+        .findAll('option')
+        .map(option => option.text())
+    ).toContain('projectNotConfigured')
+    await wrapper
+      .get('#yaml-import-content')
+      .setValue(
+        'owner: project-owner\ngroups:\n  frontend:\n    owner: group-owner\n    modules: {}'
+      )
+    await wrapper
+      .findAll('.yaml-import-dialog button')
+      .find(button => button.text().includes('校验并预览'))
+      .trigger('click')
+    await flushPromises()
+
+    expect(adminApi.importReviewHierarchyProjectYaml).toHaveBeenNthCalledWith(1, {
+      project: 'projectA',
+      project_yaml:
+        'owner: project-owner\ngroups:\n  frontend:\n    owner: group-owner\n    modules: {}',
+      config_checksum: 'abc123',
+      dry_run: true
+    })
+    expect(wrapper.get('.preview-panel').text()).toContain('3 项数据库变更')
+    expect(wrapper.get('.delete-warning').text()).toContain('2 个')
+    expect(wrapper.get('.name-diff').text()).toContain('old-module')
+
+    await wrapper
+      .findAll('.yaml-import-dialog button')
+      .find(button => button.text().includes('确认替换'))
+      .trigger('click')
+    await flushPromises()
+
+    expect(adminApi.importReviewHierarchyProjectYaml).toHaveBeenNthCalledWith(2, {
+      project: 'projectA',
+      project_yaml:
+        'owner: project-owner\ngroups:\n  frontend:\n    owner: group-owner\n    modules: {}',
+      config_checksum: 'abc123',
+      dry_run: false
+    })
+    expect(wrapper.find('.yaml-import-dialog').exists()).toBe(false)
+    expect(wrapper.get('.hierarchy-console').text()).toContain('DB 已同步')
+  })
+
+  it('does not expose project YAML import to owner accounts', async () => {
+    adminApi.getReviewHierarchyStatus.mockResolvedValue(hierarchyStatus(false))
+    const wrapper = await mountHierarchy()
+
+    expect(wrapper.find('.yaml-import-trigger').exists()).toBe(false)
   })
 })

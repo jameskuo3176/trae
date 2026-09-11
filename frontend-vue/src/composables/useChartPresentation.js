@@ -10,6 +10,11 @@ const fallbackSettings = {
   tableFontSize: computed(() => 12)
 }
 
+/** 合并多字段标签：过滤空值后按行堆叠（ECharts / pre-line 均可识别）。 */
+export function joinLabelParts(parts) {
+  return parts.filter(Boolean).join('\n')
+}
+
 /**
  * 生成运行记录标签。
  * context = { projectCount, moduleCount } 用于动态省略冗余维度：
@@ -20,14 +25,22 @@ const fallbackSettings = {
 export function formatRunLabel(record, mode = 'both', context) {
   const project = record?.project_name || ''
   const module = record?.module_name || record?.module || 'Module'
-  const tag = record?.tag || record?.version || `#${record?.id ?? '-'}`
+  const version = record?.version || ''
+  const rawTag = record?.tag || ''
+  const fallback = `#${record?.id ?? '-'}`
+  const tag = rawTag || version || fallback
   const directory = record?.full_dir || record?.release_dir_effective || record?.release_dir || ''
 
   if (mode === 'module') return module
   if (mode === 'tag') return tag
+  if (mode === 'version') return version || rawTag || fallback
+  if (mode === 'version_tag') {
+    const parts = [...new Set([version, rawTag].filter(Boolean))]
+    return joinLabelParts(parts) || fallback
+  }
   if (mode === 'module_tag_dir') {
     const compactDir = directory.length > 42 ? `…${directory.slice(-41)}` : directory
-    return [module, tag, compactDir].filter(Boolean).join(' · ')
+    return joinLabelParts([module, tag, compactDir])
   }
   // 未传入上下文或筛选未明确指定（0/多选）时展示完整维度
   const showProject = !context || context.projectCount !== 1
@@ -36,7 +49,7 @@ export function formatRunLabel(record, mode = 'both', context) {
   if (showProject) parts.push(project)
   if (showModule) parts.push(module)
   parts.push(tag)
-  return parts.filter(Boolean).join(' · ')
+  return joinLabelParts(parts)
 }
 
 /** 读取当前仪表盘筛选状态，生成随选择变化的动态运行标签。 */
@@ -111,17 +124,19 @@ export function useChartPresentation(props) {
         : originalCategory.data || []
     const horizontal = orientation.value === 'horizontal'
     const dense = categories.length > 6
+    const multiline = categories.some(category => String(category).includes('\n'))
     const categoryAxis = {
       ...originalCategory,
       type: 'category',
       data: categories,
       axisLabel: {
         ...(originalCategory.axisLabel || {}),
-        rotate: !horizontal && dense ? 30 : 0,
+        rotate: !horizontal && dense && !multiline ? 30 : 0,
         hideOverlap: true,
-        overflow: 'truncate',
+        overflow: multiline ? 'break' : 'truncate',
         ellipsis: '…',
-        width: horizontal ? 220 : dense ? 110 : undefined
+        lineHeight: multiline ? 14 : undefined,
+        width: horizontal ? (multiline ? 240 : 220) : multiline ? 96 : dense ? 110 : undefined
       }
     }
     const valueAxis = { ...originalValue, type: 'value' }

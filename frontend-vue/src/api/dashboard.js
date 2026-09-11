@@ -4,16 +4,14 @@ const unwrap = response => response.data?.data ?? response.data
 
 export const dashboardApi = {
   modules(projectIds, signal) {
-    const params =
-      projectIds && projectIds.length ? { project_ids: projectIds.join(',') } : {}
+    const params = projectIds && projectIds.length ? { project_ids: projectIds.join(',') } : {}
     return apiClient.get('/v2/modules', { params, signal }).then(response => ({
       modules: response.data.data || [],
       meta: response.data.meta || {}
     }))
   },
   versions(projectIds, signal) {
-    const params =
-      projectIds && projectIds.length ? { project_ids: projectIds.join(',') } : {}
+    const params = projectIds && projectIds.length ? { project_ids: projectIds.join(',') } : {}
     return apiClient.get('/v2/versions', { params, signal }).then(unwrap)
   },
   records(params, signal) {
@@ -38,7 +36,9 @@ export const dashboardApi = {
     return apiClient
       .get(`/v2/projects/${projectId}/records/${recordId}/raw`, { signal })
       .then(unwrap)
-      .then(value => value?.content ?? value)
+      .then(value =>
+        value && Object.prototype.hasOwnProperty.call(value, 'content') ? value.content : value
+      )
   },
   violations(projectId, recordId, signal) {
     return apiClient
@@ -58,5 +58,8 @@ export const dashboardApi = {
   },
   saveConfig(config) {
     return apiClient.post('/dashboard/save', config).then(response => response.data)
+  },
+  deleteConfig(configId) {
+    return apiClient.delete(`/dashboard/${configId}`).then(response => response.data)
   }
 }

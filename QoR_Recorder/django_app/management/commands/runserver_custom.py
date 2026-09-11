@@ -3,12 +3,15 @@
 启动前:
   1. 若为 SQLite, 执行数据库备份
   2. 初始化默认数据
-  3. 打印启动横幅 (与 Flask app.py 保持一致)
+  3. 记录启动信息 (与 Flask app.py 保持一致)
 """
+import logging
 import os
 
 from django.conf import settings
 from django.core.management.commands.runserver import Command as RunserverCommand
+
+logger = logging.getLogger(__name__)
 
 
 class Command(RunserverCommand):
@@ -26,59 +29,62 @@ class Command(RunserverCommand):
     def _startup_backup(self):
         """若为 SQLite, 执行数据库备份"""
         if not getattr(settings, 'AUTO_BACKUP_ENABLED', False):
-            print('[BACKUP] 自动备份已关闭 (设置 AUTO_BACKUP_ENABLED=1 可启用)')
+            logger.info('[BACKUP] 自动备份已关闭 (设置 AUTO_BACKUP_ENABLED=1 可启用)')
             return
         db_type = getattr(settings, 'DB_TYPE', 'sqlite')
         if db_type != 'sqlite':
-            print(f'[BACKUP] {db_type} 后端, 跳过本地文件备份 (请确保后端已配置备份策略)')
+            logger.info(
+                '[BACKUP] %s 后端, 跳过本地文件备份 (请确保后端已配置备份策略)',
+                db_type,
+            )
             return
 
         db_path = settings.DATABASES.get('default', {}).get('NAME', '')
         if not db_path or not os.path.exists(db_path):
-            print(f'[BACKUP] 数据库文件不存在, 跳过备份: {db_path}')
+            logger.warning('[BACKUP] 数据库文件不存在, 跳过备份: %s', db_path)
             return
 
         try:
             from django_app.services.backup_service import perform_backup
             result = perform_backup(backup_type='auto', user=None)
             if result.get('ok'):
-                print(
-                    f"[BACKUP] 已备份 DB -> {result['file_path']} "
-                    f"({result['file_size'] // 1024}KB)"
+                logger.info(
+                    '[BACKUP] 已备份 DB -> %s (%sKB)',
+                    result['file_path'],
+                    result['file_size'] // 1024,
                 )
             else:
-                print(f"[BACKUP] 备份失败(不影响启动): {result.get('error')}")
-        except Exception as e:
-            print(f'[BACKUP] 备份异常(不影响启动): {e}')
+                logger.error('[BACKUP] 备份失败(不影响启动): %s', result.get('error'))
+        except Exception:
+            logger.exception('[BACKUP] 备份异常(不影响启动)')
 
     def _init_default_data(self):
         """初始化默认数据"""
         try:
             from django.core.management import call_command
             call_command('init_default_data')
-        except Exception as e:
-            print(f'[INIT] 默认数据初始化异常: {e}')
+        except Exception:
+            logger.exception('[INIT] 默认数据初始化异常')
 
     def _print_banner(self, options=None):
-        """打印启动横幅"""
+        """记录启动信息"""
         options = options or {}
         db_type = getattr(settings, 'DB_TYPE', 'sqlite')
         db_config = settings.DATABASES.get('default', {})
         sql_uri = db_config.get('NAME', '') or db_config.get('ENGINE', '')
 
-        print('=' * 60)
-        print(f'[DB] 后端类型: {db_type.upper()}')
+        logger.info('[DB] 后端类型: %s', db_type.upper())
         if db_type == 'mongodb':
             mongo_uri = getattr(settings, 'MONGODB_URI', '')
             mongo_db = getattr(settings, 'MONGODB_DB', '')
-            print(f'[DB] MongoDB:   {mongo_uri}  db={mongo_db}')
-            print(f'[DB] Fallback:  {sql_uri}  (只读回退)')
+            logger.info('[DB] MongoDB: %s db=%s', mongo_uri, mongo_db)
+            logger.info('[DB] Fallback: %s (只读回退)', sql_uri)
         else:
             # 隐藏密码
             safe_uri = sql_uri
             if '@' in safe_uri:
                 safe_uri = safe_uri.split('@', 1)[0] + '@***'
-            print(f'[DB] URI:       {safe_uri}')
+            logger.info('[DB] URI: %s', safe_uri)
 
         host = getattr(settings, 'HOST', '0.0.0.0')
         port = getattr(settings, 'PORT', 5000)
@@ -92,20 +98,22 @@ class Command(RunserverCommand):
                 port = int(addrport)
         debug = getattr(settings, 'DEBUG', False)
 
-        print('=' * 60)
-        print('QoR Recorder 系统启动中...')
-        print(f'进程标识:   pid={os.getpid()} cwd={os.getcwd()}')
-        print(f'主数据库:   {os.path.abspath(str(sql_uri))}')
-        print('默认管理员: admin / admin@2026  (首次登录请立即修改)')
-        print('默认用户:   user / user@2026')
-        print(f'监听地址:   {host}:{port}  (debug={debug})')
-        print(
-            f'安全:       SECRET_KEY='
-            f'{"默认值(仅DEBUG)" if settings.SECRET_KEY == getattr(settings, "_DEFAULT_SECRET_KEY", "") else "已配置"}'
-            f'  Cookie Secure={getattr(settings, "SESSION_COOKIE_SECURE", False)}'
+        logger.info('QoR Recorder 系统启动中')
+        logger.info('进程标识: pid=%s cwd=%s', os.getpid(), os.getcwd())
+        logger.info('主数据库: %s', os.path.abspath(str(sql_uri)))
+        logger.warning('默认管理员: admin / admin@2026 (首次登录请立即修改)')
+        logger.info('默认用户: user / user@2026')
+        logger.info('监听地址: %s:%s (debug=%s)', host, port, debug)
+        logger.info(
+            '安全: SECRET_KEY=%s Cookie Secure=%s',
+            (
+                '默认值(仅DEBUG)'
+                if settings.SECRET_KEY == getattr(settings, '_DEFAULT_SECRET_KEY', '')
+                else '已配置'
+            ),
+            getattr(settings, 'SESSION_COOKIE_SECURE', False),
         )
         if host in ('0.0.0.0', '::'):
-            print(f'访问地址:   http://localhost:{port}  (或 http://<本机IP>:{port})')
+            logger.info('访问地址: http://localhost:%s (或 http://<本机IP>:%s)', port, port)
         else:
-            print(f'访问地址:   http://{host}:{port}')
-        print('=' * 60)
+            logger.info('访问地址: http://%s:%s', host, port)

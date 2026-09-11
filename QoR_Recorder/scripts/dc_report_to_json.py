@@ -24,13 +24,40 @@ import re
 import sys
 from typing import Any, Optional
 
-try:
-    from django_app.services.qor_import import parse_source_path
-except ImportError:
-    from services.qor_import import parse_source_path
-
 # schema_version 用于 §6.5 上传协议 (区别于 DC 报告自身的 scheme_version)
 SCHEMA_VERSION = '1.0'
+_DEFAULT_VERSION_RE = re.compile(r'^[a-zA-Z]+_run_\d+$')
+_RUN_LEVEL_CONTROL_FIELDS = {
+    'source',
+    'status',
+    'metadata',
+    'warnings',
+    'scenario',
+    'scenarios',
+}
+
+def parse_source_path(source_path: str, *, top_module: Optional[str] = None) -> dict:
+    """Lightweight source-path parser; keep this CLI independent of Django."""
+    if not source_path or not isinstance(source_path, str):
+        raise ValueError('source_path 必须为非空字符串')
+    marker = '/rpts/'
+    idx = source_path.find(marker)
+    if idx == -1:
+        raise ValueError(f'路径中未找到 "{marker}"')
+    full_dir = source_path[:idx]
+    segments = [part for part in re.split(r'[/\\]', full_dir) if part]
+    if not full_dir or not segments:
+        raise ValueError('full_dir 为空')
+    raw_tag = segments[-1]
+    if top_module and raw_tag.startswith(top_module + '_'):
+        tag = raw_tag[len(top_module) + 1:]
+    elif top_module and raw_tag == top_module:
+        tag = raw_tag
+    else:
+        parts = raw_tag.split('_', 1)
+        tag = parts[1] if len(parts) >= 2 and len(parts[0]) >= 3 else raw_tag
+    version = next((part for part in segments if _DEFAULT_VERSION_RE.match(part)), None)
+    return {'full_dir': full_dir, 'tag': tag, 'version': version}
 
 
 # =========================================================================
@@ -55,6 +82,22 @@ def _to_int(v) -> Optional[int]:
         return None
 
 
+def _timing_metric(metrics: dict, *keys: str) -> Any:
+    """Read a timing metric using native DC and normalized key spellings."""
+    for key in keys:
+        if key in metrics:
+            return metrics[key]
+    lower_metrics = {
+        key.lower(): value
+        for key, value in metrics.items()
+        if isinstance(key, str)
+    }
+    for key in keys:
+        if key.lower() in lower_metrics:
+            return lower_metrics[key.lower()]
+    return None
+
+
 def _strip_pct(v) -> Optional[float]:
     """接受 '97.78%' / '0.9778' / 0.9778 → 返回 0-100 的数值."""
     if v is None:
@@ -72,21 +115,73 @@ def _resolve_source(section) -> Optional[str]:
     return None
 
 
+def _timing_scenarios(section: Any) -> dict:
+    """Return structured scenarios; metadata strings represent no timing data."""
+    if not isinstance(section, dict):
+        return {}
+    scenarios = section.get('scenarios')
+    return scenarios if isinstance(scenarios, dict) else {}
+
+
+def _is_empty_timing_section(section: Any) -> bool:
+    """Whether a DC timing section explicitly reports that it has no paths."""
+    return (
+        isinstance(section, dict)
+        and isinstance(section.get('status'), str)
+        and section['status'].strip().lower() == 'empty'
+    )
+
+
+def _mapping_field(container: Any, key: str) -> dict:
+    """Return one native-report metric object, excluding metadata/list values."""
+    if not isinstance(container, dict):
+        return {}
+    value = container.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _resolve_run_full_dir(run: dict) -> str:
+    """Resolve native run path aliases and reject ambiguous reports."""
+    values = {}
+    for key in ('full_dir', 'directory'):
+        value = run.get(key)
+        if value is None:
+            values[key] = ''
+            continue
+        if not isinstance(value, str):
+            raise DCReportError(f'$.run.{key}', '若提供则必须为字符串')
+        values[key] = value.strip()
+
+    full_dir = values['full_dir']
+    directory = values['directory']
+    if full_dir and directory and full_dir != directory:
+        raise DCReportError(
+            '$.run',
+            'run.full_dir 与 run.directory 同时存在但值不同',
+        )
+    return full_dir or directory
+
+
 # =========================================================================
 # §6.5 嵌套结构构造
 # =========================================================================
 
 def _build_area(tile_area: dict) -> dict:
-    """tile.area → §6.5 area 嵌套."""
+    """tile.area → §6.5 area 嵌套.
+
+    Native DC often exposes sequential area as ``non_combinational`` (no
+    ``sequential`` key). Map that to ``area.sequential`` / Dashboard
+    Sequential area. Never treat ``non_combinational`` as combinational.
+    """
     area = {}
     if _to_float(tile_area.get('total')) is not None:
         area['total'] = _to_float(tile_area['total'])
     if _to_float(tile_area.get('combinational')) is not None:
         area['combinational'] = _to_float(tile_area['combinational'])
-    elif _to_float(tile_area.get('non_combinational')) is not None:
-        area['combinational'] = _to_float(tile_area['non_combinational'])
     if _to_float(tile_area.get('sequential')) is not None:
         area['sequential'] = _to_float(tile_area['sequential'])
+    elif _to_float(tile_area.get('non_combinational')) is not None:
+        area['sequential'] = _to_float(tile_area['non_combinational'])
     if _to_float(tile_area.get('memory')) is not None:
         area['memory'] = _to_float(tile_area['memory'])
         area['black_box'] = _to_float(tile_area['memory'])  # black_box = 存储面积 (memory/sram)
@@ -175,7 +270,7 @@ def _build_extra_fields(dc: dict, default_path: Optional[str]) -> dict:
         if not isinstance(timing_section, dict):
             continue
         normalized_scenarios = {}
-        for scenario_name, scenario in (timing_section.get('scenarios') or {}).items():
+        for scenario_name, scenario in _timing_scenarios(timing_section).items():
             if not isinstance(scenario, dict):
                 continue
             normalized_groups = {}
@@ -183,11 +278,13 @@ def _build_extra_fields(dc: dict, default_path: Optional[str]) -> dict:
                 if not isinstance(metrics, dict):
                     continue
                 normalized_groups[group_name] = {
-                    'wns': _to_float(metrics.get('WNS')),
-                    'tns': _to_float(metrics.get('TNS')),
-                    'nvp': _to_int(metrics.get('NVP')),
-                    'period': _to_float(metrics.get('Clk_Period')),
-                    'lol': _to_int(metrics.get('LoL')),
+                    'wns': _to_float(_timing_metric(metrics, 'WNS')),
+                    'tns': _to_float(_timing_metric(metrics, 'TNS')),
+                    'nvp': _to_int(_timing_metric(metrics, 'NVP')),
+                    'period': _to_float(
+                        _timing_metric(metrics, 'Clk_Period', 'period')
+                    ),
+                    'lol': _to_int(_timing_metric(metrics, 'LoL', 'LOL')),
                 }
             if normalized_groups:
                 normalized_scenarios[scenario_name] = normalized_groups
@@ -215,16 +312,28 @@ def _build_extra_fields(dc: dict, default_path: Optional[str]) -> dict:
             fin['metadata'] = {k: v for k, v in final['metadata'].items()
                                if 'scenario' not in k.lower()}
         sc_summary = {}
-        for sname, sval in (final.get('scenarios') or {}).items():
+        for sname, sval in _timing_scenarios(final).items():
             if not isinstance(sval, dict):
                 continue
             pgs = sval.get('path_groups') or {}
-            wns_list = [_to_float(p.get('WNS')) for p in pgs.values()
-                        if _to_float(p.get('WNS')) is not None]
-            tns_list = [_to_float(p.get('TNS')) for p in pgs.values()
-                        if _to_float(p.get('TNS')) is not None]
-            nvp_list = [_to_int(p.get('NVP')) for p in pgs.values()
-                        if _to_int(p.get('NVP')) is not None]
+            wns_list = [
+                _to_float(_timing_metric(p, 'WNS'))
+                for p in pgs.values()
+                if isinstance(p, dict)
+                and _to_float(_timing_metric(p, 'WNS')) is not None
+            ]
+            tns_list = [
+                _to_float(_timing_metric(p, 'TNS'))
+                for p in pgs.values()
+                if isinstance(p, dict)
+                and _to_float(_timing_metric(p, 'TNS')) is not None
+            ]
+            nvp_list = [
+                _to_int(_timing_metric(p, 'NVP'))
+                for p in pgs.values()
+                if isinstance(p, dict)
+                and _to_int(_timing_metric(p, 'NVP')) is not None
+            ]
             sc_summary[sname] = {
                 'wns_worst': min(wns_list) if wns_list else None,
                 'tns_total': sum(value for value in tns_list if value < 0)
@@ -291,7 +400,9 @@ def convert_dc_to_qor_record(dc: dict, *,
         }
     """
     top_module = module_name_override or dc.get('top_module') or 'unknown'
-    run_dir = full_dir_override or ((dc.get('run') or {}).get('directory')) or ''
+    run = dc.get('run') or {}
+    native_run_dir = _resolve_run_full_dir(run)
+    run_dir = full_dir_override.strip() if full_dir_override else native_run_dir
     default = (dc.get('timing') or {}).get('default') or {}
     default_path = _resolve_source(default)
 
@@ -306,14 +417,14 @@ def convert_dc_to_qor_record(dc: dict, *,
 
     # ── Run 级物理实现指标 (每个 run 仅一个汇总值, 不随 scenario 变化) ──
     area = dc.get('area') or {}
-    tile = area.get('tile') or {}
-    tile_area = tile.get('area') or {}
-    tile_count = tile.get('cell_count') or {}
+    tile = _mapping_field(area, 'tile')
+    tile_area = _mapping_field(tile, 'area')
+    tile_count = _mapping_field(tile, 'cell_count')
 
     misc = dc.get('misc') or {}
-    fgcg = misc.get('fgcg') or {}
-    cong = misc.get('congestion') or {}
-    flop_count = misc.get('flop_count') or {}
+    fgcg = _mapping_field(misc, 'fgcg')
+    cong = _mapping_field(misc, 'congestion')
+    flop_count = _mapping_field(misc, 'flop_count')
 
     # 构建 §6.5 嵌套字段 (run 级)
     area_obj = _build_area(tile_area)
@@ -321,11 +432,14 @@ def convert_dc_to_qor_record(dc: dict, *,
     ratios_obj = _build_ratios(misc)
     cong_obj = _build_congestion(cong)
 
-    # register_count: 来自 misc.fgcg.total_flops (DC 报告中最贴近 "FF 数量" 的字段)
+    # register_count: misc.fgcg.total_flops → Dashboard Register count
     register_count = _to_int(fgcg.get('total_flops'))
+    if register_count is not None:
+        cells_obj = cells_obj or {}
+        cells_obj['register_count'] = register_count
 
     # ---- 遍历 timing.default.scenarios × path_groups (Scenario 级时序数据) ----
-    scenarios = default.get('scenarios') or {}
+    scenarios = _timing_scenarios(default)
     all_wns: list = []
     all_tns: list = []
     all_nvp: list = []
@@ -342,11 +456,11 @@ def convert_dc_to_qor_record(dc: dict, *,
         for gname, gval in pgs.items():
             if not isinstance(gval, dict):
                 continue
-            wns = _to_float(gval.get('WNS'))
-            tns = _to_float(gval.get('TNS'))
-            nvp = _to_int(gval.get('NVP'))
-            period = _to_float(gval.get('Clk_Period'))
-            lol = _to_int(gval.get('LoL'))
+            wns = _to_float(_timing_metric(gval, 'WNS'))
+            tns = _to_float(_timing_metric(gval, 'TNS'))
+            nvp = _to_int(_timing_metric(gval, 'NVP'))
+            period = _to_float(_timing_metric(gval, 'Clk_Period', 'period'))
+            lol = _to_int(_timing_metric(gval, 'LoL', 'LOL'))
 
             if wns is not None:
                 all_wns.append(wns)
@@ -487,8 +601,10 @@ class DCReportError(ValueError):
 def validate_dc_report(data: Any) -> dict:
     """校验原始 DC 报告 JSON.
 
-    必填顶层字段: scheme_version (int), top_module (str), run.directory (str),
-                 timing.default (dict), timing.default.scenarios (dict)
+    必填顶层字段: schema_version/scheme_version (int), top_module (str),
+                 run.full_dir/run.directory (str), timing.default (dict).
+    timing.default.scenarios 通常必须是非空对象；status=empty 时允许生成器输出
+    metadata 场景字符串或空对象，表示报告没有任何 timing path group。
 
     层级关系:
       - Run 级 (顶层): area, misc, top_module, run, stage, errors
@@ -505,9 +621,9 @@ def validate_dc_report(data: Any) -> dict:
     if data is None or not isinstance(data, dict):
         raise DCReportError('$', '请求体必须是 JSON 对象')
 
-    sv = data.get('scheme_version')
+    sv = data.get('schema_version', data.get('scheme_version'))
     if not isinstance(sv, int):
-        raise DCReportError('$.scheme_version', '必填, 整数')
+        raise DCReportError('$.schema_version', 'schema_version/scheme_version 必填, 整数')
 
     top_module = data.get('top_module')
     if not top_module or not isinstance(top_module, str):
@@ -516,8 +632,9 @@ def validate_dc_report(data: Any) -> dict:
     run = data.get('run')
     if not isinstance(run, dict):
         raise DCReportError('$.run', '必填, 对象')
-    if not run.get('directory') or not isinstance(run.get('directory'), str):
-        raise DCReportError('$.run.directory', '必填, 字符串')
+    run_dir = _resolve_run_full_dir(run)
+    if not run_dir:
+        raise DCReportError('$.run.full_dir', 'run.full_dir/run.directory 必填, 字符串')
 
     timing = data.get('timing')
     if not isinstance(timing, dict):
@@ -527,7 +644,8 @@ def validate_dc_report(data: Any) -> dict:
         raise DCReportError('$.timing.default', '必填, 对象')
     scenarios = default.get('scenarios')
     if not isinstance(scenarios, dict) or not scenarios:
-        raise DCReportError('$.timing.default.scenarios', '必填, 非空对象')
+        if not _is_empty_timing_section(default):
+            raise DCReportError('$.timing.default.scenarios', '必填, 非空对象')
 
     # 验证物理指标在 run 级别 (不在 scenarios 内部)
     _validate_run_level_metrics(data)
@@ -562,7 +680,7 @@ def _validate_run_level_metrics(data: dict) -> None:
         timing_section = timing.get(timing_type)
         if not isinstance(timing_section, dict):
             continue
-        scens = timing_section.get('scenarios') or {}
+        scens = _timing_scenarios(timing_section)
         for sname, sval in scens.items():
             if not isinstance(sval, dict):
                 continue
@@ -586,6 +704,7 @@ def _validate_no_scenarios_in_non_timing_fields(data: dict, prefix: str = '$') -
 
     允许的例外:
       - timing.*.scenarios 路径 (时序数据)
+      - timing.*.metadata.scenarios 路径 (DC 生成器的场景标签)
       - 顶层 extra.scenarios 字段 (唯一的 scenarios 例外)
 
     检测: 递归扫描所有非时序字段的键名, 若包含 'scenario' (不区分大小写)
@@ -597,6 +716,14 @@ def _validate_no_scenarios_in_non_timing_fields(data: dict, prefix: str = '$') -
     _TIMING_PREFIXES = (
         '$.timing.default.scenarios',
         '$.timing.final.scenarios',
+        '$.timing.default.metadata.scenarios',
+        '$.timing.final.metadata.scenarios',
+        # Some native area generators expose the analyzed scenario as a
+        # metadata label. It is not a per-scenario physical metric payload.
+        '$.area.scenario',
+        '$.area.scenarios',
+        '$.area.metadata.scenario',
+        '$.area.metadata.scenarios',
     )
 
     def _is_timing_path(path: str) -> bool:
@@ -658,8 +785,12 @@ def _validate_run_level_uniqueness(data: dict) -> None:
                 json_path,
                 f'"{field}" 字段必须是对象类型, 当前为 {type(value).__name__}.'
             )
-        # 检查嵌套值是否为数组 (例如 area.tile 是数组)
+        # Metadata/control fields can legitimately be lists (especially
+        # warnings and scenario labels). Only metric payloads are constrained
+        # to one object per run.
         for sub_key, sub_value in value.items():
+            if sub_key.lower() in _RUN_LEVEL_CONTROL_FIELDS:
+                continue
             sub_path = f'{json_path}.{sub_key}'
             if isinstance(sub_value, list):
                 raise DCReportError(
@@ -686,11 +817,15 @@ def _validate_run_level_uniqueness(data: dict) -> None:
 def is_dc_report(data: Any) -> bool:
     """检测 JSON 是否为原始 DC 报告 (非 §6.5 上传格式).
 
-    判断依据: 顶层同时含 top_module, timing, area, misc.
+    判断依据: 顶层含 top_module + timing/area，或整数 schema_version/scheme_version.
     """
     if not isinstance(data, dict):
         return False
-    return all(k in data for k in ('top_module', 'timing', 'area', 'misc'))
+    schema_version = data.get('schema_version', data.get('scheme_version'))
+    return (
+        ('top_module' in data and ('timing' in data or 'area' in data))
+        or isinstance(schema_version, int)
+    )
 
 
 # =========================================================================

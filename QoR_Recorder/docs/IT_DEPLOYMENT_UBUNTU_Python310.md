@@ -21,7 +21,7 @@
 
 | 组件 | 技术 | 说明 |
 |---|---|---|
-| 后端 | Django 5.2 + Gunicorn | API、认证、业务逻辑；监听本机 `127.0.0.1:8000` |
+| 后端 | Django 5.2 + Gunicorn | API、认证、业务逻辑；监听本机 `127.0.0.1:5000` |
 | 前端 | Vue 3 **已构建静态文件**（`dist/`） | 由 Nginx 托管；**生产机不跑 Vite / Node.js** |
 | 启动脚本 | `start.sh` | 只做 migrate + 启动 Gunicorn；**不会**启动前端开发服务器 |
 | 主数据 | SQLite（默认） | 文件落在 `data/`；可按需改 MySQL/PostgreSQL |
@@ -32,7 +32,7 @@
 
 ```
 浏览器 ──▶ Nginx(:80/:443) ──▶ Vue 静态页
-                           └─▶ /api /uploads /static /health /legacy ──▶ Gunicorn(:8000)
+                           └─▶ /api /uploads /static /health /legacy ──▶ Gunicorn(:5000)
                                                                             │
                                                                SQLite data/ + 可选 MongoDB
 ```
@@ -66,7 +66,7 @@
 | 端口 | 方向 | 说明 |
 |---|---|---|
 | 80 / 443 | 入站 | Nginx；443 需 IT 配置 TLS 证书 |
-| 8000 | **仅本机** | Gunicorn，勿对网段开放 |
+| 5000 | **仅本机** | Gunicorn，勿对网段开放 |
 | 27017 | **仅本机** | MongoDB（启用 hybrid/mongo 时） |
 
 ### 3.3 出网（安装阶段）
@@ -165,6 +165,11 @@ sudo chown -R qor:qor /opt/qor_recorder
 sudo chown -R www-data:www-data /var/www/qor-recorder
 ```
 
+网页中的“粘贴项目 YAML”和 Release Owner 修改会原子写入
+`/opt/qor_recorder/config/review_hierarchy.yaml`。必须保留
+`config/` 的 `qor:qor` 所有权，并使用发布包中已将该目录加入
+`ReadWritePaths` 的 `qor_recorder.service`。
+
 ### 4.4 创建 Python 虚拟环境并安装依赖
 
 ```bash
@@ -199,7 +204,7 @@ ALLOWED_HOSTS=qor.example.internal,localhost,127.0.0.1
 CSRF_TRUSTED_ORIGINS=https://qor.example.internal
 
 HOST=127.0.0.1
-PORT=8000
+PORT=5000
 GUNICORN_WORKERS=3
 GUNICORN_TIMEOUT=120
 
@@ -346,7 +351,7 @@ mongosh --host 127.0.0.1 --port 27017 --eval "db.runCommand({ping:1})"
 # 期望: { ok: 1 }
 
 # 4) Django 健康检查（后端启动后）
-curl -sS http://127.0.0.1:8000/health
+curl -sS http://127.0.0.1:5000/health
 # 期望: "mongo": {"enabled": true, "ready": true}
 ```
 
@@ -393,11 +398,11 @@ sudo journalctl -u qor_recorder -f
 
 ### 4.9 配置 Nginx
 
-1. 复制并修改 `deploy/nginx.conf`：将 upstream 从 `django:8000` 改为本机：
+1. 复制并修改 `deploy/nginx.conf`：将 upstream 从 `django:5000` 改为本机：
 
 ```nginx
 upstream qor_django {
-    server 127.0.0.1:8000;
+    server 127.0.0.1:5000;
     keepalive 16;
 }
 ```
@@ -420,12 +425,21 @@ sudo systemctl reload nginx
 
 Nginx 需反代至少：`/api`、`/uploads/`、`/static/`、`/health`、`/legacy/`；其余走 Vue `index.html`（history 模式）。
 
+整目录上传默认允许每次最多 500 个文件，可在 `.env` 用
+`DATA_UPLOAD_MAX_NUMBER_FILES` 调整，修改后需重启 Django/Gunicorn。
+`deploy/nginx.conf` 的 `client_max_body_size 16m` 限制的是整次请求总大小；
+若全部 CSV 加上 multipart 开销超过 16 MiB，还需同步调大该值并执行
+`sudo nginx -t && sudo systemctl reload nginx`。Django 的
+`DATA_UPLOAD_MAX_MEMORY_SIZE` 主要限制非文件表单数据，
+`FILE_UPLOAD_MAX_MEMORY_SIZE` 决定单文件何时转存临时文件，二者都不是
+本次 100 文件限制的来源。
+
 ### 4.10 验收检查
 
 | 检查项 | 命令 / 操作 | 期望 |
 |---|---|---|
 | 服务状态 | `systemctl is-active qor_recorder` | `active` |
-| 健康检查 | `curl -sS http://127.0.0.1:8000/health` | HTTP 200 |
+| 健康检查 | `curl -sS http://127.0.0.1:5000/health` | HTTP 200 |
 | 前端静态文件 | `test -f /var/www/qor-recorder/index.html && ls /var/www/qor-recorder/assets` | `index.html` 存在，`assets/` 非空 |
 | 对外入口 | 浏览器打开 `http://<服务器>/` | 出现登录页（不是空白页 / Nginx 403） |
 | 未误开 Vite | `ss -ltnp \| grep 5173` | 无监听（生产不应有 Vite） |
@@ -476,7 +490,7 @@ docker compose build --build-arg PYTHON_IMAGE=python:3.10-slim
 2. 必须正确传递 `Host`、`X-Forwarded-Proto`；**不要**把不可信的外部 `X-Forwarded-*` 原样追加。
 3. 设置 `CSRF_TRUSTED_ORIGINS=https://真实域名`。
 4. 启用 HTTPS 后打开 `SESSION_COOKIE_SECURE=1`。
-5. **不要**把 Gunicorn `:8000` 发布到防火墙外。
+5. **不要**把 Gunicorn `:5000` 发布到防火墙外。
 
 ---
 
@@ -539,7 +553,7 @@ sudo tail -f /var/log/nginx/error.log
 
 # 健康
 curl -sS http://127.0.0.1/health
-curl -sS http://127.0.0.1:8000/health
+curl -sS http://127.0.0.1:5000/health
 ```
 
 升级大致流程：备份 → 更新后端代码（仍不要带 `venv`/`node_modules`）→ 用研发新构建的 `dist/` 覆盖 `/var/www/qor-recorder/` → `pip install -r requirements.txt`（或离线 wheel）→ `migrate` / 必要时 `migrate_project_databases` → `collectstatic` → `systemctl restart qor_recorder` → `systemctl reload nginx` → 验收。
@@ -559,7 +573,7 @@ curl -sS http://127.0.0.1:8000/health
 - [ ] `qor_recorder` systemd 已 enable 且 active（`start.sh` 只起 Gunicorn）
 - [ ] Nginx 反代正确，`nginx -t` 通过；`root` 直指含 `index.html` 的目录
 - [ ] `curl /health` 返回 200；浏览器可打开登录页
-- [ ] 防火墙仅开放 80/443；8000、27017 不对公网
+- [ ] 防火墙仅开放 80/443；5000、27017 不对公网
 - [ ] 默认账号密码已通知业务方并要求首次登录改密
 - [ ] 备份路径与周期已纳入 IT 备份策略
 

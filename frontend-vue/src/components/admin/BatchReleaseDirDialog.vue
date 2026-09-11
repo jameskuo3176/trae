@@ -151,9 +151,15 @@ function rowInputLabel(record) {
         </ol>
 
         <div class="batch-dir-summary" aria-label="更新范围">
-          <span><b>{{ records.length }}</b> 条记录</span>
-          <span><b>{{ projectCount }}</b> 个项目</span>
-          <span class="changed-summary"><b>{{ changedCount }}</b> 已修改</span>
+          <span
+            ><b>{{ records.length }}</b> 条记录</span
+          >
+          <span
+            ><b>{{ projectCount }}</b> 个项目</span
+          >
+          <span class="changed-summary"
+            ><b>{{ changedCount }}</b> 已修改</span
+          >
         </div>
 
         <div class="batch-dir-bulk">

@@ -28,7 +28,17 @@ export function useDashboardData() {
     }
   }
 
-  async function loadVersions() {
+  function pickLatestVersion(versions) {
+    const list = (versions || []).map(String).filter(Boolean)
+    if (!list.length) return null
+    // API returns ascending lexical order; newest path-derived name is last.
+    return [...list].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))[
+      list.length - 1
+    ]
+  }
+
+  async function loadVersions(options = {}) {
+    const selectLatest = Boolean(options.selectLatest)
     try {
       if (filters.projectIds.length) {
         filters.versions = await dashboardApi.versions(filters.projectIds)
@@ -38,15 +48,24 @@ export function useDashboardData() {
         )
         filters.versions = [...new Set(responses.flat())].sort()
       }
+      if (selectLatest && filters.projectIds.length) {
+        const latest = pickLatestVersion(filters.versions)
+        filters.versionIds = latest ? [latest] : []
+        filters.versionFilterApplied = false
+      }
     } catch (e) {
       console.error('Failed to load versions:', e)
     }
   }
 
-  async function loadDashboardData() {
+  async function loadDashboardData(options = {}) {
     const { seq, signal } = dashboard.startRequest()
     dashboard.setLoading(true)
     dashboard.setError(null)
+    const preferredIds = (options.selectedIds || []).map(String).filter(Boolean)
+    const preferredBaseline =
+      options.baselineId == null || options.baselineId === '' ? null : String(options.baselineId)
+    const preserveSelection = Boolean(options.preserveSelection)
 
     try {
       if (filters.versionFilterApplied && !filters.versionIds.length) {
@@ -99,7 +118,22 @@ export function useDashboardData() {
       dashboard.setPagination(pagination)
       dashboard.setDiagnostics(diagnostics)
       if (data.length > 0) {
-        dashboard.selectFirstN(4)
+        const validKeys = new Set(data.map(dashboard.selectionKey))
+        if (preserveSelection && preferredIds.length) {
+          const restored = preferredIds.filter(id => validKeys.has(id))
+          if (restored.length) {
+            dashboard.selectedIds = new Set(restored)
+            const baseline =
+              preferredBaseline && validKeys.has(preferredBaseline)
+                ? preferredBaseline
+                : restored[0]
+            dashboard.setBaseline(baseline)
+          } else {
+            dashboard.selectFirstN(4)
+          }
+        } else {
+          dashboard.selectFirstN(4)
+        }
       }
     } catch (e) {
       if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') return
@@ -117,6 +151,7 @@ export function useDashboardData() {
     loadProjects,
     loadModules,
     loadVersions,
-    loadDashboardData
+    loadDashboardData,
+    pickLatestVersion
   }
 }

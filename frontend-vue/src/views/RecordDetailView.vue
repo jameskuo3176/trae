@@ -404,7 +404,9 @@ onBeforeUnmount(() => {
               @paste="onPaste"
             >
               <strong>Attach evidence images</strong>
-              <span>PNG, JPEG, WebP, or GIF · 5 MiB each · 6 maximum · paste or drag images here</span>
+              <span
+                >PNG, JPEG, WebP, or GIF · 5 MiB each · 6 maximum · paste or drag images here</span
+              >
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp,image/gif"

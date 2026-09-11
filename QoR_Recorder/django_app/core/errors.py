@@ -11,6 +11,7 @@
 import logging
 
 from django.conf import settings
+from django.core.exceptions import TooManyFilesSent
 from django.http import JsonResponse
 from django.shortcuts import render
 
@@ -36,7 +37,11 @@ def handler400(request, exception=None):
     CSRF 校验失败等 400 错误。
     """
     if _is_api_request(request):
-        message = str(exception) if exception else '请求错误'
+        if isinstance(exception, TooManyFilesSent):
+            limit = settings.DATA_UPLOAD_MAX_NUMBER_FILES
+            message = f'上传文件数量超过服务器限制（最多 {limit} 个）'
+        else:
+            message = str(exception) if exception else '请求错误'
         return JsonResponse({'error': message}, status=400)
 
     context = {

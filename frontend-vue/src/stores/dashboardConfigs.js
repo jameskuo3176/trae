@@ -93,6 +93,29 @@ export const useDashboardConfigsStore = defineStore('dashboard-configs', () => {
     }
   }
 
+  async function remove(id = activeId.value) {
+    if (!id) return false
+    if (useAuthStore().isViewer) {
+      error.value = 'Viewer accounts cannot delete dashboard configurations.'
+      return false
+    }
+    const wasActive = String(activeId.value) === String(id)
+    try {
+      await dashboardApi.deleteConfig(id)
+      if (wasActive) activeId.value = ''
+      await load()
+      // Prefer Unsaved after deleting the active selection (do not auto-apply another).
+      if (wasActive) activeId.value = ''
+    } catch {
+      const next = localConfigs().filter(config => String(config.id) !== String(id))
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(next))
+      configs.value = configs.value.filter(config => String(config.id) !== String(id))
+      if (wasActive) activeId.value = ''
+      error.value = 'Deleted locally because the server endpoint is unavailable.'
+    }
+    return true
+  }
+
   function reset() {
     configs.value = []
     activeId.value = ''
@@ -100,5 +123,5 @@ export const useDashboardConfigsStore = defineStore('dashboard-configs', () => {
     error.value = ''
   }
 
-  return { configs, activeId, loading, error, defaultConfig, load, loadConfig, save, reset }
+  return { configs, activeId, loading, error, defaultConfig, load, loadConfig, save, remove, reset }
 })

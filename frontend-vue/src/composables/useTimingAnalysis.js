@@ -77,7 +77,10 @@ export function useTimingAnalysis(getRecords, selections = {}) {
   }
 
   /** 遍历归一并筛选后的组；完全镜像的 timing section 只计一次。 */
-  function* iterFilteredMetrics(normalizedEntry, analysisNames = Object.keys(normalizedEntry.sections)) {
+  function* iterFilteredMetrics(
+    normalizedEntry,
+    analysisNames = Object.keys(normalizedEntry.sections)
+  ) {
     const seen = new Set()
     for (const analysis of analysisNames) {
       const analysisData = normalizedEntry.sections[analysis] || {}

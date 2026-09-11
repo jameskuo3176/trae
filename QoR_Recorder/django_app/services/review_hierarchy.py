@@ -44,6 +44,10 @@ class HierarchyWriteError(RuntimeError):
     pass
 
 
+class HierarchyConflictError(HierarchyConfigError):
+    """The hierarchy source changed after the client loaded it."""
+
+
 def _config_checksum(data):
     canonical = json.dumps(
         data, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str,
@@ -598,6 +602,222 @@ def _atomic_restore(path, content):
     finally:
         if staged_path.exists():
             staged_path.unlink()
+
+
+def parse_project_hierarchy_yaml(raw_yaml, project_name=None):
+    """Parse one project subtree from common paste-friendly YAML shapes."""
+    if not isinstance(raw_yaml, str) or not raw_yaml.strip():
+        raise HierarchyConfigError('project_yaml must be a non-empty YAML string')
+    if len(raw_yaml) > 500_000:
+        raise HierarchyConfigError('project_yaml must not exceed 500000 characters')
+    try:
+        pasted = yaml.safe_load(raw_yaml)
+    except yaml.YAMLError as exc:
+        raise HierarchyConfigError(f'cannot parse project YAML: {exc}') from exc
+    if not isinstance(pasted, dict):
+        raise HierarchyConfigError('project YAML root must be a mapping')
+
+    requested_name = project_name.strip() if isinstance(project_name, str) else ''
+    inferred_name = ''
+    project_cfg = None
+
+    if 'projects' in pasted:
+        if set(pasted) != {'projects'}:
+            raise HierarchyConfigError(
+                'paste only one project; full hierarchy fields such as version are not allowed'
+            )
+        projects = pasted['projects']
+        if not isinstance(projects, dict) or len(projects) != 1:
+            raise HierarchyConfigError('projects must contain exactly one project')
+        inferred_name, project_cfg = next(iter(projects.items()))
+    elif requested_name and ('owner' in pasted or 'groups' in pasted):
+        project_cfg = pasted
+    elif len(pasted) == 1:
+        inferred_name, project_cfg = next(iter(pasted.items()))
+    else:
+        raise HierarchyConfigError(
+            'paste a project config, a single project-name mapping, '
+            'or a projects mapping containing one project'
+        )
+
+    if inferred_name and not _valid_name(inferred_name):
+        raise HierarchyConfigError('project name in YAML must be a non-empty string')
+    inferred_name = inferred_name.strip() if isinstance(inferred_name, str) else ''
+    if requested_name and inferred_name and requested_name != inferred_name:
+        raise HierarchyConfigError(
+            f'selected project {requested_name!r} does not match YAML project {inferred_name!r}'
+        )
+    resolved_name = requested_name or inferred_name
+    if not _valid_name(resolved_name):
+        raise HierarchyConfigError('project is required')
+    if not isinstance(project_cfg, dict):
+        raise HierarchyConfigError(f'project {resolved_name!r} config must be a mapping')
+    return resolved_name, project_cfg
+
+
+def _project_yaml_diff(current_cfg, proposed_cfg):
+    """Return a name-level structural diff for a single project subtree."""
+    current_groups = current_cfg.get('groups', {}) if isinstance(current_cfg, dict) else {}
+    proposed_groups = proposed_cfg.get('groups', {}) if isinstance(proposed_cfg, dict) else {}
+    if not isinstance(current_groups, dict):
+        current_groups = {}
+    if not isinstance(proposed_groups, dict):
+        proposed_groups = {}
+
+    current_group_names = set(current_groups)
+    proposed_group_names = set(proposed_groups)
+    group_updates = []
+    for name in sorted(current_group_names & proposed_group_names):
+        old = current_groups[name] if isinstance(current_groups[name], dict) else {}
+        new = proposed_groups[name] if isinstance(proposed_groups[name], dict) else {}
+        old_meta = {key: value for key, value in old.items() if key != 'modules'}
+        new_meta = {key: value for key, value in new.items() if key != 'modules'}
+        if old_meta != new_meta:
+            group_updates.append(name)
+
+    def modules_by_name(groups):
+        result = {}
+        for group_name, group_cfg in groups.items():
+            if not isinstance(group_cfg, dict):
+                continue
+            modules = group_cfg.get('modules', {})
+            if not isinstance(modules, dict):
+                continue
+            for module_name, module_cfg in modules.items():
+                result[module_name] = {
+                    'group': group_name,
+                    'config': module_cfg,
+                }
+        return result
+
+    current_modules = modules_by_name(current_groups)
+    proposed_modules = modules_by_name(proposed_groups)
+    current_module_names = set(current_modules)
+    proposed_module_names = set(proposed_modules)
+    module_moves = []
+    module_updates = []
+    for name in sorted(current_module_names & proposed_module_names):
+        old = current_modules[name]
+        new = proposed_modules[name]
+        if old['group'] != new['group']:
+            module_moves.append(
+                {'name': name, 'from': old['group'], 'to': new['group']}
+            )
+        elif old['config'] != new['config']:
+            module_updates.append(name)
+
+    return {
+        'groups': {
+            'added': sorted(proposed_group_names - current_group_names),
+            'updated': group_updates,
+            'removed': sorted(current_group_names - proposed_group_names),
+        },
+        'modules': {
+            'added': sorted(proposed_module_names - current_module_names),
+            'updated': module_updates,
+            'moved': module_moves,
+            'removed': sorted(current_module_names - proposed_module_names),
+        },
+    }
+
+
+def replace_project_hierarchy(
+    project_name,
+    raw_yaml,
+    *,
+    expected_checksum=None,
+    config_path=None,
+    dry_run=False,
+):
+    """Preview or atomically replace one project's YAML subtree and DB hierarchy."""
+    project_name, project_cfg = parse_project_hierarchy_yaml(raw_yaml, project_name)
+    project = Project.objects.filter(name=project_name).first()
+    if project is None:
+        raise HierarchyConfigError(f'project {project_name!r} does not exist')
+    if project.status not in ('active', 'locked'):
+        raise HierarchyConfigError(
+            f'project {project_name!r} is {project.status!r} and cannot be imported'
+        )
+
+    path = Path(config_path or DEFAULT_CONFIG_PATH).resolve()
+    try:
+        original_bytes = path.read_bytes()
+    except OSError as exc:
+        raise HierarchyWriteError(f'cannot read hierarchy config for update: {exc}') from exc
+    data, current_checksum = load_hierarchy(path)
+    if not _valid_name(expected_checksum):
+        raise HierarchyConfigError(
+            'config_checksum is required; refresh hierarchy status and try again'
+        )
+    if expected_checksum != current_checksum:
+        raise HierarchyConflictError(
+            'hierarchy config changed since it was loaded; refresh and try again'
+        )
+    if not isinstance(data.get('projects'), dict):
+        raise HierarchyConfigError('projects must be a mapping')
+
+    current_project_cfg = data['projects'].get(project_name, {})
+    updated_data = copy.deepcopy(data)
+    updated_data['projects'][project_name] = copy.deepcopy(project_cfg)
+    status_data, _excluded = _status_hierarchy(updated_data)
+    errors, _resolved = validate_hierarchy(status_data)
+    if errors:
+        raise HierarchyConfigError('\n'.join(errors))
+
+    target_data = copy.deepcopy(status_data)
+    target_data['projects'] = {project_name: copy.deepcopy(project_cfg)}
+    target_errors, target_resolved = validate_hierarchy(target_data)
+    if target_errors:
+        raise HierarchyConfigError('\n'.join(target_errors))
+    updated_checksum = _config_checksum(updated_data)
+    plan = build_sync_plan(target_data, updated_checksum, target_resolved)
+    result = {
+        'project': project_name,
+        'config_checksum': updated_checksum,
+        'plan': plan,
+        'yaml_diff': _project_yaml_diff(current_project_cfg, project_cfg),
+    }
+    if dry_run:
+        return result
+
+    staged_path = _stage_hierarchy_yaml(path, updated_data)
+    yaml_replaced = False
+    try:
+        with transaction.atomic():
+            sync_hierarchy(target_data, updated_checksum, path)
+            try:
+                latest_data, latest_checksum = load_hierarchy(path)
+            except HierarchyConfigError as exc:
+                raise HierarchyWriteError(
+                    f'cannot verify hierarchy config before replacement: {exc}'
+                ) from exc
+            if latest_checksum != current_checksum or latest_data != data:
+                raise HierarchyConflictError(
+                    'hierarchy config changed during the update; refresh and try again'
+                )
+            os.replace(staged_path, path)
+            yaml_replaced = True
+    except Exception as exc:
+        if yaml_replaced:
+            try:
+                _atomic_restore(path, original_bytes)
+            except OSError as restore_exc:
+                raise HierarchyWriteError(
+                    'database update was rolled back, but restoring the hierarchy YAML '
+                    f'also failed: {restore_exc}'
+                ) from exc
+        if isinstance(
+            exc,
+            (HierarchyConfigError, HierarchyConflictError, HierarchyWriteError),
+        ):
+            raise
+        if isinstance(exc, OSError):
+            raise HierarchyWriteError(f'cannot replace hierarchy config: {exc}') from exc
+        raise
+    finally:
+        if staged_path.exists():
+            staged_path.unlink()
+    return result
 
 
 def update_module_release_owner(

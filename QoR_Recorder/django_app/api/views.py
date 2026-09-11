@@ -51,8 +51,15 @@ from django_app.core.models import (
     WeeklyRunSelection,
     REVIEW_STATUS_DRAFT, REVIEW_STATUS_SUBMITTED,
     REVIEW_STATUS_APPROVED, REVIEW_STATUS_REJECTED,
+    normalize_module_name,
 )
 from django_app.services import qor_import, json_upload, backup_service
+from django_app.services.csv_upload_paths import (
+    UploadPathError,
+    infer_module_from_path,
+    normalize_relative_upload_path,
+    parse_filename_suffixes,
+)
 from django_app.services.weekly_review import (
     create_weekly_snapshot,
     get_authoritative_weekly_snapshot,
@@ -63,8 +70,10 @@ from django_app.services.weekly_review import (
 )
 from django_app.services.review_hierarchy import (
     HierarchyConfigError,
+    HierarchyConflictError,
     HierarchyWriteError,
     hierarchy_status,
+    replace_project_hierarchy,
     update_module_release_owner,
 )
 from django_app.services.timing_normalization import normalize_timing_sections
@@ -201,11 +210,6 @@ def _serialize_qor_records(records, user=None):
     """Serialize cross-database rows without losing project/uploader context."""
     records = list(records)
     rows = []
-    owner_ids = {r.owner_id for r in records if r.owner_id}
-    users = {
-        user.id: user
-        for user in User.objects.filter(id__in=owner_ids)
-    }
     project_ids = {
         getattr(r, '_qor_project_id', None)
         or getattr(getattr(r, 'module', None), 'project_id', None)
@@ -250,13 +254,27 @@ def _serialize_qor_records(records, user=None):
             week_start__in={key[2] for key in selection_keys},
         )
     } if selection_keys else {}
-    owner_map = {
+    project_module_keys = {
+        (project_id, identity_map.get((project_id, record.module_id)))
+        for record in records
+        for project_id, _week_start in [record_context[id(record)]]
+        if project_id and identity_map.get((project_id, record.module_id))
+    }
+    release_owner_map = {
         (row.project_id, row.module_id): row.owner_id
         for row in ProjectModule.objects.filter(
-            project_id__in={key[0] for key in selection_keys},
-            module_id__in={key[1] for key in selection_keys},
+            project_id__in={key[0] for key in project_module_keys},
+            module_id__in={key[1] for key in project_module_keys},
         )
-    } if selection_keys else {}
+    } if project_module_keys else {}
+    owner_ids = {r.owner_id for r in records if r.owner_id}
+    owner_ids.update(
+        owner_id for owner_id in release_owner_map.values() if owner_id
+    )
+    users = {
+        owner.id: owner
+        for owner in User.objects.filter(id__in=owner_ids)
+    }
     for record in records:
         value = record.to_dict()
         project_id, week_start = record_context[id(record)]
@@ -271,6 +289,16 @@ def _serialize_qor_records(records, user=None):
         value['uploader_id'] = record.owner_id
         value['uploader_username'] = owner.username if owner else None
         value['uploader_display_name'] = owner.display_name if owner else None
+        global_module_id = identity_map.get((project_id, record.module_id))
+        release_owner_id = release_owner_map.get((project_id, global_module_id))
+        release_owner = users.get(release_owner_id)
+        value['release_owner_id'] = release_owner_id
+        value['release_owner_username'] = (
+            release_owner.username if release_owner else None
+        )
+        value['release_owner_display_name'] = (
+            release_owner.display_name if release_owner else None
+        )
         # Compatibility for existing clients while the label changes to uploader.
         value['owner_username'] = owner.username if owner else None
         value['release_sort_at'] = (
@@ -286,7 +314,6 @@ def _serialize_qor_records(records, user=None):
             and (user.is_admin or record.module.can_be_managed_by(user))
         )
         value['can_edit_description'] = bool(user and user.is_admin)
-        global_module_id = identity_map.get((project_id, record.module_id))
         selection = selections.get((project_id, global_module_id, week_start))
         value['global_module_id'] = global_module_id
         value['review_week_start'] = week_start.isoformat() if week_start else None
@@ -303,7 +330,7 @@ def _serialize_qor_records(records, user=None):
             and week_start
             and (
                 user.is_admin
-                or owner_map.get((project_id, global_module_id)) == user.id
+                or release_owner_map.get((project_id, global_module_id)) == user.id
             )
         )
         rows.append(value)
@@ -445,7 +472,9 @@ def api_get_qor_data(request):
         project_ids = request.GET.get('project_ids', '')
         module_ids = request.GET.get('module_ids', '')
         versions = request.GET.get('versions', '')
-        owner_id = request.GET.get('owner_id', '').strip()
+        owner_ids_raw = (
+            request.GET.get('owner_ids', '') or request.GET.get('owner_id', '')
+        ).strip()
         owner_username = request.GET.get('owner_username', '').strip()
         dir_prefix = request.GET.get('dir_prefix', '').strip() or None
         paginated = 'page' in request.GET or 'page_size' in request.GET
@@ -455,13 +484,13 @@ def api_get_qor_data(request):
         except (TypeError, ValueError):
             return JsonResponse({'error': 'page 和 page_size 必须为整数'}, status=400)
 
-        owner_user_id = None
-        if owner_id and owner_id.isdigit():
-            owner_user_id = int(owner_id)
-        elif owner_username:
+        owner_user_ids = {
+            int(part) for part in owner_ids_raw.split(',') if part.strip().isdigit()
+        }
+        if not owner_user_ids and owner_username:
             try:
                 owner_user = User.objects.get(username=owner_username)
-                owner_user_id = owner_user.id
+                owner_user_ids = {owner_user.id}
             except User.DoesNotExist:
                 return JsonResponse([], safe=False)
 
@@ -470,13 +499,22 @@ def api_get_qor_data(request):
             proj_id_list=proj_id_list,
             module_ids_str=module_ids,
             versions_str=versions,
-            owner_id=owner_user_id,
+            owner_id=None,
             release_only=False,
             dir_prefix=dir_prefix,
             order_desc=True,
             limit=5000,
         )
         rows = _serialize_qor_records(records, request.user)
+        if owner_user_ids:
+            rows = [
+                row for row in rows
+                if (
+                    row.get('release_owner_id')
+                    if row.get('release_owner_id') is not None
+                    else row.get('uploader_id')
+                ) in owner_user_ids
+            ]
         if not paginated:
             return JsonResponse(rows, safe=False)
         total = len(rows)
@@ -1944,8 +1982,13 @@ def list_dashboard_configs(request):
 
 @login_required
 def dashboard_config_detail(request, dash_id):
-    """Dashboard 配置详情"""
+    """Dashboard 配置详情 (GET) / 删除 (DELETE)"""
     dash = get_object_or_404(UserDashboard, pk=dash_id, user=request.user)
+    if request.method == 'DELETE':
+        if request.user.is_viewer:
+            return JsonResponse({'error': 'forbidden'}, status=403)
+        dash.delete()
+        return JsonResponse({'ok': True})
     return JsonResponse({
         'id': dash.id,
         'name': dash.name,
@@ -2363,15 +2406,11 @@ def admin_rollback_snapshot(request, snap_id):
 # Admin API - 备份管理
 # =========================================================================
 
-@login_required
-def admin_review_hierarchy_status(request):
-    """Read-only hierarchy config validation and database reconciliation status."""
-    if not (request.user.is_admin or request.user.is_owner):
-        return JsonResponse({'error': '无权限'}, status=403)
-    if request.method != 'GET':
-        return JsonResponse({'error': '只读接口仅支持 GET'}, status=405)
-    payload = hierarchy_status()
-    payload['permissions'] = {'can_edit_module_owner': request.user.is_admin}
+def _decorate_review_hierarchy_status(payload, can_edit):
+    payload['permissions'] = {
+        'can_edit_module_owner': can_edit,
+        'can_import_project_yaml': can_edit,
+    }
     payload['owner_options'] = (
         [
             {
@@ -2384,10 +2423,76 @@ def admin_review_hierarchy_status(request):
                 is_active=True,
             ).order_by('username')
         ]
-        if request.user.is_admin
+        if can_edit
         else []
     )
-    return JsonResponse(payload)
+    payload['import_project_options'] = (
+        list(
+            Project.objects.filter(status__in=('active', 'locked'))
+            .order_by('status', 'name')
+            .values('id', 'name', 'status')
+        )
+        if can_edit
+        else []
+    )
+    return payload
+
+
+@login_required
+def admin_review_hierarchy_status(request):
+    """Read-only hierarchy config validation and database reconciliation status."""
+    if not (request.user.is_admin or request.user.is_owner):
+        return JsonResponse({'error': '无权限'}, status=403)
+    if request.method != 'GET':
+        return JsonResponse({'error': '只读接口仅支持 GET'}, status=405)
+    return JsonResponse(
+        _decorate_review_hierarchy_status(hierarchy_status(), request.user.is_admin)
+    )
+
+
+@login_required
+def admin_review_hierarchy_project_yaml(request):
+    """Admin-only preview/apply endpoint for replacing one project YAML subtree."""
+    if not request.user.is_admin:
+        return JsonResponse({'error': '仅管理员可批量导入项目 YAML'}, status=403)
+    if request.method != 'POST':
+        return JsonResponse({'error': '仅支持 POST'}, status=405)
+    try:
+        data = json.loads(request.body or '{}')
+    except (TypeError, json.JSONDecodeError):
+        return JsonResponse({'error': '请求体必须是有效 JSON'}, status=400)
+    dry_run = data.get('dry_run', True)
+    if not isinstance(dry_run, bool):
+        return JsonResponse({'error': 'dry_run 必须是布尔值'}, status=400)
+    try:
+        result = replace_project_hierarchy(
+            data.get('project'),
+            data.get('project_yaml'),
+            expected_checksum=data.get('config_checksum'),
+            dry_run=dry_run,
+        )
+    except HierarchyConflictError as exc:
+        return JsonResponse({'error': str(exc), 'code': 'config_conflict'}, status=409)
+    except HierarchyConfigError as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except HierarchyWriteError as exc:
+        return JsonResponse({'error': f'项目 YAML 未保存：{exc}'}, status=500)
+    except Exception:
+        logger.exception('Unexpected review hierarchy project YAML import failure')
+        return JsonResponse(
+            {
+                'error': (
+                    '项目 YAML 未保存：数据库或同步状态更新失败，'
+                    '请检查服务日志并刷新状态后重试'
+                )
+            },
+            status=500,
+        )
+    if dry_run:
+        return JsonResponse({'ok': True, 'dry_run': True, **result})
+
+    payload = _decorate_review_hierarchy_status(hierarchy_status(), True)
+    return JsonResponse({'ok': True, 'dry_run': False, **result, 'status': payload})
 
 
 @login_required
@@ -2427,19 +2532,7 @@ def admin_review_hierarchy_module_owner(request):
             },
             status=500,
         )
-    payload = hierarchy_status()
-    payload['permissions'] = {'can_edit_module_owner': True}
-    payload['owner_options'] = [
-        {
-            'id': user.id,
-            'username': user.username,
-            'display_name': user.display_name or user.username,
-        }
-        for user in User.objects.filter(
-            role=User.ROLE_OWNER,
-            is_active=True,
-        ).order_by('username')
-    ]
+    payload = _decorate_review_hierarchy_status(hierarchy_status(), True)
     return JsonResponse({'ok': True, 'updated': result, 'status': payload})
 
 
@@ -2484,12 +2577,24 @@ def admin_create_module(request):
         return JsonResponse({'error': '无效的 project_id'}, status=400)
     if not request.user.is_admin:
         return JsonResponse({'error': '需要管理员权限'}, status=403)
-    get_object_or_404(Project, pk=pid)
+    project = get_object_or_404(Project, pk=pid)
 
     db_name = _get_project_db(pid)
     get_project_engine(pid)
-    if Module.objects.using(db_name).filter(project_id=pid, name=name).exists():
-        return JsonResponse({'error': '模块已存在'}, status=400)
+    existing = Module.objects.using(db_name).filter(project_id=pid, name=name).first()
+    if existing is not None:
+        canonical = qor_import.associate_global_module(project, existing)
+        project_module = ProjectModule.objects.get(project=project, module=canonical)
+        return JsonResponse({
+            'ok': True,
+            'created': False,
+            'id': existing.id,
+            'name': existing.name,
+            'owner_id': existing.owner_id,
+            'global_module_id': canonical.id,
+            'project_module_id': project_module.id,
+            'message': '模块已存在，中央模块映射已确认',
+        })
     m = Module(
         project_id=pid,
         name=name,
@@ -2498,7 +2603,37 @@ def admin_create_module(request):
         collaborators='[]',
     )
     m.save(using=db_name)
-    return JsonResponse({'id': m.id, 'name': m.name, 'owner_id': m.owner_id})
+    try:
+        canonical = qor_import.associate_global_module(project, m)
+    except Exception:
+        try:
+            m.delete(using=db_name)
+        except Exception:
+            logger.exception(
+                'Failed to clean up project-local module after mapping failure: '
+                'project=%s module=%s',
+                pid,
+                name,
+            )
+        logger.exception(
+            'Failed to create canonical module mapping: project=%s module=%s',
+            pid,
+            name,
+        )
+        return JsonResponse(
+            {'error': '模块创建失败：无法建立中央模块映射，请检查服务日志'},
+            status=500,
+        )
+    project_module = ProjectModule.objects.get(project=project, module=canonical)
+    return JsonResponse({
+        'ok': True,
+        'created': True,
+        'id': m.id,
+        'name': m.name,
+        'owner_id': m.owner_id,
+        'global_module_id': canonical.id,
+        'project_module_id': project_module.id,
+    })
 
 
 @login_required
@@ -2539,31 +2674,68 @@ def admin_batch_create_modules(request):
     if not request.user.is_admin:
         return JsonResponse({'error': '需要管理员权限'}, status=403)
 
-    get_object_or_404(Project, pk=pid)
+    project = get_object_or_404(Project, pk=pid)
     db_name = _get_project_db(pid)
     get_project_engine(pid)
 
     created = []
     skipped = []
+    bridged = []
+    failed = []
     for name in module_names:
         name = name.strip()
         if not name:
             continue
-        if Module.objects.using(db_name).filter(project_id=pid, name=name).exists():
-            skipped.append(name)
-        else:
-            m = Module(project_id=pid, name=name)
-            m.save(using=db_name)
+        module = Module.objects.using(db_name).filter(
+            project_id=pid,
+            name=name,
+        ).first()
+        was_created = module is None
+        if was_created:
+            module = Module(project_id=pid, name=name)
+            module.save(using=db_name)
+        try:
+            qor_import.associate_global_module(project, module)
+        except Exception as exc:
+            if was_created:
+                try:
+                    module.delete(using=db_name)
+                except Exception:
+                    logger.exception(
+                        'Failed to clean up batch-created local module: '
+                        'project=%s module=%s',
+                        pid,
+                        name,
+                    )
+            logger.exception(
+                'Failed to bridge batch-created module: project=%s module=%s',
+                pid,
+                name,
+            )
+            failed.append({'name': name, 'error': str(exc)})
+            continue
+        bridged.append(name)
+        if was_created:
             created.append(name)
+        else:
+            skipped.append(name)
 
     return JsonResponse({
-        'ok': True,
+        'ok': not failed,
         'created_count': len(created),
         'skipped_count': len(skipped),
+        'bridged_count': len(bridged),
+        'failed_count': len(failed),
         'created': created,
         'skipped': skipped,
-        'message': f'创建 {len(created)} 个模块' + (f'，跳过 {len(skipped)} 个已存在' if skipped else ''),
-    })
+        'bridged': bridged,
+        'failed': failed,
+        'message': (
+            f'创建 {len(created)} 个模块并确认 {len(bridged)} 个中央映射'
+            + (f'，复用 {len(skipped)} 个已存在模块' if skipped else '')
+            + (f'，{len(failed)} 个失败' if failed else '')
+        ),
+    }, status=207 if failed else 200)
 
 
 # ---- 模块协作者管理 ----
@@ -2700,21 +2872,16 @@ def admin_delete_record(request, record_id):
 
 @login_required
 def admin_list_record_owners(request):
-    """List uploaders (record owner_id) available for record-management filters."""
+    """List current module release owners available for record filters."""
     if request.user.is_viewer:
         return JsonResponse({'error': '无权限'}, status=403)
-    owner_ids = set()
     project_ids = _resolve_project_ids(request.GET.get('project_ids', ''))
-    for pid in project_ids:
-        db_name = _get_project_db(pid)
-        try:
-            get_project_engine(pid)
-            ids = QorRecord.objects.using(db_name).filter(
-                owner_id__isnull=False,
-            ).values_list('owner_id', flat=True).distinct()
-            owner_ids.update(ids)
-        except Exception:
-            continue
+    owner_ids = set(
+        ProjectModule.objects.filter(
+            project_id__in=project_ids,
+            owner_id__isnull=False,
+        ).values_list('owner_id', flat=True).distinct()
+    )
     if not owner_ids:
         return JsonResponse([], safe=False)
     users = User.objects.filter(pk__in=owner_ids).order_by('username')
@@ -2728,6 +2895,103 @@ def admin_list_record_owners(request):
 # =========================================================================
 # Admin API - CSV 上传
 # =========================================================================
+
+def _csv_upload_files_and_paths(request):
+    """Pair uploaded files with browser path metadata without reading disk."""
+    uploaded_files = request.FILES.getlist('files') or request.FILES.getlist('file')
+    if not uploaded_files:
+        raise UploadPathError('缺少上传文件')
+    submitted_paths = request.POST.getlist('file_paths')
+    if submitted_paths and len(submitted_paths) != len(uploaded_files):
+        raise UploadPathError('files 与 file_paths 数量必须一一对应')
+    return uploaded_files, submitted_paths or [item.name for item in uploaded_files]
+
+
+def _read_uploaded_csv(uploaded_file):
+    if not str(uploaded_file.name).lower().endswith('.csv'):
+        raise UploadPathError('仅支持 CSV 文件')
+    try:
+        content = uploaded_file.read().decode('utf-8-sig')
+        reader = _csv.DictReader(_io.StringIO(content))
+        rows = list(reader)
+    except UnicodeDecodeError as exc:
+        raise UploadPathError('CSV 必须使用 UTF-8 编码') from exc
+    except Exception as exc:
+        raise UploadPathError(f'CSV 解析失败: {exc}') from exc
+    if not rows:
+        raise UploadPathError('CSV 文件为空')
+    return rows
+
+
+def _unique_csv_module_name(rows):
+    names = {}
+    for row in rows:
+        name = str(row.get('module_name') or row.get('module') or '').strip()
+        if name:
+            names.setdefault(normalize_module_name(name), name)
+    return next(iter(names.values())) if len(names) == 1 else None
+
+
+def _find_project_module(db_name, project_id, module_name):
+    if not module_name:
+        return None
+    wanted = normalize_module_name(module_name)
+    return next((
+        module
+        for module in Module.objects.using(db_name).filter(project_id=project_id)
+        if normalize_module_name(module.name) == wanted
+    ), None)
+
+
+def _upload_module_name(rows, relative_path, source, suffixes):
+    if source in ('dirname', 'filename'):
+        return infer_module_from_path(relative_path, source, suffixes)
+    if source == 'csv':
+        return _unique_csv_module_name(rows)
+    raise UploadPathError('module_name_source 必须是 dirname、filename 或 csv')
+
+
+def _save_uploaded_csv_records(
+    records, project, module_id, version, source_name, data_type, *,
+    mark_released, owner_id, current_user, release_dir, full_dir,
+):
+    result = {'saved': 0, 'updated': 0, 'skipped': 0, 'merged': 0, 'errors': []}
+    if data_type == 'power':
+        merged, created = qor_import.merge_power_to_db(
+            records, project, module_id, version, source_name,
+            mark_released=mark_released,
+            owner_id=owner_id,
+            current_user=current_user,
+        )
+        result.update(saved=created, updated=merged, merged=merged)
+    elif data_type == 'violation':
+        saved, skipped = qor_import.save_violations_to_db(
+            records, project, module_id, version, source_name,
+        )
+        result.update(saved=saved, skipped=skipped)
+    elif data_type == 'notes':
+        saved, skipped = qor_import.save_notes_to_db(
+            records, project, module_id, version, source_name, full_dir=full_dir,
+        )
+        result.update(saved=saved, skipped=skipped)
+    else:
+        diagnostics = []
+        saved, skipped, updated = qor_import.save_records_to_db(
+            records, project, module_id, version, source_name,
+            mark_released=mark_released,
+            owner_id=owner_id,
+            default_release_dir=release_dir,
+            current_user=current_user,
+            diagnostics=diagnostics,
+        )
+        result.update(
+            saved=saved,
+            skipped=skipped,
+            updated=updated,
+            errors=diagnostics,
+        )
+    return result
+
 
 @login_required
 def admin_upload_csv(request):
@@ -2748,14 +3012,13 @@ def admin_upload_csv(request):
     if blocked:
         return blocked
 
-    # 前端发送 'files' (复数), 兼容 'file' (单数)
-    uploaded_files = request.FILES.getlist('files') or request.FILES.getlist('file')
-    if not uploaded_files:
-        # 尝试单个 file key
-        if 'file' in request.FILES:
-            uploaded_files = [request.FILES['file']]
-        else:
-            return JsonResponse({'error': '缺少上传文件'}, status=400)
+    try:
+        uploaded_files, relative_paths = _csv_upload_files_and_paths(request)
+        filename_suffixes = parse_filename_suffixes(
+            request.POST.get('filename_suffixes', '_qor,qor,_qor_report'),
+        )
+    except UploadPathError as exc:
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
 
     module_id = request.POST.get('module_id')
     version = request.POST.get('version', 'v1')
@@ -2763,8 +3026,12 @@ def admin_upload_csv(request):
     release_dir = request.POST.get('release_dir', None)
     data_type = request.POST.get('data_type', 'qor')
     module_name_source = request.POST.get('module_name_source', 'csv')
-    filename_suffixes = request.POST.get('filename_suffixes', '_qor,qor,_qor_report')
     full_dir = request.POST.get('full_dir', None)
+    if module_name_source not in ('csv', 'dirname', 'filename'):
+        return JsonResponse({
+            'ok': False,
+            'error': 'module_name_source 必须是 dirname、filename 或 csv',
+        }, status=400)
 
     # 规范化 module_id: 空字符串视为 None
     if module_id is not None and str(module_id).strip() == '':
@@ -2773,7 +3040,7 @@ def admin_upload_csv(request):
         try:
             module_id = int(module_id)
         except (ValueError, TypeError):
-            module_id = None
+            return JsonResponse({'error': '无效的 module_id'}, status=400)
 
     import logging as _logging
     _log = _logging.getLogger(__name__)
@@ -2783,34 +3050,75 @@ def admin_upload_csv(request):
     set_current_project_id(pid)
     db_name = _get_project_db(pid)
     get_project_engine(pid)
+    selected_module = None
+    if module_id is not None:
+        selected_module = Module.objects.using(db_name).filter(
+            id=module_id, project_id=pid,
+        ).first()
+        if selected_module is None:
+            return JsonResponse({'error': '所选模块不属于目标项目或不存在'}, status=400)
 
     file_results = []
     total_saved = 0
     total_updated = 0
     total_skipped = 0
+    total_merged = 0
 
-    for f in uploaded_files:
+    for f, raw_relative_path in zip(uploaded_files, relative_paths):
         file_result = {
             'filename': f.name,
+            'relative_path': str(raw_relative_path or ''),
+            'inferred_module': selected_module.name if selected_module else None,
             'ok': True,
             'saved': 0,
             'updated': 0,
             'skipped': 0,
             'merged': 0,
+            'errors': [],
             'stats': {'total_rows': 0, 'skipped_empty': 0, 'skipped_no_data': 0, 'errors': 0},
         }
         try:
-            content = f.read().decode('utf-8-sig')
-            reader = _csv.DictReader(_io.StringIO(content))
-            rows = list(reader)
-        except Exception as e:
+            relative_path = normalize_relative_upload_path(raw_relative_path)
+            file_result['relative_path'] = relative_path
+            rows = _read_uploaded_csv(f)
+            inferred_name = (
+                selected_module.name
+                if selected_module
+                else _upload_module_name(
+                    rows, relative_path, module_name_source, filename_suffixes,
+                )
+            )
+            file_result['inferred_module'] = inferred_name
+            effective_module_id = module_id
+            if effective_module_id is None and inferred_name:
+                inferred_module = _find_project_module(db_name, pid, inferred_name)
+                if inferred_module is None:
+                    inferred_module = Module.objects.using(db_name).create(
+                        project_id=pid,
+                        name=inferred_name,
+                        owner_id=request.user.id,
+                    )
+                    qor_import.associate_global_module(project, inferred_module)
+                effective_module_id = inferred_module.id
+        except UploadPathError as exc:
             file_result['ok'] = False
-            file_result['error'] = f'CSV 解析失败: {str(e)}'
+            file_result['error'] = str(exc)
+            file_result['errors'].append({
+                'code': 'invalid_upload_file',
+                'reason': str(exc),
+            })
+            file_result['stats']['errors'] = 1
             file_results.append(file_result)
             continue
-
-        if not rows:
-            file_result['stats']['total_rows'] = 0
+        except Exception as exc:
+            _log.exception('CSV 模块映射失败: %s', raw_relative_path)
+            file_result['ok'] = False
+            file_result['error'] = f'模块映射失败: {exc}'
+            file_result['errors'].append({
+                'code': 'module_mapping_failed',
+                'reason': str(exc),
+            })
+            file_result['stats']['errors'] = 1
             file_results.append(file_result)
             continue
 
@@ -2819,67 +3127,72 @@ def admin_upload_csv(request):
         _log.info("admin_upload_csv: 文件=%s, 列名=%s, 行数=%d",
                   f.name, list(rows[0].keys()) if rows else [], len(rows))
 
-        records = []
-        for row in rows:
-            rec = {}
-            for k, v in row.items():
-                key = k.strip().lower()
-                rec[key] = v.strip() if v else ''
-            records.append(rec)
+        records = [qor_import.normalize_csv_record(row) for row in rows]
 
-        # 根据 data_type 调用不同的处理函数
-        if data_type == 'power':
-            merged, created = qor_import.merge_power_to_db(
-                records, project, module_id, version, f.name,
-                mark_released=mark_released, owner_id=request.user.id,
+        try:
+            import_result = _save_uploaded_csv_records(
+                records,
+                project,
+                effective_module_id,
+                version,
+                f.name,
+                data_type,
+                mark_released=mark_released,
+                owner_id=request.user.id,
                 current_user=request.user,
-            )
-            file_result['merged'] = merged
-            file_result['saved'] = created
-            total_saved += created
-            total_updated += merged
-        elif data_type == 'violation':
-            saved, skipped = qor_import.save_violations_to_db(
-                records, project, module_id, version, f.name,
-            )
-            file_result['saved'] = saved
-            file_result['skipped'] = skipped
-            total_saved += saved
-            total_skipped += skipped
-        elif data_type == 'notes':
-            saved, skipped = qor_import.save_notes_to_db(
-                records, project, module_id, version, f.name,
+                release_dir=release_dir,
                 full_dir=full_dir,
             )
-            file_result['saved'] = saved
-            file_result['skipped'] = skipped
-            total_saved += saved
-            total_skipped += skipped
-        else:
-            # data_type == 'qor'
-            saved, skipped, updated = qor_import.save_records_to_db(
-                records, project, module_id, version, f.name,
-                mark_released=mark_released, owner_id=request.user.id,
-                default_release_dir=release_dir, current_user=request.user,
-            )
-            file_result['saved'] = saved
-            file_result['skipped'] = skipped
-            file_result['updated'] = updated
-            total_saved += saved
-            total_skipped += skipped
-            total_updated += updated
+        except Exception as exc:
+            _log.exception('CSV 文件导入失败: %s', file_result['relative_path'])
+            file_result['ok'] = False
+            file_result['error'] = f'文件导入失败: {exc}'
+            file_result['errors'] = [{
+                'code': 'file_import_failed',
+                'reason': str(exc),
+            }]
+            file_result['stats']['errors'] = 1
+            file_results.append(file_result)
+            continue
 
+        file_result.update(import_result)
+        file_result['stats']['errors'] = len(file_result['errors'])
+        total_saved += file_result['saved']
+        total_skipped += file_result['skipped']
+        total_updated += file_result['updated']
+        total_merged += file_result['merged']
+
+        affected = file_result['saved'] + file_result['updated'] + file_result['merged']
+        if affected == 0:
+            file_result['ok'] = False
+            if not file_result.get('error'):
+                if file_result['errors']:
+                    reasons = '; '.join(
+                        f"第 {item['row']} 行：{item['reason']}"
+                        for item in file_result['errors'][:3]
+                    )
+                    file_result['error'] = f'没有导入任何记录。{reasons}'
+                else:
+                    file_result['error'] = '没有导入任何记录'
         file_results.append(file_result)
 
-    return JsonResponse({
-        'ok': True,
+    total_written = total_saved + total_updated
+    overall_ok = total_written > 0
+    response = {
+        'ok': overall_ok,
         'saved': total_saved,
         'updated': total_updated,
+        'merged': total_merged,
         'skipped': total_skipped,
         'total': sum(fr['stats']['total_rows'] for fr in file_results),
+        'successful_files': sum(1 for item in file_results if item['ok']),
+        'failed_files': sum(1 for item in file_results if not item['ok']),
         'file_results': file_results,
         'data_type': data_type,
-    })
+    }
+    if not overall_ok:
+        response['error'] = '上传失败：所有文件均未保存或更新任何记录'
+    return JsonResponse(response, status=200 if overall_ok else 422)
 
 
 @login_required
@@ -2936,6 +3249,7 @@ def admin_upload_block_qor(request):
                 project_id=pid, name=module_name,
                 defaults={'owner_id': request.user.id},
             )
+            qor_import.associate_global_module(project, module)
 
             rec = QorRecord(
                 module_id=module.id,
@@ -2977,37 +3291,102 @@ def admin_upload_block_qor(request):
 
 @login_required
 def admin_upload_csv_preview(request):
-    """预览 CSV 上传内容"""
+    """Preview every browser-selected CSV and its inferred module mapping."""
     if not request.user.is_admin and not request.user.is_owner:
         return JsonResponse({'error': '需要管理员或 owner 权限'}, status=403)
 
-    # 前端发送 'files' (复数), 兼容 'file' (单数)
-    uploaded_files = request.FILES.getlist('files') or request.FILES.getlist('file')
-    if not uploaded_files:
-        if 'file' in request.FILES:
-            uploaded_files = [request.FILES['file']]
-        else:
-            return JsonResponse({'error': '缺少上传文件'}, status=400)
-
-    f = uploaded_files[0]  # 预览只处理第一个文件
+    project_id = request.POST.get('project_id')
     try:
-        content = f.read().decode('utf-8-sig')
-        reader = _csv.DictReader(_io.StringIO(content))
-        rows = list(reader)
-    except Exception as e:
-        return JsonResponse({'error': f'CSV 解析失败: {str(e)}'}, status=400)
+        pid = int(project_id)
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': '无效的 project_id'}, status=400)
+    project = get_object_or_404(Project, pk=pid)
+    blocked = _require_writable_project(project)
+    if blocked:
+        return blocked
 
-    if not rows:
-        return JsonResponse({'error': 'CSV 文件为空'}, status=400)
+    source = request.POST.get('module_name_source', 'csv')
+    try:
+        uploaded_files, relative_paths = _csv_upload_files_and_paths(request)
+        suffixes = parse_filename_suffixes(
+            request.POST.get('filename_suffixes', '_qor,qor,_qor_report'),
+        )
+        if source not in ('csv', 'dirname', 'filename'):
+            raise UploadPathError(
+                'module_name_source 必须是 dirname、filename 或 csv',
+            )
+    except UploadPathError as exc:
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
 
-    preview = rows[:20]
-    columns = list(preview[0].keys()) if preview else []
-    return JsonResponse({
-        'ok': True,
-        'total_rows': len(rows),
-        'columns': columns,
-        'preview': preview,
-    })
+    set_current_project_id(pid)
+    db_name = _get_project_db(pid)
+    get_project_engine(pid)
+    results = []
+
+    for uploaded_file, raw_relative_path in zip(uploaded_files, relative_paths):
+        item = {
+            'filename': uploaded_file.name,
+            'relative_path': str(raw_relative_path or ''),
+            'inferred_module': None,
+            'module_exists': False,
+            'can_auto_create': False,
+            'mapped_module_id': None,
+            'total_rows': 0,
+            'columns': [],
+            'preview': [],
+            'module_names': [],
+            'errors': [],
+        }
+        try:
+            relative_path = normalize_relative_upload_path(raw_relative_path)
+            rows = _read_uploaded_csv(uploaded_file)
+            inferred_name = _upload_module_name(
+                rows, relative_path, source, suffixes,
+            )
+            module_names = sorted({
+                str(row.get('module_name') or row.get('module') or '').strip()
+                for row in rows
+                if str(row.get('module_name') or row.get('module') or '').strip()
+            })
+            existing_module = _find_project_module(db_name, pid, inferred_name)
+            item.update({
+                'relative_path': relative_path,
+                'inferred_module': inferred_name,
+                'module_exists': existing_module is not None,
+                'can_auto_create': bool(inferred_name and existing_module is None),
+                'mapped_module_id': existing_module.id if existing_module else None,
+                'total_rows': len(rows),
+                'columns': list(rows[0].keys()),
+                'preview': rows[:20],
+                'module_names': module_names,
+            })
+        except UploadPathError as exc:
+            item['errors'].append({
+                'code': 'invalid_upload_file',
+                'message': str(exc),
+            })
+        results.append(item)
+
+    valid_items = [item for item in results if not item['errors']]
+    summary = {
+        'total_files': len(results),
+        'valid_files': len(valid_items),
+        'error_files': len(results) - len(valid_items),
+        'total_rows': sum(item['total_rows'] for item in valid_items),
+    }
+    response = {
+        'ok': bool(valid_items),
+        'files': results,
+        'summary': summary,
+    }
+    # Keep the first-file fields for old single-file clients while the Vue UI
+    # migrates to the multi-file contract.
+    if len(results) == 1:
+        response.update({
+            key: results[0][key]
+            for key in ('total_rows', 'columns', 'preview', 'module_names')
+        })
+    return JsonResponse(response)
 
 
 def _safe_float(val):
@@ -3781,13 +4160,16 @@ def api_v1_upload(request):
     blocked = _require_writable_project(project)
     if blocked:
         return blocked
-    if 'file' not in request.FILES:
+    # upload_qor.sh 传 files=@...；旧客户端传 file=@... —— 两者都兼容
+    uploaded_files = request.FILES.getlist('files') or request.FILES.getlist('file')
+    if not uploaded_files:
         return JsonResponse({'error': '缺少上传文件'}, status=400)
 
-    f = request.FILES['file']
+    f = uploaded_files[0]
     module_id = request.POST.get('module_id')
     version = request.POST.get('version', 'v1')
     mark_released = request.POST.get('mark_released', '').lower() in ('1', 'true', 'yes')
+    release_dir = (request.POST.get('release_dir') or '').strip() or None
 
     set_current_project_id(pid)
     db_name = _get_project_db(pid)
@@ -3802,24 +4184,29 @@ def api_v1_upload(request):
 
     records = []
     for row in rows:
-        rec = {}
-        for k, v in row.items():
-            rec[k.strip().lower()] = v.strip() if v else ''
+        rec = qor_import.normalize_csv_record(row)
+        if release_dir and not rec.get('release_dir'):
+            rec['release_dir'] = release_dir
         records.append(rec)
 
     saved, skipped, updated = qor_import.save_records_to_db(
         records, project, module_id, version, f.name,
         mark_released=mark_released, owner_id=user.id,
         current_user=user,
+        default_release_dir=release_dir,
     )
 
-    return JsonResponse({
-        'ok': True,
+    response = {
+        'ok': bool(saved or updated),
         'saved': saved,
         'updated': updated,
         'skipped': skipped,
         'total': len(records),
-    })
+    }
+    if not response['ok']:
+        response['error'] = '上传失败：未保存或更新任何记录'
+        return JsonResponse(response, status=422)
+    return JsonResponse(response)
 
 
 @csrf_exempt

@@ -60,6 +60,10 @@ export const useDashboardStore = defineStore('dashboard', () => {
     rawReports.value = { ...rawReports.value, [String(id)]: value }
   }
 
+  function hasRawReportEntry(id) {
+    return Object.prototype.hasOwnProperty.call(rawReports.value, String(id))
+  }
+
   function setRawLoading(id, value) {
     const next = new Set(rawLoadingIds.value)
     value ? next.add(String(id)) : next.delete(String(id))
@@ -150,6 +154,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     setPagination,
     setDiagnostics,
     setRawReport,
+    hasRawReportEntry,
     setRawLoading,
     setLoading,
     setError,

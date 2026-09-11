@@ -26,6 +26,12 @@ describe('dashboard API contract', () => {
     expect(apiClient.post).toHaveBeenCalledWith('/dashboard/save', payload)
   })
 
+  it('uses the CSRF-protected Django delete route', async () => {
+    apiClient.delete.mockResolvedValue({ data: { ok: true } })
+    await dashboardApi.deleteConfig(9)
+    expect(apiClient.delete).toHaveBeenCalledWith('/dashboard/9')
+  })
+
   it('unwraps lazy raw report content for timing analysis', async () => {
     const raw = { timing: { final: { scenarios: {} } } }
     apiClient.get.mockResolvedValue({
@@ -39,6 +45,17 @@ describe('dashboard API contract', () => {
     expect(apiClient.get).toHaveBeenCalledWith('/v2/projects/5/records/30/raw', {
       signal: undefined
     })
+  })
+
+  it('returns null when raw report content is absent', async () => {
+    apiClient.get.mockResolvedValue({
+      data: {
+        ok: true,
+        data: { project_id: 5, record_id: '30', content: null }
+      }
+    })
+
+    await expect(dashboardApi.rawReport(5, '30')).resolves.toBeNull()
   })
 
   it('sets and clears a record risk judgement', async () => {

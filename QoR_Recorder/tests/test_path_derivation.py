@@ -19,6 +19,21 @@ def test_quarter_week_release_train_is_path_derived():
     assert derive_version('2026Q3_w3/variant_c/cpu_cfg1') == '2026Q3_w3'
 
 
+def test_syn_regr_before_main_is_path_derived():
+    full_dir = (
+        '/project/feint2/SYN/harbinger/weekly/syn_regr_0817/main/'
+        'core_tcgbr_t_work_master0903_def0901'
+    )
+    assert derive_version(full_dir) == 'syn_regr_0817'
+    metadata = derive_path_metadata(full_dir)
+    assert metadata['version'] == 'syn_regr_0817'
+    assert metadata['tag'] == 'core_tcgbr_t_work_master0903_def0901'
+
+
+def test_syn_regr_wins_over_later_legacy_release_segment():
+    assert derive_version('/weekly/syn_regr_0817/main/cpu/v7') == 'syn_regr_0817'
+
+
 def test_no_v1_fallback_and_structured_error():
     with pytest.raises(PathDerivationError) as raised:
         derive_version('/runs/main/cpu')

@@ -70,7 +70,7 @@ QoR_Recorder/
 ├── start.sh                      # systemd 启动脚本（自动 migrate + gunicorn）
 ├── .env.example                  # 环境变量模板（服务器上复制为 .env 并修改）
 ├── deploy/
-│   ├── nginx.conf                # Nginx 站点配置（改 upstream 为本机 127.0.0.1:8000）
+│   ├── nginx.conf                # Nginx 站点配置（改 upstream 为本机 127.0.0.1:5000）
 │   └── qor_recorder.service      # systemd unit 文件
 ├── wheelhouse/                   # （可选）离线 Python 依赖包，见 wheelhouse/README.md
 ├── config/                       # 评审层级配置（review_hierarchy.yaml）

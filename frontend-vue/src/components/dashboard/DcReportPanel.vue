@@ -74,7 +74,10 @@ const records = computed(() => dashboard.records)
 const selected = computed(() => dashboard.selectedRecords)
 const recordKey = record => dashboard.selectionKey(record)
 const rawSelected = computed(() =>
-  dashboard.selectedRecords.filter(record => dashboard.rawReports[recordKey(record)])
+  dashboard.selectedRecords.filter(record => {
+    const raw = dashboard.rawReports[recordKey(record)]
+    return raw != null && raw !== ''
+  })
 )
 const timingScopes = computed(() => {
   const scenarios = new Set()
@@ -95,15 +98,9 @@ const timingScopes = computed(() => {
     pathGroups: [...pathGroups].sort()
   }
 })
-const timingRecords = computed(() =>
-  selected.value.map(record => ({
-    ...record,
-    raw_dc_report: normalizedRaw(record)
-  }))
-)
-const { computedMetrics: scopedTimingMetrics, groupDetails: scopedTimingGroups } = useTimingAnalysis(
-  () => timingRecords.value,
-  {
+const timingRecords = computed(() => selected.value.map(timingSource))
+const { computedMetrics: scopedTimingMetrics, groupDetails: scopedTimingGroups } =
+  useTimingAnalysis(() => timingRecords.value, {
     selectedScenarios: computed({
       get: () => dc.preferences.scenarioIds,
       set: value => {
@@ -116,8 +113,7 @@ const { computedMetrics: scopedTimingMetrics, groupDetails: scopedTimingGroups }
         dc.preferences.pathGroupIds = value
       }
     })
-  }
-)
+  })
 const scopedTimingByRun = computed(
   () =>
     new Map(
@@ -175,12 +171,19 @@ const activeSelection = computed(() =>
 
 function normalizedRaw(record) {
   const raw = dashboard.rawReports[recordKey(record)]
-  if (!raw) return {}
+  if (raw === null || raw === undefined) return {}
   if (typeof raw === 'object') return raw
   try {
     return JSON.parse(raw)
   } catch {
     return {}
+  }
+}
+
+function timingSource(record) {
+  return {
+    ...record,
+    raw_dc_report: normalizedRaw(record)
   }
 }
 
@@ -205,6 +208,11 @@ const pickerSections = computed(() => [
     ...section,
     metrics: section.metrics.map(metric => ({ id: metric.id, label: metric.label }))
   })),
+  {
+    id: 'qor_vt_ratio',
+    label: 'VT ratio',
+    metrics: vtRatioRows.value.map(row => ({ id: row.id, label: row.vt_type }))
+  },
   ...rawSections.value
 ])
 
@@ -234,8 +242,70 @@ const visibleCanonicalSections = computed(() => {
     .filter(section => section.metrics.length)
 })
 
+function vtRatioSource(record) {
+  const raw = normalizedRaw(record)
+  const fromMisc = raw?.misc?.vt_ratio
+  if (fromMisc && typeof fromMisc === 'object' && !Array.isArray(fromMisc)) return fromMisc
+  const extra = record?.extra_fields?.misc_vt_ratio || record?.extra?.misc_vt_ratio
+  if (extra && typeof extra === 'object' && !Array.isArray(extra)) return extra
+  return {}
+}
+
+function isZeroPercent(value) {
+  if (value == null || value === '') return true
+  const numeric = Number(String(value).trim().replace(/%/g, ''))
+  return Number.isFinite(numeric) && numeric === 0
+}
+
+const vtRatioRows = computed(() => {
+  const types = new Set()
+  selected.value.forEach(record => {
+    Object.entries(vtRatioSource(record)).forEach(([type, ratio]) => {
+      if (!isZeroPercent(ratio)) types.add(type)
+    })
+  })
+  return [...types]
+    .sort((a, b) => a.localeCompare(b))
+    .map(type => {
+      const row = { id: type, vt_type: type, __classes: {} }
+      selected.value.forEach(record => {
+        const key = recordKey(record)
+        const ratio = vtRatioSource(record)[type]
+        row[key] = isZeroPercent(ratio) ? null : ratio
+      })
+      return row
+    })
+})
+
+const showVtRatio = computed(() => {
+  if (!dashboard.selectedIds.size || !vtRatioRows.value.length) return false
+  if (!dc.preferences.catalogConfigured) return true
+  return (
+    dc.preferences.sectionIds.includes('qor_vt_ratio') ||
+    dc.preferences.sectionIds.includes('qor_physical')
+  )
+})
+
+function vtRatioColumns() {
+  return [
+    { key: 'vt_type', label: 'VT type', width: '190px', sortable: false },
+    ...selected.value.map(record => ({
+      key: recordKey(record),
+      label: selected.value.length === 1 ? 'ratio' : runLabel(record),
+      numeric: true,
+      format: value => (value == null || value === '' ? '—' : value),
+      sortValue: row => {
+        const raw = row[recordKey(record)]
+        const numeric = Number(String(raw ?? '').replace(/%/g, ''))
+        return Number.isFinite(numeric) ? numeric : raw
+      },
+      class: () => (dashboard.baselineId === recordKey(record) ? 'baseline' : '')
+    }))
+  ]
+}
+
 function hasTimingSections(record) {
-  return Object.keys(normalizeTimingSections({ raw_dc_report: normalizedRaw(record) })).length > 0
+  return Object.keys(normalizeTimingSections(timingSource(record))).length > 0
 }
 
 function canonicalValue(record, metric, sectionId = '') {
@@ -390,15 +460,26 @@ function sectionColumns() {
 
 async function ensureRaw(record) {
   const key = recordKey(record)
-  if (dashboard.rawReports[key] || dashboard.rawLoadingIds.has(key)) return
+  if (dashboard.hasRawReportEntry(key) || dashboard.rawLoadingIds.has(key)) return
   const controller = new AbortController()
   rawControllers.set(key, controller)
   dashboard.setRawLoading(key, true)
   try {
     const raw = await dashboardApi.rawReport(record.project_id, record.id, controller.signal)
-    dashboard.setRawReport(key, raw)
+    dashboard.setRawReport(key, raw ?? null)
+    if (dc.rawErrors[key]) {
+      const next = { ...dc.rawErrors }
+      delete next[key]
+      dc.rawErrors = next
+    }
   } catch (error) {
-    if (error.code !== 'ERR_CANCELED') dc.rawErrors = { ...dc.rawErrors, [key]: error.message }
+    if (error.code === 'ERR_CANCELED') return
+    const missingRaw = error.status === 404 && /record not found/i.test(String(error.message || ''))
+    if (missingRaw) {
+      dashboard.setRawReport(key, null)
+      return
+    }
+    dc.rawErrors = { ...dc.rawErrors, [key]: error.message }
   } finally {
     dashboard.setRawLoading(key, false)
     rawControllers.delete(key)
@@ -469,7 +550,17 @@ watch(
 )
 watch(
   () => dashboard.selectedRecords.map(recordKey).join('|'),
-  () => dashboard.selectedRecords.forEach(ensureRaw),
+  () => {
+    const selected = new Set(dashboard.selectedRecords.map(recordKey))
+    const next = {}
+    Object.entries(dc.rawErrors).forEach(([id, message]) => {
+      if (!selected.has(id)) return
+      if (/record not found/i.test(String(message))) return
+      next[id] = message
+    })
+    dc.rawErrors = next
+    dashboard.selectedRecords.forEach(ensureRaw)
+  },
   { immediate: true }
 )
 watch(
@@ -566,121 +657,146 @@ defineExpose({ sectionRows, sectionColumns, vsDraftIds, applyVsSelection, cancel
         Select runs from the checklist to compare canonical QoR metrics.
       </div>
       <template v-if="dashboard.selectedIds.size">
+        <template v-for="section in visibleCanonicalSections" :key="section.id">
+          <article class="dc-section canonical-section">
+            <h3>{{ section.label }}</h3>
+            <DataTable
+              :rows="canonicalRows(section)"
+              :columns="canonicalColumns()"
+              row-key="id"
+              :copy-on-click="dc.preferences.copyOnClick"
+              :filename="`${section.id}.csv`"
+            />
+            <details
+              v-if="section.id === 'qor_timing' && timingHierarchy.length"
+              class="timing-breakdown"
+              :open="!dc.preferences.compactTiming"
+            >
+              <summary>
+                <span>Scenario → path-group contributions</span>
+                <small>WNS minimum · negative TNS sum · NVP total</small>
+              </summary>
+              <section
+                v-for="analysis in timingHierarchy"
+                :key="analysis.analysis"
+                class="timing-analysis"
+              >
+                <h4>
+                  {{ analysis.analysis }}
+                  <span
+                    v-if="
+                      selected.some(record => timingAnalysisContributes(record, analysis.analysis))
+                    "
+                    class="aggregate-source"
+                  >
+                    aggregate source
+                  </span>
+                </h4>
+                <div
+                  v-for="scenario in analysis.scenarios"
+                  :key="scenario.scenario"
+                  class="timing-scenario"
+                >
+                  <h5>{{ scenario.scenario }}</h5>
+                  <div class="timing-table-scroll">
+                    <table class="table timing-group-table">
+                      <thead>
+                        <tr>
+                          <th>Path group</th>
+                          <th v-for="record in selected" :key="recordKey(record)">
+                            {{ runLabel(record) }}
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="pathGroup in scenario.groups" :key="pathGroup">
+                          <th scope="row">{{ pathGroup }}</th>
+                          <td v-for="record in selected" :key="recordKey(record)">
+                            <template
+                              v-if="
+                                timingGroup(record, analysis.analysis, scenario.scenario, pathGroup)
+                              "
+                            >
+                              <span>
+                                WNS
+                                {{
+                                  formatTimingPart(
+                                    timingGroup(
+                                      record,
+                                      analysis.analysis,
+                                      scenario.scenario,
+                                      pathGroup
+                                    ).summary.wns
+                                  )
+                                }}
+                              </span>
+                              <span>
+                                TNS
+                                {{
+                                  formatTimingPart(
+                                    timingGroup(
+                                      record,
+                                      analysis.analysis,
+                                      scenario.scenario,
+                                      pathGroup
+                                    ).summary.tns
+                                  )
+                                }}
+                              </span>
+                              <span>
+                                NVP
+                                {{
+                                  formatTimingPart(
+                                    timingGroup(
+                                      record,
+                                      analysis.analysis,
+                                      scenario.scenario,
+                                      pathGroup
+                                    ).summary.nvp
+                                  )
+                                }}
+                              </span>
+                            </template>
+                            <span v-else class="missing-value" aria-label="Not present">—</span>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </section>
+            </details>
+          </article>
+          <article
+            v-if="section.id === 'qor_physical' && showVtRatio"
+            class="dc-section canonical-section"
+            data-testid="vt-ratio-section"
+          >
+            <h3>VT ratio</h3>
+            <DataTable
+              :rows="vtRatioRows"
+              :columns="vtRatioColumns()"
+              row-key="id"
+              :copy-on-click="dc.preferences.copyOnClick"
+              filename="vt_ratio.csv"
+            />
+          </article>
+        </template>
         <article
-          v-for="section in visibleCanonicalSections"
-          :key="section.id"
+          v-if="
+            showVtRatio && !visibleCanonicalSections.some(section => section.id === 'qor_physical')
+          "
           class="dc-section canonical-section"
+          data-testid="vt-ratio-section"
         >
-          <h3>{{ section.label }}</h3>
+          <h3>VT ratio</h3>
           <DataTable
-            :rows="canonicalRows(section)"
-            :columns="canonicalColumns()"
+            :rows="vtRatioRows"
+            :columns="vtRatioColumns()"
             row-key="id"
             :copy-on-click="dc.preferences.copyOnClick"
-            :filename="`${section.id}.csv`"
+            filename="vt_ratio.csv"
           />
-          <details
-            v-if="section.id === 'qor_timing' && timingHierarchy.length"
-            class="timing-breakdown"
-            :open="!dc.preferences.compactTiming"
-          >
-            <summary>
-              <span>Scenario → path-group contributions</span>
-              <small>WNS minimum · negative TNS sum · NVP total</small>
-            </summary>
-            <section
-              v-for="analysis in timingHierarchy"
-              :key="analysis.analysis"
-              class="timing-analysis"
-            >
-              <h4>
-                {{ analysis.analysis }}
-                <span
-                  v-if="selected.some(record => timingAnalysisContributes(record, analysis.analysis))"
-                  class="aggregate-source"
-                >
-                  aggregate source
-                </span>
-              </h4>
-              <div
-                v-for="scenario in analysis.scenarios"
-                :key="scenario.scenario"
-                class="timing-scenario"
-              >
-                <h5>{{ scenario.scenario }}</h5>
-                <div class="timing-table-scroll">
-                  <table class="table timing-group-table">
-                    <thead>
-                      <tr>
-                        <th>Path group</th>
-                        <th v-for="record in selected" :key="recordKey(record)">
-                          {{ runLabel(record) }}
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="pathGroup in scenario.groups" :key="pathGroup">
-                        <th scope="row">{{ pathGroup }}</th>
-                        <td v-for="record in selected" :key="recordKey(record)">
-                          <template
-                            v-if="
-                              timingGroup(
-                                record,
-                                analysis.analysis,
-                                scenario.scenario,
-                                pathGroup
-                              )
-                            "
-                          >
-                            <span>
-                              WNS
-                              {{
-                                formatTimingPart(
-                                  timingGroup(
-                                    record,
-                                    analysis.analysis,
-                                    scenario.scenario,
-                                    pathGroup
-                                  ).summary.wns
-                                )
-                              }}
-                            </span>
-                            <span>
-                              TNS
-                              {{
-                                formatTimingPart(
-                                  timingGroup(
-                                    record,
-                                    analysis.analysis,
-                                    scenario.scenario,
-                                    pathGroup
-                                  ).summary.tns
-                                )
-                              }}
-                            </span>
-                            <span>
-                              NVP
-                              {{
-                                formatTimingPart(
-                                  timingGroup(
-                                    record,
-                                    analysis.analysis,
-                                    scenario.scenario,
-                                    pathGroup
-                                  ).summary.nvp
-                                )
-                              }}
-                            </span>
-                          </template>
-                          <span v-else class="missing-value" aria-label="Not present">—</span>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </section>
-          </details>
         </article>
       </template>
       <div v-if="dashboard.rawLoadingIds.size" class="status-line" role="status">

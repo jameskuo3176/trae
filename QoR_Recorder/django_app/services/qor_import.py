@@ -17,9 +17,144 @@ from django_app.core.models import (
     GlobalModule, LegacyModuleMapping, Module, ProjectModule, QorRecord,
     ViolationPath, RunNote, normalize_module_name,
 )
-from django_app.services.path_derivation import derive_version, normalize_full_dir
+from django_app.services.path_derivation import (
+    PathDerivationError, derive_version, normalize_full_dir,
+)
+from django_app.services.csv_field_mapping import (
+    CSV_FIELD_ALIASES,
+    CSV_STANDARD_FIELDS,
+    STDCELL_AREA_KEY,
+    canonical_csv_field,
+    reconstruct_area_total,
+)
+from django_app.services.csv_timing import (
+    aggregate_setup_timing,
+    build_timing_sections,
+    parse_dynamic_path_groups,
+)
 
 _log = logging.getLogger(__name__)
+
+
+def normalize_csv_record(row):
+    """Convert one CSV row into the canonical QoR import representation.
+
+    Dynamic ``<PATH_GROUP>_{period,wns,tns,path}`` columns are normalized into
+    timing sections. ``path`` is the violation count and therefore maps to
+    canonical ``nvp``. Original columns remain in ``extra_fields`` for
+    compatibility and audit.
+    """
+    record = {}
+    extra = {}
+    for raw_key, raw_value in row.items():
+        if raw_key is None:
+            continue
+        original_key = str(raw_key).strip()
+        key = original_key.lower()
+        value = raw_value.strip() if isinstance(raw_value, str) else raw_value
+        canonical = canonical_csv_field(key)
+        if canonical in CSV_STANDARD_FIELDS:
+            record[canonical] = value
+        else:
+            extra[original_key] = value
+
+    rebuilt_total = reconstruct_area_total(
+        record.get('area_total'),
+        extra.get(STDCELL_AREA_KEY),
+        record.get('area_macro'),
+    )
+    if rebuilt_total is not None:
+        record['area_total'] = rebuilt_total
+
+    path_groups, _ = parse_dynamic_path_groups(row)
+    if path_groups:
+        timing_sections = build_timing_sections(path_groups)
+        extra['timing_sections'] = timing_sections
+        # Compatibility mirrors consumed by older detail/risk code.
+        extra['path_groups'] = path_groups
+        extra['clocks'] = path_groups
+
+        setup = aggregate_setup_timing(path_groups)
+        for metric, field in (
+            ('wns', 'wns_setup'),
+            ('tns', 'tns_setup'),
+            ('nvp', 'nvp_setup'),
+        ):
+            if metric in setup:
+                record.setdefault(field, setup[metric])
+    if extra:
+        record['extra_fields'] = extra
+    return record
+
+
+def plan_legacy_module_bridge(project, legacy_module):
+    """Inspect whether a project-local module can be bridged without mutation."""
+    normalized = normalize_module_name(legacy_module.name)
+    mapping = LegacyModuleMapping.objects.filter(
+        project_id=project.id,
+        legacy_module_id=legacy_module.id,
+    ).select_related('module').first()
+    base = {
+        'project_id': project.id,
+        'legacy_module_id': legacy_module.id,
+        'module_name': legacy_module.name,
+        'normalized_name': normalized,
+    }
+    if mapping:
+        if mapping.legacy_name != legacy_module.name:
+            return {
+                **base,
+                'status': 'conflict',
+                'reason': 'legacy_name_mismatch',
+                'mapped_legacy_name': mapping.legacy_name,
+                'global_module_id': mapping.module_id,
+            }
+        if mapping.module.normalized_name != normalized:
+            return {
+                **base,
+                'status': 'conflict',
+                'reason': 'global_module_mismatch',
+                'mapped_global_module_id': mapping.module_id,
+                'mapped_normalized_name': mapping.module.normalized_name,
+            }
+        has_link = ProjectModule.objects.filter(
+            project_id=project.id,
+            module_id=mapping.module_id,
+        ).exists()
+        return {
+            **base,
+            'status': 'ok',
+            'actions': [] if has_link else ['create_project_module'],
+            'global_module_id': mapping.module_id,
+        }
+    global_module = GlobalModule.objects.filter(normalized_name=normalized).first()
+    actions = ['create_legacy_mapping', 'create_project_module']
+    if global_module is None:
+        actions.insert(0, 'create_global_module')
+    else:
+        actions.insert(0, 'link_global_module')
+    return {
+        **base,
+        'status': 'create',
+        'actions': actions,
+        'global_module_id': global_module.id if global_module else None,
+    }
+
+
+def ensure_legacy_module_bridge(project, legacy_module, *, execute=False):
+    """Bridge one project-local module unless an explicit mapping conflict exists."""
+    plan = plan_legacy_module_bridge(project, legacy_module)
+    if plan['status'] == 'conflict':
+        return plan
+    if plan['status'] == 'ok' and not plan.get('actions'):
+        return plan
+    if not execute:
+        return plan
+    canonical = associate_global_module(project, legacy_module)
+    plan['status'] = 'applied'
+    plan['global_module_id'] = canonical.id
+    plan['actions'] = ['applied']
+    return plan
 
 
 def associate_global_module(project, legacy_module):
@@ -350,7 +485,7 @@ def _sync_congestion(rec):
 
 def save_records_to_db(records, project, module_id, version, source_filename,
                         mark_released=False, owner_id=None, default_release_dir=None,
-                        current_user=None):
+                        current_user=None, diagnostics=None):
     """将解析后的记录保存到数据库
 
     保护措施:
@@ -428,7 +563,13 @@ def save_records_to_db(records, project, module_id, version, source_filename,
     _log.info("save_records_to_db: 开始处理 %d 条记录, project_id=%s, module_id=%s, version=%s",
               len(records), project.id if project else None, module_id, version)
 
-    for record in records:
+    def record_skip(row_number, code, reason):
+        nonlocal skipped_count
+        skipped_count += 1
+        if diagnostics is not None:
+            diagnostics.append({'row': row_number, 'code': code, 'reason': reason})
+
+    for row_number, record in enumerate(records, start=2):
         try:
             mod_name = sanitize_str(record.get('module_name'))
             if not mod_name:
@@ -437,25 +578,40 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                     if not mod:
                         _log.warning("save_records_to_db: 跳过记录 - module_id=%s 对应的模块不存在, record keys: %s",
                                      module_id, list(record.keys())[:10])
-                        skipped_count += 1
+                        record_skip(row_number, 'module_not_found', f'模块 ID {module_id} 不存在')
                         continue
                 else:
                     _log.warning("save_records_to_db: 跳过记录 - 未提供 module_id 且 CSV 中无 module_name 列, record keys: %s",
                                  list(record.keys())[:10])
-                    skipped_count += 1
+                    record_skip(
+                        row_number,
+                        'missing_module',
+                        '未选择模块，且 CSV 行中没有 module_name',
+                    )
                     continue
             else:
                 if module_id:
                     mod = Module.objects.filter(id=module_id).first()
+                    if not mod:
+                        record_skip(row_number, 'module_not_found', f'模块 ID {module_id} 不存在')
+                        continue
                 else:
-                    if mod_name in module_cache:
-                        mod = module_cache[mod_name]
+                    module_key = normalize_module_name(mod_name)
+                    if module_key in module_cache:
+                        mod = module_cache[module_key]
                     else:
-                        mod = Module.objects.filter(project_id=project.id, name=mod_name).first()
+                        mod = next(
+                            (
+                                candidate
+                                for candidate in Module.objects.filter(project_id=project.id)
+                                if normalize_module_name(candidate.name) == module_key
+                            ),
+                            None,
+                        )
                         if not mod:
                             mod = Module(project_id=project.id, name=mod_name)
                             mod.save()
-                        module_cache[mod_name] = mod
+                        module_cache[module_key] = mod
             associate_global_module(project, mod)
 
             # 提取本条 record 的 full_dir (用于精确去重)
@@ -473,9 +629,11 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                         pass
             _rec_full_dir = str(_rec_full_dir)[:500] if _rec_full_dir else None
             _rec_full_dir = validate_full_dir(_rec_full_dir, 'full_dir')  # 校验绝对路径
-            # New imports have one canonical source of truth. Caller-supplied
-            # version is intentionally ignored and there is no v1 fallback.
-            rec_version = derive_version(_rec_full_dir)
+            # Path metadata remains authoritative. Legacy CSV/API versions are
+            # accepted only as a validated fallback when the path has no
+            # recognized release segment.
+            version_fallback = record.get('version') or version
+            rec_version = derive_version(_rec_full_dir, fallback=version_fallback)
             _rec_full_dir = normalize_full_dir(_rec_full_dir)
 
             # 去重: QorRecord 唯一键是 (module_id, version, full_dir)
@@ -642,11 +800,18 @@ def save_records_to_db(records, project, module_id, version, source_filename,
                 qor.save()
                 mirror_heavy_document(project.id, qor)
                 saved_count += 1
+        except PathDerivationError as e:
+            _log.warning(
+                "save_records_to_db: 跳过第 %d 行 - %s: %s",
+                row_number, e.code, e.message,
+            )
+            record_skip(row_number, e.code, e.message)
+            continue
         except Exception as e:
             import traceback
             _log.error("save_records_to_db: 处理记录时出错 - record keys: %s, error: %s, traceback: %s",
                        list(record.keys())[:10] if record else 'N/A', str(e), traceback.format_exc())
-            skipped_count += 1
+            record_skip(row_number, 'import_error', str(e))
             continue
 
     _log.info("save_records_to_db: 处理完成 - saved=%d, updated=%d, skipped=%d",

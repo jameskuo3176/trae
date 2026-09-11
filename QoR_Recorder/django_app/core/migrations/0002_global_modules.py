@@ -5,20 +5,24 @@ import django.utils.timezone
 
 def _table_columns(schema_editor, table):
     with schema_editor.connection.cursor() as cursor:
-        return {row[1] for row in cursor.execute(f'PRAGMA table_info({table})')}
+        description = schema_editor.connection.introspection.get_table_description(
+            cursor, table
+        )
+    return {column.name for column in description}
 
 
 def _rename_column_if_needed(schema_editor, table, old_name, new_name):
     cols = _table_columns(schema_editor, table)
     if old_name in cols and new_name not in cols:
-        with schema_editor.connection.cursor() as cursor:
-            cursor.execute(
-                f'ALTER TABLE {table} RENAME COLUMN {old_name} TO {new_name}'
-            )
+        quote = schema_editor.quote_name
+        schema_editor.execute(
+            f'ALTER TABLE {quote(table)} '
+            f'RENAME COLUMN {quote(old_name)} TO {quote(new_name)}'
+        )
 
 
 def align_flask_compatible_columns(apps, schema_editor):
-    """Backfill NULLs and align FK column names for Flask-era SQLite schemas.
+    """Backfill NULLs and align FK column names across supported SQL backends.
 
     Fresh installs from 0001 create locked_by_id/hidden_by_id; models require
     physical columns locked_by/hidden_by. Existing Flask DBs already use the

@@ -87,6 +87,37 @@ def _load_dotenv():
 
 _load_dotenv()
 
+# ====== JSON 响应补丁开始 ======
+# 默认 ensure_ascii=False，避免 API JSON 把中文转义成 \uXXXX，便于阅读/排查。
+# 放在 dotenv 之后、应用导入之前：视图随后 from django.http import JsonResponse 会拿到补丁类。
+import django.http
+import django.http.response
+from django.http import JsonResponse as _OriginJsonResponse
+
+
+class PatchedJsonResponse(_OriginJsonResponse):
+    """全局 JsonResponse：默认 ensure_ascii=False（仍可用 json_dumps_params 覆盖）。"""
+
+    def __init__(self, *args, **kwargs):
+        params = kwargs.get('json_dumps_params')
+        if params is None:
+            kwargs['json_dumps_params'] = {'ensure_ascii': False}
+        else:
+            params.setdefault('ensure_ascii', False)
+        super().__init__(*args, **kwargs)
+
+
+django.http.response.JsonResponse = PatchedJsonResponse
+django.http.JsonResponse = PatchedJsonResponse
+# ====== 补丁结束 ======
+
+# A directory upload commonly contains one CSV per module. Django's default
+# limit is 100 uploaded files, which rejects the request before the preview
+# view can report per-file validation errors.
+DATA_UPLOAD_MAX_NUMBER_FILES = int(
+    os.environ.get('DATA_UPLOAD_MAX_NUMBER_FILES', '500')
+)
+
 
 # ===========================================================================
 # 数据库类型检测
@@ -116,11 +147,13 @@ _DEFAULT_SECRET_KEY = 'qor-recorder-dev-key-change-in-prod'
 
 DEBUG = os.environ.get('DEBUG', '0') == '1'
 
-ALLOWED_HOSTS = [
-    value.strip()
-    for value in os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
-    if value.strip()
-]
+# 内网部署默认放开 Host 头；生产可改回环境变量白名单。
+ALLOWED_HOSTS = ["*"]
+# ALLOWED_HOSTS = [
+#     value.strip()
+#     for value in os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+#     if value.strip()
+# ]
 
 # ===========================================================================
 # 应用定义
@@ -278,7 +311,7 @@ CSRF_TRUSTED_ORIGINS = [
     value.strip()
     for value in os.environ.get(
         'CSRF_TRUSTED_ORIGINS',
-        'http://localhost:5173,http://127.0.0.1:5173',
+        'http://localhost:5173,http://127.0.0.1:5173,http://10.150.58.192:8888',
     ).split(',')
     if value.strip()
 ]
@@ -344,7 +377,21 @@ FRONTEND_DIST_DIR = Path(
 
 # ===========================================================================
 # 日志
+# DEBUG=1 时默认 DEBUG 级别；可用 LOG_LEVEL 覆盖 (DEBUG/INFO/WARNING/ERROR)
+# Linux/systemd 下控制台日志在 journalctl；同时写入 LOG_DIR/qor_recorder.log
 # ===========================================================================
+_VALID_LOG_LEVELS = ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
+_log_level_env = os.environ.get('LOG_LEVEL', '').strip().upper()
+if _log_level_env in _VALID_LOG_LEVELS:
+    LOG_LEVEL = _log_level_env
+else:
+    LOG_LEVEL = 'DEBUG' if DEBUG else 'INFO'
+
+_LOG_DIR_ENV = os.environ.get('LOG_DIR', '').strip()
+LOG_DIR = Path(_LOG_DIR_ENV).resolve() if _LOG_DIR_ENV else (PARENT_DIR / 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = str(LOG_DIR / 'qor_recorder.log')
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -358,15 +405,38 @@ LOGGING = {
             'class': 'logging.StreamHandler',
             'formatter': 'simple',
         },
+        'file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOG_FILE,
+            'maxBytes': 10 * 1024 * 1024,
+            'backupCount': 5,
+            'encoding': 'utf-8',
+            'formatter': 'simple',
+        },
     },
     'root': {
-        'handlers': ['console'],
-        'level': 'INFO',
+        'handlers': ['console', 'file'],
+        'level': LOG_LEVEL,
     },
     'loggers': {
         'django': {
-            'handlers': ['console'],
-            'level': 'INFO',
+            'handlers': ['console', 'file'],
+            'level': LOG_LEVEL,
+            'propagate': False,
+        },
+        'django.request': {
+            'handlers': ['console', 'file'],
+            'level': LOG_LEVEL,
+            'propagate': False,
+        },
+        'django_app': {
+            'handlers': ['console', 'file'],
+            'level': LOG_LEVEL,
+            'propagate': False,
+        },
+        'gunicorn': {
+            'handlers': ['console', 'file'],
+            'level': LOG_LEVEL,
             'propagate': False,
         },
     },

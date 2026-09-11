@@ -199,9 +199,25 @@ class MongoRecordRepository:
         return self._clean(self.db.qor_records.find_one(query, {'raw_dc_report': 0}))
 
     def get_raw_report(self, project_id, record_id):
-        return self._clean(self.db.raw_reports.find_one(
+        report = self._clean(self.db.raw_reports.find_one(
             {'project_id': project_id, 'record_id': record_id}
         ))
+        if report:
+            return report
+        from bson import ObjectId
+        query: dict[str, Any] = {'project_id': project_id}
+        try:
+            query['_id'] = ObjectId(record_id)
+        except Exception:
+            query['legacy_id'] = record_id
+        row = self.db.qor_records.find_one(query, {'raw_dc_report': 1})
+        if row and row.get('raw_dc_report') is not None:
+            return {
+                'record_id': record_id,
+                'project_id': project_id,
+                'content': row['raw_dc_report'],
+            }
+        return None
 
     def list_violations(self, project_id, record_id):
         return [self._clean(row) for row in self.db.violation_paths.find(
@@ -275,7 +291,25 @@ class HybridRecordRepository:
 
     def list_records(self, *args, **kwargs): return self._read('list_records', *args, **kwargs)
     def get_record(self, *args, **kwargs): return self._read('get_record', *args, **kwargs)
-    def get_raw_report(self, *args, **kwargs): return self._read('get_raw_report', *args, **kwargs)
+
+    def get_raw_report(self, project_id, record_id):
+        try:
+            report = self.mongo.get_raw_report(project_id, record_id)
+            if report:
+                return report
+        except Exception:
+            log.exception('Mongo raw report read failed; trying ORM fallback')
+        legacy_id = record_id
+        try:
+            int(record_id)
+        except (TypeError, ValueError):
+            record = self.mongo.get_record(project_id, record_id)
+            if record and record.get('legacy_id'):
+                legacy_id = str(record['legacy_id'])
+            else:
+                return None
+        return self.orm.get_raw_report(project_id, legacy_id)
+
     def list_violations(self, *args, **kwargs): return self._read('list_violations', *args, **kwargs)
     def list_notes(self, *args, **kwargs): return self._read('list_notes', *args, **kwargs)
 

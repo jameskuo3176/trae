@@ -27,9 +27,25 @@ import sys
 from pathlib import Path
 from typing import Any
 
-CLOCK_PATTERN_RE = re.compile(
-    r"^(.+?)_(hold_wns|hold_tns|hold_path|period|wns|tns|path)$",
-    re.IGNORECASE,
+# Keep the documented ``python scripts/csv_to_json.py ...`` invocation working.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from django_app.services.csv_field_mapping import (
+    STDCELL_AREA_KEY,
+    canonical_csv_field,
+    reconstruct_area_total,
+)
+from django_app.services.csv_timing import (
+    aggregate_setup_timing,
+    build_timing_sections,
+    canonical_path_group_metric,
+    parse_dynamic_path_groups,
+    split_path_group_column,
+)
+from django_app.services.csv_upload_paths import (
+    UploadPathError,
+    infer_module_from_path,
 )
 
 # 数值范围字段定义 (与 save_records_to_db NUMERIC_RANGES 保持一致)
@@ -50,6 +66,7 @@ NUMERIC_FIELDS = {
 
 INT_FIELDS = {
     "cell_count", "instance_count", "net_count", "sequential_cell_count",
+    "ram_cell_count", "macro_cell_count", "register_count",
     "nvp_setup", "nvp_hold",
 }
 
@@ -100,11 +117,13 @@ def _detect_data_type(rows: list[dict]) -> str:
 
 def _csv_to_qor_json(rows: list[dict], project_id: int, version: str,
                      full_dir: str | None, release_dir: str | None,
-                     uploader_note: str | None) -> dict:
+                     uploader_note: str | None,
+                     default_module_name: str | None = None) -> dict:
     records = []
     for row in rows:
+        path_groups, path_group_columns = parse_dynamic_path_groups(row)
         rec: dict = {
-            "module_name": None,
+            "module_name": default_module_name,
             "comment":    row.get("comment") or None,
             "source_file": None,
             "area":       {},
@@ -114,13 +133,21 @@ def _csv_to_qor_json(rows: list[dict], project_id: int, version: str,
             "frequency":  {},
             "ratios":     {},
             "congestion": {},
-            "clocks":     {},
+            "clocks":     {
+                name: dict(metrics) for name, metrics in path_groups.items()
+            },
             "extra":      {},
         }
+        if path_groups:
+            rec["extra"]["timing_sections"] = build_timing_sections(path_groups)
+            rec["extra"]["path_groups"] = {
+                name: dict(metrics) for name, metrics in path_groups.items()
+            }
         for raw_k, raw_v in row.items():
             if raw_v is None or raw_v == "":
                 continue
-            k = _norm_key(raw_k)
+            normalized_key = _norm_key(raw_k)
+            k = canonical_csv_field(normalized_key)
             v = raw_v
 
             if k == "module_name":
@@ -139,15 +166,11 @@ def _csv_to_qor_json(rows: list[dict], project_id: int, version: str,
                 rec["source_file"] = str(v)
                 continue
 
-            # 多 clock 列 (保留原始大小写)
-            m = CLOCK_PATTERN_RE.match(k)
-            if m:
-                # 从原始 raw_k 中切出 clock 名 (保留大小写)
-                suf_lower = m.group(2).lower()
-                # 找到 raw_k 中后缀 (case-insensitive) 的起始位置
-                idx = raw_k.lower().rfind("_" + suf_lower)
-                clock_name = raw_k[:idx] if idx > 0 else m.group(1)
-                rec["clocks"].setdefault(clock_name, {})[suf_lower] = v if suf_lower == "path" else _to_float(v)
+            if raw_k in path_group_columns:
+                group_name, source_metric = split_path_group_column(raw_k)
+                metric = canonical_path_group_metric(source_metric)
+                if metric not in rec["clocks"].get(group_name, {}):
+                    rec["extra"][raw_k] = v
                 continue
 
             # area
@@ -196,8 +219,28 @@ def _csv_to_qor_json(rows: list[dict], project_id: int, version: str,
                     else:
                         rec["congestion"][k[11:]] = _normalize_ratio(f)
                 continue
+            if normalized_key == STDCELL_AREA_KEY:
+                # No standalone dashboard field exists. Keep the source value
+                # for audit; area_total - area_macro represents standard-cell
+                # area. It is also a fallback when total_area is absent.
+                f = _to_float(v)
+                if f is not None:
+                    rec["extra"][STDCELL_AREA_KEY] = f
+                continue
             # 未知字段 → extra
             rec["extra"][raw_k] = v
+
+        rebuilt_total = reconstruct_area_total(
+            rec["area"].get("total"),
+            rec["extra"].get(STDCELL_AREA_KEY),
+            rec["area"].get("macro"),
+        )
+        if rebuilt_total is not None:
+            rec["area"]["total"] = rebuilt_total
+
+        setup = aggregate_setup_timing(path_groups)
+        for metric, value in setup.items():
+            rec["timing"]["setup"].setdefault(metric, value)
 
         # 清理空对象
         for k in ("area", "power", "cells", "frequency", "ratios", "congestion", "clocks", "extra"):
@@ -284,6 +327,14 @@ def _csv_to_notes_json(rows: list[dict], project_id: int, version: str,
     }
 
 
+def _module_name_from_filename(csv_path: Path) -> str | None:
+    """Derive the module from ``module_alu_qor.csv`` the way web upload does."""
+    try:
+        return infer_module_from_path(csv_path.name, source="filename")
+    except UploadPathError:
+        return None
+
+
 def csv_to_json(csv_path: Path, project_id: int, version: str,
                 full_dir: str | None = None,
                 release_dir: str | None = None,
@@ -309,7 +360,9 @@ def csv_to_json(csv_path: Path, project_id: int, version: str,
         return _csv_to_notes_json(rows, project_id, version, module_name, full_dir)
     else:
         return _csv_to_qor_json(rows, project_id, version,
-                                full_dir, release_dir, uploader_note)
+                                full_dir, release_dir, uploader_note,
+                                default_module_name=module_name
+                                or _module_name_from_filename(csv_path))
 
 
 def main() -> int:
@@ -319,7 +372,8 @@ def main() -> int:
     p.add_argument("--version", required=True)
     p.add_argument("--full-dir", help="Run 工作目录")
     p.add_argument("--release-dir", help="发布目录 (v5.0)")
-    p.add_argument("--module-name", help="notes CSV 用, 关联模块")
+    p.add_argument("--module-name",
+                   help="关联模块; qor CSV 缺省从文件名推断 (module_alu_qor.csv -> module_alu)")
     p.add_argument("--timing-group", help="violation CSV 用, 缺省从文件名提取")
     p.add_argument("--uploader-note", help="上传备注")
     p.add_argument("--data-type", choices=["qor", "power", "violation", "notes"],

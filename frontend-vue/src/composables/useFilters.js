@@ -10,10 +10,9 @@ export function useFilters() {
     watch(
       () => filters.fingerprint,
       (newVal, oldVal) => {
-        if (newVal !== oldVal) {
-          dashboard.clearSelection()
-          callback()
-        }
+        if (newVal === oldVal || filters.suppressReactiveReload) return
+        dashboard.clearSelection()
+        callback()
       }
     )
   }

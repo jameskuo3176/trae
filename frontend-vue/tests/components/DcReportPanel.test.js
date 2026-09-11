@@ -112,11 +112,55 @@ describe('DcReportPanel picker effects', () => {
     expect(dc.preferences.vsMode).toBe(false)
   })
 
+  it('renders VT ratio after Physical and omits zero percentages', async () => {
+    dashboardApi.rawReport
+      .mockResolvedValueOnce({
+        misc: {
+          vt_ratio: {
+            LVTLL06: '0.00%',
+            LVT06: '99.99%',
+            ULVT06: '0.01%',
+            undefined: '0.00%',
+            SVT06: '0%'
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        misc: {
+          vt_ratio: {
+            LVT06: '98.00%',
+            ULVT06: '2.00%',
+            LVTLL06: '0.00%'
+          }
+        }
+      })
+    const { wrapper } = setupCanonicalPanel()
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+
+    const vt = wrapper.find('[data-testid="vt-ratio-section"]')
+    expect(vt.exists()).toBe(true)
+    expect(vt.text()).toContain('VT ratio')
+    expect(vt.text()).toContain('LVT06')
+    expect(vt.text()).toContain('ULVT06')
+    expect(vt.text()).toContain('99.99%')
+    expect(vt.text()).not.toContain('LVTLL06')
+    expect(vt.text()).not.toContain('undefined')
+    expect(vt.text()).not.toContain('SVT06')
+
+    const headings = wrapper.findAll('.canonical-section h3').map(node => node.text())
+    const physicalIdx = headings.indexOf('Physical')
+    const vtIdx = headings.indexOf('VT ratio')
+    expect(physicalIdx).toBeGreaterThanOrEqual(0)
+    expect(vtIdx).toBe(physicalIdx + 1)
+  })
+
   it('renders the canonical QoR matrix without raw reports', () => {
     const { wrapper } = setupCanonicalPanel()
     expect(wrapper.text()).toContain('Run × metric instrument')
     expect(wrapper.text()).toContain('Setup WNS')
-    expect(wrapper.text()).toContain('cpu · base')
+    expect(wrapper.text()).toContain('cpu')
+    expect(wrapper.text()).toContain('base')
     expect(wrapper.text()).toContain('-1.00')
     expect(wrapper.text()).toContain('Total area')
   })
@@ -126,16 +170,19 @@ describe('DcReportPanel picker effects', () => {
     await flushPromises()
 
     expect(dashboardApi.rawReport).toHaveBeenCalledTimes(2)
-    expect(dashboardApi.rawReport).toHaveBeenCalledWith(
-      1,
-      'base',
-      expect.any(AbortSignal)
+    expect(dashboardApi.rawReport).toHaveBeenCalledWith(1, 'base', expect.any(AbortSignal))
+    expect(dashboardApi.rawReport).toHaveBeenCalledWith(1, 'target', expect.any(AbortSignal))
+  })
+
+  it('does not surface record-not-found when raw report is missing', async () => {
+    dashboardApi.rawReport.mockRejectedValue(
+      Object.assign(new Error('record not found'), { status: 404 })
     )
-    expect(dashboardApi.rawReport).toHaveBeenCalledWith(
-      1,
-      'target',
-      expect.any(AbortSignal)
-    )
+    const { wrapper, dc } = setupCanonicalPanel()
+    await flushPromises()
+
+    expect(Object.keys(dc.rawErrors)).toHaveLength(0)
+    expect(wrapper.text()).not.toContain('record not found')
   })
 
   it('only changes visible canonical metrics after picker Apply', async () => {
@@ -235,13 +282,15 @@ describe('DcReportPanel picker effects', () => {
         .find(row => row.text().includes('BUSCLK'))
         .text()
     ).toContain('—')
-    expect(wrapper.vm.canonicalRows({
-      id: 'qor_timing',
-      metrics: [
-        { id: 'wns_setup', label: 'Setup WNS' },
-        { id: 'tns_setup', label: 'Setup TNS' }
-      ]
-    })).toEqual([
+    expect(
+      wrapper.vm.canonicalRows({
+        id: 'qor_timing',
+        metrics: [
+          { id: 'wns_setup', label: 'Setup WNS' },
+          { id: 'tns_setup', label: 'Setup TNS' }
+        ]
+      })
+    ).toEqual([
       expect.objectContaining({ base: -10, target: -8 }),
       expect.objectContaining({ base: -37, target: -20 })
     ])
@@ -249,10 +298,12 @@ describe('DcReportPanel picker effects', () => {
     dc.preferences.pathGroupIds = ['CORECLK']
     await wrapper.vm.$nextTick()
     expect(timing.text()).not.toContain('BUSCLK')
-    expect(wrapper.vm.canonicalRows({
-      id: 'qor_timing',
-      metrics: [{ id: 'tns_setup', label: 'Setup TNS' }]
-    })[0]).toEqual(expect.objectContaining({ base: -30, target: -20 }))
+    expect(
+      wrapper.vm.canonicalRows({
+        id: 'qor_timing',
+        metrics: [{ id: 'tns_setup', label: 'Setup TNS' }]
+      })[0]
+    ).toEqual(expect.objectContaining({ base: -30, target: -20 }))
   })
 
   it('selects only the clicked run when backend ids collide across projects', async () => {
@@ -284,8 +335,9 @@ describe('DcReportPanel picker effects', () => {
     expect(dashboard.selectedRecords).toHaveLength(1)
     expect(dashboard.selectedRecords[0].version).toBe('alpha_run')
     const matrix = wrapper.find('.canonical-section').text()
-    expect(matrix).toContain('cpu · alpha_run')
-    expect(matrix).not.toContain('gpu · beta_run')
+    expect(matrix).toContain('cpu')
+    expect(matrix).toContain('alpha_run')
+    expect(matrix).not.toContain('beta_run')
   })
 
   it('preserves sticky metric and delta contrast on row hover', () => {

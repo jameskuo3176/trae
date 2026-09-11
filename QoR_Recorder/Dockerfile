@@ -47,17 +47,17 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     DJANGO_SETTINGS_MODULE=django_app.settings \
     HOST=0.0.0.0 \
-    PORT=8000 \
+    PORT=5000 \
     DEBUG=0
 WORKDIR /app
 COPY --from=python-builder /opt/venv /opt/venv
 COPY QoR_Recorder/ ./
 RUN mkdir -p /app/data /app/uploads /app/backups /app/static \
     && python manage.py collectstatic --noinput
-EXPOSE 8000
+EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
-CMD ["sh", "-c", "python manage.py migrate --noinput && exec gunicorn django_app.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers ${GUNICORN_WORKERS:-3} --timeout ${GUNICORN_TIMEOUT:-120} --access-logfile - --error-logfile -"]
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+CMD ["sh", "-c", "python manage.py migrate --noinput && exec gunicorn django_app.wsgi:application --bind 0.0.0.0:${PORT:-5000} --workers ${GUNICORN_WORKERS:-3} --timeout ${GUNICORN_TIMEOUT:-120} --access-logfile - --error-logfile -"]
 
 FROM ${NGINX_IMAGE} AS frontend-runtime
 COPY QoR_Recorder/deploy/nginx.conf /etc/nginx/conf.d/default.conf

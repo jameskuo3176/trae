@@ -13,4 +13,16 @@ describe('Dashboard chart layout', () => {
       /<\/Suspense>\s*<Suspense>\s*<section\s+id="section-notes"\s+class="anchor-target">\s*<RunNotesPanel\s*\/>\s*<\/section>/
     )
   })
+
+  it('widens only the dashboard canvas while retaining mobile side padding', () => {
+    const dashboardPath = resolve(process.cwd(), 'src/views/DashboardView.vue')
+    const source = readFileSync(dashboardPath, 'utf8')
+
+    expect(source).toMatch(
+      /\.dashboard-page\s*\{[^}]*width:\s*min\(1920px,\s*calc\(100vw\s*-\s*32px\)\)/s
+    )
+    expect(source).toMatch(
+      /@media\s*\(max-width:\s*600px\)\s*\{[\s\S]*?\.dashboard-page\s*\{[^}]*width:\s*calc\(100vw\s*-\s*16px\)/
+    )
+  })
 })

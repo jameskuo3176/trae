@@ -40,6 +40,7 @@ const records = [
     release_dir: '/alpha/old',
     release_dir_effective: '/alpha/old',
     full_dir: '/alpha/full',
+    release_owner_display_name: 'Alpha Release Owner',
     uploader_display_name: 'Alpha Uploader',
     can_manage: true
   },
@@ -92,7 +93,17 @@ describe('Admin release_dir persistence flow', () => {
     adminApi.batchUpdateReleaseDir.mockResolvedValue({ updated: 2, skipped: 0 })
     adminApi.deleteRecord.mockResolvedValue({ ok: true })
     vi.spyOn(window, 'prompt').mockReturnValue('/beta/new')
-    vi.spyOn(window, 'alert').mockImplementation(() => { })
+    vi.spyOn(window, 'alert').mockImplementation(() => {})
+  })
+
+  it('displays the module release owner and falls back to uploader', async () => {
+    const wrapper = await mountRecords()
+    const alphaRow = wrapper.findAll('tbody tr').find(row => row.text().includes('Alpha'))
+    const betaRow = wrapper.findAll('tbody tr').find(row => row.text().includes('Beta'))
+
+    expect(alphaRow.text()).toContain('Alpha Release Owner')
+    expect(alphaRow.text()).not.toContain('Alpha Uploader')
+    expect(betaRow.text()).toContain('beta-uploader')
   })
 
   it('opens the application dialog and updates the exact project record', async () => {
@@ -178,7 +189,7 @@ describe('Admin release_dir persistence flow', () => {
     expect(adminApi.updateReleaseDir).toHaveBeenCalledWith(1, 20, '')
   })
 
-  it('renders uploader enrichment and batches composite project identities', async () => {
+  it('renders effective owner enrichment and batches composite project identities', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const wrapper = await mountRecords()
     const rows = wrapper.findAll('tbody tr')
@@ -190,7 +201,8 @@ describe('Admin release_dir persistence flow', () => {
       .trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Alpha Uploader')
+    expect(wrapper.text()).toContain('Alpha Release Owner')
+    expect(wrapper.text()).not.toContain('Alpha Uploader')
     expect(wrapper.text()).toContain('beta-uploader')
     expect(adminApi.batchRelease).toHaveBeenCalledWith({
       items: [
@@ -235,13 +247,11 @@ describe('Admin release_dir persistence flow', () => {
     await flushPromises()
 
     expect(adminApi.batchUpdateReleaseDir).toHaveBeenCalledWith({
-      items: [
-        { project_id: 10, record_id: 1, release_dir: '/alpha/new' }
-      ]
+      items: [{ project_id: 10, record_id: 1, release_dir: '/alpha/new' }]
     })
-    expect(wrapper.find('[role="dialog"][aria-labelledby="batch-release-dir-title"]').exists()).toBe(
-      false
-    )
+    expect(
+      wrapper.find('[role="dialog"][aria-labelledby="batch-release-dir-title"]').exists()
+    ).toBe(false)
   })
 
   it('submits different release_dir values for two independently edited rows', async () => {
@@ -330,7 +340,12 @@ describe('Admin release_dir persistence flow', () => {
     })
     qorApi.getQorData.mockResolvedValue([
       records[0],
-      { ...records[1], release_dir: '', release_dir_effective: '/beta/full', full_dir: '/beta/full' }
+      {
+        ...records[1],
+        release_dir: '',
+        release_dir_effective: '/beta/full',
+        full_dir: '/beta/full'
+      }
     ])
     const wrapper = await mountRecords()
     const rows = wrapper.findAll('tbody tr')
@@ -365,9 +380,9 @@ describe('Admin release_dir persistence flow', () => {
       items: [{ project_id: 20, record_id: 1, release_dir: '/beta/new' }]
     })
     expect(dialog.get('[role="alert"]').text()).toBe('目标项目已锁定')
-    expect(wrapper.find('[role="dialog"][aria-labelledby="batch-release-dir-title"]').exists()).toBe(
-      true
-    )
+    expect(
+      wrapper.find('[role="dialog"][aria-labelledby="batch-release-dir-title"]').exists()
+    ).toBe(true)
   })
 
   it('deletes the exact project record and includes pagination in detail next', async () => {
@@ -388,7 +403,7 @@ describe('Admin release_dir persistence flow', () => {
     expect(decodeURIComponent(detailHref)).toContain('next=/admin?page=2&page_size=25')
   })
 
-  it('filters records by selected owner/uploader', async () => {
+  it('filters records by selected module release owner', async () => {
     adminApi.getRecordOwners.mockResolvedValue([
       { id: 7, username: 'module-owner', display_name: 'Module Owner' },
       { id: 9, username: 'module-outsider', display_name: 'Module Outsider' }
@@ -399,14 +414,85 @@ describe('Admin release_dir persistence flow', () => {
     })
     const wrapper = await mountRecords()
 
-    const ownerSelect = wrapper.get('select[aria-label="Owner"]')
-    expect(ownerSelect.text()).toContain('Module Owner')
-    await ownerSelect.setValue('7')
+    const ownerTrigger = wrapper.get('button[aria-label="Owner"]')
+    expect(ownerTrigger.text()).toContain('全部 Owner')
+    await ownerTrigger.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Module Owner')
+
+    const ownerChip = wrapper
+      .findAll('.record-filter-chips button')
+      .find(btn => btn.text() === 'Module Owner')
+    expect(ownerChip).toBeTruthy()
+    await ownerChip.trigger('click')
     await flushPromises()
 
     expect(qorApi.getQorData).toHaveBeenCalledWith(
-      expect.objectContaining({ owner_id: '7' }),
+      expect.objectContaining({ owner_ids: '7' }),
       expect.anything()
     )
+    expect(ownerTrigger.text()).toContain('已选 1 个 Owner')
+  })
+
+  it('supports multi-select project and module filters with composite module ids', async () => {
+    qorApi.getQorData.mockResolvedValue({
+      records,
+      pagination: { page: 1, page_size: 50, total: 2, pages: 1 }
+    })
+    const wrapper = await mountRecords()
+    qorApi.getQorData.mockClear()
+
+    await wrapper.get('button[aria-label="项目"]').trigger('click')
+    const projectChips = wrapper.findAll('.record-filter-chips button')
+    await projectChips.find(btn => btn.text() === 'Alpha').trigger('click')
+    await projectChips.find(btn => btn.text() === 'Beta').trigger('click')
+    await flushPromises()
+
+    expect(qorApi.getQorData).toHaveBeenCalledWith(
+      expect.objectContaining({ project_ids: '10,20' }),
+      expect.anything()
+    )
+
+    await wrapper.get('button[aria-label="模块"]').trigger('click')
+    await flushPromises()
+    const moduleChip = wrapper
+      .findAll('.record-filter-chips button')
+      .find(btn => btn.text().includes('core'))
+    await moduleChip.trigger('click')
+    await flushPromises()
+
+    expect(qorApi.getQorData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_ids: '10,20',
+        module_ids: expect.stringMatching(/^\d+:\d+/)
+      }),
+      expect.anything()
+    )
+  })
+
+  it('keeps record filter panels outside overflow-hidden card clipping', async () => {
+    adminApi.getRecordOwners.mockResolvedValue([
+      { id: 7, username: 'module-owner', display_name: 'Module Owner' }
+    ])
+    const wrapper = await mountRecords()
+
+    // Contract: filter card opts out of global .card { overflow:hidden }
+    const filterCard = wrapper.get('.record-filter-card')
+    expect(filterCard.classes()).toContain('card')
+
+    await wrapper.get('button[aria-label="项目"]').trigger('click')
+    await flushPromises()
+    const panel = wrapper.get('.record-filter-panel')
+    expect(panel.find('input[placeholder="搜索项目"]').exists()).toBe(true)
+    expect(panel.text()).toContain('全选')
+    expect(panel.text()).toContain('清空')
+    expect(panel.text()).toContain('完成')
+    const doneBtn = panel
+      .findAll('button')
+      .find((btn) => btn.text().trim() === '完成')
+    expect(doneBtn).toBeTruthy()
+    expect(doneBtn.classes()).toEqual(expect.arrayContaining(['btn', 'btn-xs']))
+    expect(doneBtn.classes()).not.toContain('btn-default')
+    expect(filterCard.element.contains(panel.element)).toBe(true)
   })
 })

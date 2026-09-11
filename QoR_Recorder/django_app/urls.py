@@ -18,6 +18,11 @@ from django_app.api import views as api_views
 from django_app import api_v2
 from django_app.core import views as core_views
 
+handler400 = 'django_app.core.errors.handler400'
+handler403 = 'django_app.core.errors.handler403'
+handler404 = 'django_app.core.errors.handler404'
+handler500 = 'django_app.core.errors.handler500'
+
 # =========================================================================
 # API 路由 (vue / legacy 两种模式共用)
 # =========================================================================
@@ -124,6 +129,7 @@ api_urlpatterns = [
     # Admin API - 备份管理
     # =========================================================================
     path('api/admin/review-hierarchy/status', api_views.admin_review_hierarchy_status, name='admin_review_hierarchy_status'),
+    path('api/admin/review-hierarchy/project-yaml', api_views.admin_review_hierarchy_project_yaml, name='admin_review_hierarchy_project_yaml'),
     path('api/admin/review-hierarchy/module-owner', api_views.admin_review_hierarchy_module_owner, name='admin_review_hierarchy_module_owner'),
     path('api/admin/backups', api_views.admin_list_backups, name='admin_list_backups'),
     path('api/admin/backups/verify', api_views.admin_verify_all_backups, name='admin_verify_all_backups'),

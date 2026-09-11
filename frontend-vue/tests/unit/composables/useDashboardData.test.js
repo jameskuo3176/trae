@@ -85,6 +85,18 @@ describe('useDashboardData module identity contract', () => {
     expect(dashboard.pagination.total).toBe(0)
   })
 
+  it('defaults path-derived versions to the latest after project-scoped reload', async () => {
+    const filters = useFiltersStore()
+    filters.projectIds = ['5']
+    dashboardApi.versions.mockResolvedValue(['regr_20251210', 'regr_20251220', 'regr_20260629'])
+
+    await useDashboardData().loadVersions({ selectLatest: true })
+
+    expect(filters.versions).toEqual(['regr_20251210', 'regr_20251220', 'regr_20260629'])
+    expect(filters.versionIds).toEqual(['regr_20260629'])
+    expect(filters.versionFilterApplied).toBe(false)
+  })
+
   it('loads and reselects only records matching the applied version', async () => {
     const filters = useFiltersStore()
     const dashboard = useDashboardStore()
@@ -109,10 +121,7 @@ describe('useDashboardData module identity contract', () => {
       }),
       expect.any(AbortSignal)
     )
-    expect(dashboard.records.map(record => record.version)).toEqual([
-      '2026Q3_w3',
-      '2026Q3_w3'
-    ])
+    expect(dashboard.records.map(record => record.version)).toEqual(['2026Q3_w3', '2026Q3_w3'])
     expect(dashboard.selectedRecords).toHaveLength(2)
     expect(dashboard.baselineRecord.version).toBe('2026Q3_w3')
   })

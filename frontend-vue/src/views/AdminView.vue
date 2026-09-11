@@ -32,6 +32,7 @@ const recordsPagination = ref({
 })
 const loading = ref(false)
 const error = ref('')
+const successMessage = ref('')
 const modulePickerOpen = ref(false)
 const moduleFilterActive = ref(false)
 const moduleFilter = ref({ projectIds: [], moduleIds: [] })
@@ -45,14 +46,41 @@ const newProject = ref({ name: '', description: '' })
 const newModule = ref({ name: '', project_id: '', module_type: '' })
 const newUser = ref({ username: '', password: '', role: 'owner', display_name: '' })
 
-// 记录管理筛选
+// 记录管理筛选（项目 / 模块 / Owner 多选，版本号仍为文本）
+function parseQueryIdList(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap(item => String(item).split(',')).map(s => s.trim()).filter(Boolean)
+  }
+  if (value == null || value === '') return []
+  return String(value)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+function initRecordModuleIds() {
+  const projectIds = parseQueryIdList(route.query.project_ids || route.query.project_id)
+  return parseQueryIdList(route.query.module_ids || route.query.module_id).map(id => {
+    if (String(id).includes(':')) return String(id)
+    if (projectIds.length === 1) return `${projectIds[0]}:${id}`
+    return String(id)
+  })
+}
 const recordFilter = ref({
-  project_id: String(route.query.project_id || ''),
-  module_id: String(route.query.module_id || ''),
-  version: String(route.query.version || ''),
-  owner_id: String(route.query.owner_id || '')
+  project_ids: parseQueryIdList(route.query.project_ids || route.query.project_id).map(String),
+  module_ids: initRecordModuleIds(),
+  owner_ids: parseQueryIdList(route.query.owner_ids || route.query.owner_id).map(String),
+  version: String(route.query.version || '')
 })
 const selectedRecordIds = ref(new Set())
+const recordProjectQuery = ref('')
+const recordModuleQuery = ref('')
+const recordOwnerQuery = ref('')
+const recordProjectPickerOpen = ref(false)
+const recordModulePickerOpen = ref(false)
+const recordOwnerPickerOpen = ref(false)
+const recordProjectPickerEl = ref(null)
+const recordModulePickerEl = ref(null)
+const recordOwnerPickerEl = ref(null)
 
 // 排序状态
 const recordsSort = useTableSort('effective_at', 'desc')
@@ -82,9 +110,12 @@ const writableProjects = computed(() =>
   projects.value.filter(project => project.is_writable !== false && project.status === 'active')
 )
 const statusLabel = status =>
-  ({ active: '可写', locked: '锁定', archived: '归档', hidden: '已隐藏' })[status] || status || '可写'
+  ({ active: '可写', locked: '锁定', archived: '归档', hidden: '已隐藏' })[status] ||
+  status ||
+  '可写'
 const statusColor = status =>
-  ({ active: '#4caf50', locked: '#f0ad4e', archived: '#78909c', hidden: '#999' })[status] || '#4caf50'
+  ({ active: '#4caf50', locked: '#f0ad4e', archived: '#78909c', hidden: '#999' })[status] ||
+  '#4caf50'
 const normalizeIdentityPart = value =>
   encodeURIComponent(
     String(value ?? '')
@@ -111,30 +142,63 @@ const draftVisibleModules = computed(() => {
 
 // 核心修复：记录管理筛选用的模块列表，独立计算，不受 Tab 切换影响
 const filterModules = computed(() => {
-  if (!recordFilter.value.project_id) {
-    // 未选择项目 → 显示全部模块
-    const all = []
-    for (const p of projects.value) {
-      if (p.modules && Array.isArray(p.modules)) {
-        for (const m of p.modules) {
-          all.push({ ...m, project_id: p.id, project_name: p.name })
-        }
+  const selected = new Set(recordFilter.value.project_ids.map(String))
+  const source = selected.size
+    ? projects.value.filter(p => selected.has(String(p.id)))
+    : projects.value
+  const all = []
+  for (const p of source) {
+    if (p.modules && Array.isArray(p.modules)) {
+      for (const m of p.modules) {
+        all.push({ ...m, project_id: p.id, project_name: p.name })
       }
     }
-    return all
   }
-  // 已选择项目 → 只显示该项目的模块
-  const pid = String(recordFilter.value.project_id)
-  const proj = projects.value.find(p => String(p.id) === pid)
-  if (proj && proj.modules && Array.isArray(proj.modules)) {
-    return proj.modules.map(m => ({ ...m, project_id: proj.id, project_name: proj.name }))
-  }
-  return []
+  return all
 })
-const moduleFilterValue = module =>
-  recordFilter.value.project_id ? String(module.id) : `${module.project_id}:${module.id}`
+const moduleFilterValue = module => `${module.project_id}:${module.id}`
 const recordIdentity = record => `${record.project_id}:${record.id}`
 const ownerLabel = owner => owner.display_name || owner.username || `#${owner.id}`
+const showModuleProjectSuffix = computed(
+  () => recordFilter.value.project_ids.length !== 1
+)
+const primaryRecordProjectId = computed(() => recordFilter.value.project_ids[0] || '')
+const selectedRecordProjectCount = computed(
+  () =>
+    recordFilter.value.project_ids.filter(id =>
+      projects.value.some(p => String(p.id) === String(id))
+    ).length
+)
+const selectedRecordModuleCount = computed(
+  () =>
+    recordFilter.value.module_ids.filter(id =>
+      filterModules.value.some(m => moduleFilterValue(m) === String(id))
+    ).length
+)
+const selectedRecordOwnerCount = computed(
+  () =>
+    recordFilter.value.owner_ids.filter(id =>
+      recordOwners.value.some(owner => String(owner.id) === String(id))
+    ).length
+)
+const visibleRecordProjects = computed(() =>
+  projects.value.filter(item =>
+    item.name.toLowerCase().includes(recordProjectQuery.value.toLowerCase())
+  )
+)
+const visibleRecordModules = computed(() =>
+  filterModules.value.filter(item => {
+    const label = showModuleProjectSuffix.value
+      ? `${item.name} ${item.project_name || ''}`
+      : item.name
+    return label.toLowerCase().includes(recordModuleQuery.value.toLowerCase())
+  })
+)
+const visibleRecordOwners = computed(() =>
+  recordOwners.value.filter(owner =>
+    ownerLabel(owner).toLowerCase().includes(recordOwnerQuery.value.toLowerCase())
+  )
+)
 
 const allModuleProjectIds = () => projects.value.map(projectIdentity)
 const allModuleIds = () => modules.value.map(moduleIdentity)
@@ -199,17 +263,92 @@ function setAllVisibleModuleOptions(selected) {
 
 function handleModulePickerEscape(event) {
   if (event.key === 'Escape' && modulePickerOpen.value) closeModulePicker()
+  if (event.key === 'Escape') {
+    closeRecordProjectPicker()
+    closeRecordModulePicker()
+    closeRecordOwnerPicker()
+  }
+}
+
+function openRecordProjectPicker() {
+  recordProjectQuery.value = ''
+  recordProjectPickerOpen.value = true
+  recordModulePickerOpen.value = false
+  recordOwnerPickerOpen.value = false
+}
+function closeRecordProjectPicker() {
+  recordProjectPickerOpen.value = false
+}
+function selectAllRecordProjects() {
+  recordFilter.value.project_ids = projects.value.map(p => String(p.id))
+}
+function clearRecordProjects() {
+  recordFilter.value.project_ids = []
+}
+function openRecordModulePicker() {
+  recordModuleQuery.value = ''
+  recordModulePickerOpen.value = true
+  recordProjectPickerOpen.value = false
+  recordOwnerPickerOpen.value = false
+}
+function closeRecordModulePicker() {
+  recordModulePickerOpen.value = false
+}
+function selectAllRecordModules() {
+  recordFilter.value.module_ids = filterModules.value.map(moduleFilterValue)
+}
+function clearRecordModules() {
+  recordFilter.value.module_ids = []
+}
+function openRecordOwnerPicker() {
+  recordOwnerQuery.value = ''
+  recordOwnerPickerOpen.value = true
+  recordProjectPickerOpen.value = false
+  recordModulePickerOpen.value = false
+}
+function closeRecordOwnerPicker() {
+  recordOwnerPickerOpen.value = false
+}
+function selectAllRecordOwners() {
+  recordFilter.value.owner_ids = recordOwners.value.map(owner => String(owner.id))
+}
+function clearRecordOwners() {
+  recordFilter.value.owner_ids = []
+}
+function toggleRecordFilter(key, id) {
+  const value = String(id)
+  const list = recordFilter.value[key]
+  recordFilter.value[key] = list.includes(value)
+    ? list.filter(item => item !== value)
+    : [...list, value]
+}
+function onRecordFilterPickerClick(event) {
+  const inProject = recordProjectPickerEl.value?.contains(event.target) ?? false
+  const inModule = recordModulePickerEl.value?.contains(event.target) ?? false
+  const inOwner = recordOwnerPickerEl.value?.contains(event.target) ?? false
+  if (!inProject && !inModule && !inOwner) {
+    closeRecordProjectPicker()
+    closeRecordModulePicker()
+    closeRecordOwnerPicker()
+  }
 }
 
 onMounted(async () => {
   document.addEventListener('keydown', handleModulePickerEscape)
+  document.addEventListener('pointerdown', onRecordFilterPickerClick)
   await loadProjects()
   await loadTabData()
 })
 
-onBeforeUnmount(() => document.removeEventListener('keydown', handleModulePickerEscape))
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handleModulePickerEscape)
+  document.removeEventListener('pointerdown', onRecordFilterPickerClick)
+})
 
 watch(activeTab, () => {
+  if (activeTab.value !== 'records') {
+    abortPendingRecordsLoad()
+  }
   if (activeTab.value === 'records') recordsSort.resetSort()
   if (activeTab.value === 'projects') projectsSort.resetSort()
   if (activeTab.value === 'modules') modulesSort.resetSort()
@@ -217,37 +356,36 @@ watch(activeTab, () => {
   loadTabData()
 })
 
-// 项目变更 → 清除模块选择 + 自动加载记录
+// 项目变更 → 清除无效模块选择 + 自动加载记录
 watch(
-  () => recordFilter.value.project_id,
+  () => recordFilter.value.project_ids.join(','),
   async () => {
-    // 清除可能无效的模块选择
-    if (recordFilter.value.module_id) {
-      const validModuleIds = filterModules.value.map(moduleFilterValue)
-      if (!validModuleIds.includes(String(recordFilter.value.module_id))) {
-        recordFilter.value.module_id = ''
-      }
-    }
+    if (activeTab.value !== 'records') return
+    const validModuleIds = new Set(filterModules.value.map(moduleFilterValue))
+    recordFilter.value.module_ids = recordFilter.value.module_ids.filter(id =>
+      validModuleIds.has(String(id))
+    )
     recordsPagination.value.page = 1
     await loadRecordOwners()
-    // 自动加载记录（与原始 Django 模板行为一致）
     loadRecords()
   }
 )
 
 // 模块变更 → 自动加载记录
 watch(
-  () => recordFilter.value.module_id,
+  () => recordFilter.value.module_ids.join(','),
   () => {
+    if (activeTab.value !== 'records') return
     recordsPagination.value.page = 1
     loadRecords()
   }
 )
 
-// Owner 变更 → 自动加载上传者匹配的记录
+// Owner 变更 → 自动加载模块 release owner 匹配的记录
 watch(
-  () => recordFilter.value.owner_id,
+  () => recordFilter.value.owner_ids.join(','),
   () => {
+    if (activeTab.value !== 'records') return
     recordsPagination.value.page = 1
     loadRecords()
   }
@@ -262,18 +400,54 @@ async function loadProjects() {
   }
 }
 
-async function loadRecordOwners(projectId = recordFilter.value.project_id) {
+function abortPendingRecordsLoad() {
+  if (abortController) {
+    abortController.abort()
+    abortController = null
+  }
+}
+
+function clearProjectReferences(projectId) {
+  const id = String(projectId)
+  const encodedId = normalizeIdentityPart(projectId)
+  recordFilter.value.project_ids = recordFilter.value.project_ids.filter(pid => String(pid) !== id)
+  recordFilter.value.module_ids = recordFilter.value.module_ids.filter(mid => {
+    const value = String(mid)
+    return value !== id && !value.startsWith(`${id}:`)
+  })
+  if (moduleFilterActive.value) {
+    const projectIds = moduleFilter.value.projectIds.filter(pid => pid !== encodedId)
+    const moduleIds = moduleFilter.value.moduleIds.filter(mid => !mid.startsWith(`${encodedId}:`))
+    moduleFilter.value = { projectIds, moduleIds }
+    const validProjectIds = new Set(allModuleProjectIds())
+    const validModuleIds = new Set(allModuleIds())
+    moduleFilterActive.value =
+      projectIds.length !== validProjectIds.size || moduleIds.length !== validModuleIds.size
+  }
+  if (String(newModule.value.project_id) === id) {
+    newModule.value.project_id = ''
+  }
+  selectedRecordIds.value = new Set(
+    [...selectedRecordIds.value].filter(identity => !identity.startsWith(`${id}:`))
+  )
+}
+
+async function refreshProjectsTab() {
+  const data = await projectsApi.list()
+  projects.value = data || []
+  await loadHiddenProjects()
+}
+
+async function loadRecordOwners(projectIds = recordFilter.value.project_ids) {
   try {
     const params = {}
-    if (projectId) params.project_ids = String(projectId)
+    if (projectIds?.length) params.project_ids = projectIds.map(String).join(',')
     const data = await adminApi.getRecordOwners(params)
     recordOwners.value = Array.isArray(data) ? data : []
-    if (
-      recordFilter.value.owner_id &&
-      !recordOwners.value.some(owner => String(owner.id) === String(recordFilter.value.owner_id))
-    ) {
-      recordFilter.value.owner_id = ''
-    }
+    const validOwnerIds = new Set(recordOwners.value.map(owner => String(owner.id)))
+    recordFilter.value.owner_ids = recordFilter.value.owner_ids.filter(id =>
+      validOwnerIds.has(String(id))
+    )
   } catch {
     recordOwners.value = []
   }
@@ -335,39 +509,39 @@ async function loadRecords() {
       projectIdToName[p.id] = p.name
     }
 
-    let validProjectId = recordFilter.value.project_id
-    if (validProjectId) {
-      const projectExists = allProjects?.some(p => String(p.id) === String(validProjectId))
-      if (!projectExists) {
-        validProjectId = ''
-        recordFilter.value.project_id = ''
-      }
+    const validProjectIds = recordFilter.value.project_ids.filter(id =>
+      (allProjects || []).some(p => String(p.id) === String(id))
+    )
+    if (validProjectIds.length !== recordFilter.value.project_ids.length) {
+      recordFilter.value.project_ids = validProjectIds
     }
 
-    let validModuleId = recordFilter.value.module_id
-    if (validModuleId) {
-      const moduleExists = filterModules.value.some(
-        m => moduleFilterValue(m) === String(validModuleId)
-      )
-      if (!moduleExists) {
-        validModuleId = ''
-        recordFilter.value.module_id = ''
-      }
+    const validModuleIds = recordFilter.value.module_ids.filter(id =>
+      filterModules.value.some(m => moduleFilterValue(m) === String(id))
+    )
+    if (validModuleIds.length !== recordFilter.value.module_ids.length) {
+      recordFilter.value.module_ids = validModuleIds
     }
 
     const params = {}
-    if (validProjectId) {
-      params.project_ids = validProjectId
-      if (validModuleId) params.module_ids = validModuleId
-    } else if (validModuleId && String(validModuleId).includes(':')) {
-      const [moduleProjectId, localModuleId] = String(validModuleId).split(':', 2)
-      params.project_ids = moduleProjectId
-      params.module_ids = localModuleId
+    if (validProjectIds.length) {
+      params.project_ids = validProjectIds.join(',')
+    } else if (validModuleIds.length) {
+      params.project_ids = [
+        ...new Set(
+          validModuleIds
+            .map(id => String(id).split(':', 2)[0])
+            .filter(pid => pid && /^\d+$/.test(pid))
+        )
+      ].join(',')
     } else {
       params.project_ids = (allProjects || []).map(p => p.id).join(',')
     }
+    if (validModuleIds.length) params.module_ids = validModuleIds.join(',')
     if (recordFilter.value.version) params.versions = recordFilter.value.version
-    if (recordFilter.value.owner_id) params.owner_id = recordFilter.value.owner_id
+    if (recordFilter.value.owner_ids.length) {
+      params.owner_ids = recordFilter.value.owner_ids.join(',')
+    }
     params.page = recordsPagination.value.page
     params.page_size = recordsPagination.value.page_size
 
@@ -401,6 +575,7 @@ async function loadRecords() {
   } catch (e) {
     // 忽略取消导致的错误
     if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED' || signal.aborted) return
+    if (activeTab.value !== 'records') return
     error.value = '加载记录失败: ' + (e.message || '未知错误')
   }
 }
@@ -435,10 +610,7 @@ async function toggleReviewStar(record) {
     await loadRecords()
   } catch (e) {
     error.value =
-      e.response?.data?.error ||
-      e.response?.data?.detail ||
-      e.message ||
-      '切换评审星标失败'
+      e.response?.data?.error || e.response?.data?.detail || e.message || '切换评审星标失败'
   }
 }
 
@@ -604,6 +776,8 @@ function getProjectName(r) {
 
 function getOwnerDisplay(r) {
   return (
+    r.release_owner_display_name ||
+    r.release_owner_username ||
     r.uploader_display_name ||
     r.uploader_username ||
     r.owner_username ||
@@ -627,9 +801,16 @@ function recordsReturnPath() {
 
 function currentRecordQuery() {
   const query = {}
-  for (const [key, value] of Object.entries(recordFilter.value)) {
-    if (value) query[key] = String(value)
+  if (recordFilter.value.project_ids.length) {
+    query.project_ids = recordFilter.value.project_ids.join(',')
   }
+  if (recordFilter.value.module_ids.length) {
+    query.module_ids = recordFilter.value.module_ids.join(',')
+  }
+  if (recordFilter.value.owner_ids.length) {
+    query.owner_ids = recordFilter.value.owner_ids.join(',')
+  }
+  if (recordFilter.value.version) query.version = String(recordFilter.value.version)
   query.page = String(recordsPagination.value.page)
   query.page_size = String(recordsPagination.value.page_size)
   return query
@@ -691,12 +872,24 @@ async function handleCreateProject() {
 
 async function handleDeleteProject(id) {
   if (!confirm('确定要隐藏这个项目吗？数据会保留，可在“已隐藏项目”中恢复。')) return
+  error.value = ''
+  successMessage.value = ''
+  abortPendingRecordsLoad()
+  let result
   try {
-    await adminApi.deleteProject(id)
-    await loadTabData()
+    result = await adminApi.deleteProject(id)
   } catch (e) {
-    error.value = e.response?.data?.error || e.message
+    error.value = e.message || '隐藏失败'
+    return
   }
+  clearProjectReferences(id)
+  projects.value = projects.value.filter(project => String(project.id) !== String(id))
+  try {
+    await refreshProjectsTab()
+  } catch {
+    // Delete already succeeded; keep optimistic list state.
+  }
+  successMessage.value = result?.message || '项目已隐藏'
 }
 
 async function handleRestoreProject(project) {
@@ -717,12 +910,23 @@ async function handleHardDeleteProject(project) {
   if (!confirm(warning)) return
   if (!confirm('再次确认：真的要彻底删除吗？')) return
   error.value = ''
+  successMessage.value = ''
+  abortPendingRecordsLoad()
+  let result
   try {
-    await adminApi.hardDeleteProject(project.id)
-    await loadHiddenProjects()
+    result = await adminApi.hardDeleteProject(project.id)
   } catch (e) {
-    error.value = e.response?.data?.error || e.message || '彻底删除失败'
+    error.value = e.message || '彻底删除失败'
+    return
   }
+  clearProjectReferences(project.id)
+  hiddenProjects.value = hiddenProjects.value.filter(item => String(item.id) !== String(project.id))
+  try {
+    await loadHiddenProjects()
+  } catch {
+    // Hard delete already succeeded; keep optimistic hidden list state.
+  }
+  successMessage.value = result?.message || '项目已彻底删除'
 }
 
 async function handleLockProject(project) {
@@ -827,12 +1031,14 @@ async function handleResetPassword(userId) {
       </button>
     </div>
 
+    <p v-if="successMessage" class="success-text" role="status">{{ successMessage }}</p>
     <p v-if="error" class="error-text">{{ error }}</p>
     <LoadingSpinner v-if="loading" text="加载中..." />
 
     <!-- 记录管理 -->
     <template v-if="activeTab === 'records' && !loading">
-      <div class="card" style="margin-bottom: 12px">
+      <!-- overflow:visible so absolute filter panels are not clipped by global .card -->
+      <div class="card record-filter-card" style="margin-bottom: 12px">
         <div class="card-header">
           <span>📋 记录管理</span>
           <div class="header-actions">
@@ -841,30 +1047,136 @@ async function handleResetPassword(userId) {
         </div>
         <div class="card-body" style="padding: 10px 16px">
           <div class="record-filter-bar">
-            <select v-model="recordFilter.project_id" style="min-width: 140px">
-              <option value="">全部项目</option>
-              <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
-            </select>
-            <select v-model="recordFilter.module_id" style="min-width: 140px">
-              <option value="">全部模块</option>
-              <option
-                v-for="m in filterModules"
-                :key="`${m.project_id}:${m.id}`"
-                :value="moduleFilterValue(m)"
+            <div ref="recordProjectPickerEl" class="record-filter-picker">
+              <button
+                type="button"
+                class="record-filter-trigger"
+                aria-label="项目"
+                @click="openRecordProjectPicker"
               >
-                {{ m.name }}{{ recordFilter.project_id ? '' : ` · ${m.project_name}` }}
-              </option>
-            </select>
-            <select
-              v-model="recordFilter.owner_id"
-              aria-label="Owner"
-              style="min-width: 140px"
-            >
-              <option value="">全部 Owner</option>
-              <option v-for="owner in recordOwners" :key="owner.id" :value="String(owner.id)">
-                {{ ownerLabel(owner) }}
-              </option>
-            </select>
+                <template v-if="selectedRecordProjectCount"
+                  >已选 {{ selectedRecordProjectCount }} 个项目</template
+                >
+                <template v-else>全部项目</template>
+                <span class="record-filter-caret">▾</span>
+              </button>
+              <div v-if="recordProjectPickerOpen" class="record-filter-panel">
+                <div class="record-filter-actions">
+                  <input v-model="recordProjectQuery" type="search" placeholder="搜索项目" />
+                  <button type="button" class="btn btn-xs btn-default" @click="selectAllRecordProjects">
+                    全选
+                  </button>
+                  <button type="button" class="btn btn-xs btn-default" @click="clearRecordProjects">
+                    清空
+                  </button>
+                </div>
+                <div class="record-filter-chips" role="group" aria-label="项目筛选">
+                  <button
+                    v-for="p in visibleRecordProjects"
+                    :key="p.id"
+                    type="button"
+                    :aria-pressed="recordFilter.project_ids.includes(String(p.id))"
+                    @click="toggleRecordFilter('project_ids', p.id)"
+                  >
+                    {{ p.name }}
+                  </button>
+                  <span v-if="!visibleRecordProjects.length">无匹配项目</span>
+                </div>
+                <div class="record-filter-foot">
+                  <span>{{ selectedRecordProjectCount }} / {{ projects.length }} 已选</span>
+                  <button type="button" class="btn btn-xs" @click="closeRecordProjectPicker">
+                    完成
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div ref="recordModulePickerEl" class="record-filter-picker">
+              <button
+                type="button"
+                class="record-filter-trigger"
+                aria-label="模块"
+                @click="openRecordModulePicker"
+              >
+                <template v-if="selectedRecordModuleCount"
+                  >已选 {{ selectedRecordModuleCount }} 个模块</template
+                >
+                <template v-else>全部模块</template>
+                <span class="record-filter-caret">▾</span>
+              </button>
+              <div v-if="recordModulePickerOpen" class="record-filter-panel">
+                <div class="record-filter-actions">
+                  <input v-model="recordModuleQuery" type="search" placeholder="搜索模块" />
+                  <button type="button" class="btn btn-xs btn-default" @click="selectAllRecordModules">
+                    全选
+                  </button>
+                  <button type="button" class="btn btn-xs btn-default" @click="clearRecordModules">
+                    清空
+                  </button>
+                </div>
+                <div class="record-filter-chips" role="group" aria-label="模块筛选">
+                  <button
+                    v-for="m in visibleRecordModules"
+                    :key="moduleFilterValue(m)"
+                    type="button"
+                    :aria-pressed="recordFilter.module_ids.includes(moduleFilterValue(m))"
+                    @click="toggleRecordFilter('module_ids', moduleFilterValue(m))"
+                  >
+                    {{ m.name
+                    }}{{ showModuleProjectSuffix ? ` · ${m.project_name}` : '' }}
+                  </button>
+                  <span v-if="!visibleRecordModules.length">无匹配模块</span>
+                </div>
+                <div class="record-filter-foot">
+                  <span>{{ selectedRecordModuleCount }} / {{ filterModules.length }} 已选</span>
+                  <button type="button" class="btn btn-xs" @click="closeRecordModulePicker">
+                    完成
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div ref="recordOwnerPickerEl" class="record-filter-picker">
+              <button
+                type="button"
+                class="record-filter-trigger"
+                aria-label="Owner"
+                @click="openRecordOwnerPicker"
+              >
+                <template v-if="selectedRecordOwnerCount"
+                  >已选 {{ selectedRecordOwnerCount }} 个 Owner</template
+                >
+                <template v-else>全部 Owner</template>
+                <span class="record-filter-caret">▾</span>
+              </button>
+              <div v-if="recordOwnerPickerOpen" class="record-filter-panel">
+                <div class="record-filter-actions">
+                  <input v-model="recordOwnerQuery" type="search" placeholder="搜索 Owner" />
+                  <button type="button" class="btn btn-xs btn-default" @click="selectAllRecordOwners">
+                    全选
+                  </button>
+                  <button type="button" class="btn btn-xs btn-default" @click="clearRecordOwners">
+                    清空
+                  </button>
+                </div>
+                <div class="record-filter-chips" role="group" aria-label="Owner 筛选">
+                  <button
+                    v-for="owner in visibleRecordOwners"
+                    :key="owner.id"
+                    type="button"
+                    :aria-pressed="recordFilter.owner_ids.includes(String(owner.id))"
+                    @click="toggleRecordFilter('owner_ids', owner.id)"
+                  >
+                    {{ ownerLabel(owner) }}
+                  </button>
+                  <span v-if="!visibleRecordOwners.length">无匹配 Owner</span>
+                </div>
+                <div class="record-filter-foot">
+                  <span>{{ selectedRecordOwnerCount }} / {{ recordOwners.length }} 已选</span>
+                  <button type="button" class="btn btn-xs" @click="closeRecordOwnerPicker">
+                    完成
+                  </button>
+                </div>
+              </div>
+            </div>
             <input
               v-model="recordFilter.version"
               placeholder="版本号"
@@ -930,7 +1242,10 @@ async function handleResetPassword(userId) {
       </div>
 
       <!-- 记录表格 -->
-      <div :key="`records-card-${recordFilter.project_id}-${recordFilter.module_id}`" class="card">
+      <div
+        :key="`records-card-${recordFilter.project_ids.join(',')}-${recordFilter.module_ids.join(',')}`"
+        class="card"
+      >
         <div class="card-body" style="padding: 0; overflow-x: auto">
           <table v-if="records.length > 0" class="table records-table" style="margin: 0">
             <thead>
@@ -1140,7 +1455,7 @@ async function handleResetPassword(userId) {
         </select>
       </nav>
 
-      <SnapshotBackupManager :project-id="recordFilter.project_id" />
+      <SnapshotBackupManager :project-id="primaryRecordProjectId" />
     </template>
 
     <!-- 项目管理 -->
@@ -1221,11 +1536,7 @@ async function handleResetPassword(userId) {
                   >
                     解锁
                   </button>
-                  <button
-                    v-else
-                    class="btn btn-sm btn-default"
-                    @click="handleLockProject(p)"
-                  >
+                  <button v-else class="btn btn-sm btn-default" @click="handleLockProject(p)">
                     锁定
                   </button>
                   <button class="btn btn-sm btn-danger" @click="handleDeleteProject(p.id)">
@@ -1569,7 +1880,12 @@ async function handleResetPassword(userId) {
       />
     </template>
 
-    <DataUploadModal v-model="showUploadModal" />
+    <DataUploadModal
+      v-model="showUploadModal"
+      :projects="projects"
+      :initial-project-id="primaryRecordProjectId"
+      @success="loadTabData"
+    />
     <BatchReleaseDirDialog
       :open="showBatchReleaseDirDialog"
       :records="selectedRecords"
@@ -1656,15 +1972,114 @@ async function handleResetPassword(userId) {
 .form-row select {
   flex: 1;
 }
+/* Escape global .card { overflow:hidden } so panels can overlap the batch bar */
+.record-filter-card {
+  overflow: visible;
+  position: relative;
+  z-index: 5;
+}
 .record-filter-bar {
   display: flex;
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
 }
-.record-filter-bar select,
 .record-filter-bar input {
   font-size: 13px;
+}
+.record-filter-picker {
+  position: relative;
+  min-width: 140px;
+}
+.record-filter-trigger {
+  width: 100%;
+  min-width: 140px;
+  min-height: 31px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.record-filter-trigger:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-hover);
+}
+.record-filter-caret {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+.record-filter-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 200;
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  padding: 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-surface);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+}
+.record-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.record-filter-actions input {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  font-size: 12px;
+}
+.record-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 4px 2px 2px;
+}
+.record-filter-chips button {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.record-filter-chips button[aria-pressed='true'] {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-surface-hover);
+}
+.record-filter-chips span {
+  padding: 4px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+.record-filter-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--color-border);
+}
+.record-filter-foot span {
+  color: var(--color-text-secondary);
+  font-size: 11px;
 }
 .header-actions {
   display: flex;
@@ -1722,6 +2137,14 @@ async function handleResetPassword(userId) {
   padding: 0 3px;
   margin-left: 4px;
   font-size: 0.85em;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-text);
+}
+.records-table .table-inline-action:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-on-hover);
 }
 .records-table .release-dir-edit-btn {
   flex-shrink: 0;
@@ -1825,18 +2248,11 @@ async function handleResetPassword(userId) {
   background: color-mix(in srgb, var(--color-success) 88%, var(--color-text));
   color: var(--color-success-background);
 }
+/* Size only — do not override .btn chrome (FilterBar uses the same btn btn-xs). */
 .btn-xs {
   font-size: 10px;
   padding: 0 4px;
   line-height: 1.4;
-  border: 1px solid var(--color-border);
-  border-radius: 3px;
-  background: transparent;
-  cursor: pointer;
-}
-.btn-xs:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-text-on-hover);
 }
 
 /* 排序表头样式 */

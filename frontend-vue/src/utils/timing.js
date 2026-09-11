@@ -31,8 +31,7 @@ function mergeGroup(result, analysis, scenario, group, values) {
     Object.entries(asObject(values))
       .filter(
         ([key, value]) =>
-          !['source', 'path', 'scenarios', ...GROUP_KEYS].includes(key) &&
-          typeof value !== 'object'
+          !['source', 'path', 'scenarios', ...GROUP_KEYS].includes(key) && typeof value !== 'object'
       )
       .map(([key, value]) => [metricName(key === 'period' ? 'clk_period' : key), value])
   )

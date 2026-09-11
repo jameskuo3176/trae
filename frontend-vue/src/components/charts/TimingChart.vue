@@ -101,9 +101,15 @@ function getMetricValue(record, metricKey) {
 function clockField(metricKey) {
   const short = metricKey.replace('_setup', '').replace('_hold', '')
   const fieldMap = {
-    wns: 'wns', tns: 'tns', nvp: 'nvp',
-    wns_setup: 'wns', tns_setup: 'tns', nvp_setup: 'nvp',
-    wns_hold: 'wns', tns_hold: 'tns', nvp_hold: 'nvp'
+    wns: 'wns',
+    tns: 'tns',
+    nvp: 'nvp',
+    wns_setup: 'wns',
+    tns_setup: 'tns',
+    nvp_setup: 'nvp',
+    wns_hold: 'wns',
+    tns_hold: 'tns',
+    nvp_hold: 'nvp'
   }
   return fieldMap[short] || fieldMap[metricKey] || metricKey
 }
@@ -126,7 +132,7 @@ const chartOption = computed(() => {
         data: cats,
         axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
       },
-      yAxis: { type: 'value', name: 'ns', axisLabel: { color: '#8b9bb4' } },
+      yAxis: { type: 'value', name: 'ps', axisLabel: { color: '#8b9bb4' } },
       series: [
         {
           name: m?.label || metric,
@@ -163,7 +169,7 @@ const chartOption = computed(() => {
         data: cats,
         axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
       },
-      yAxis: { type: 'value', name: 'ns', axisLabel: { color: '#8b9bb4' } },
+      yAxis: { type: 'value', name: 'ps', axisLabel: { color: '#8b9bb4' } },
       series
     }
   }
@@ -188,7 +194,7 @@ const chartOption = computed(() => {
       data: cats,
       axisLabel: { color: '#8b9bb4', rotate: cats.length > 6 ? 30 : 0 }
     },
-    yAxis: { type: 'value', name: 'ns', axisLabel: { color: '#8b9bb4' } },
+    yAxis: { type: 'value', name: 'ps', axisLabel: { color: '#8b9bb4' } },
     series
   }
 })
@@ -259,11 +265,7 @@ function clearClocks() {
         class="btn-sm"
         style="min-width: 120px; max-height: 72px"
       >
-        <option
-          v-for="pg in availablePathGroups"
-          :key="pg"
-          :value="pg"
-        >{{ pg }}</option>
+        <option v-for="pg in availablePathGroups" :key="pg" :value="pg">{{ pg }}</option>
       </select>
       <button class="btn btn-sm btn-default" @click="selectAllPathGroups">全选</button>
       <button class="btn btn-sm btn-default" @click="clearPathGroups">不限</button>
@@ -278,17 +280,17 @@ function clearClocks() {
         <thead>
           <tr>
             <th>记录</th>
-            <th>WNS (最差) ns</th>
-            <th>TNS (总负) ns</th>
+            <th>WNS (最差) ps</th>
+            <th>TNS (总负) ps</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="item in computedMetrics" :key="dashboard.selectionKey(item.record)">
             <td class="summary-label">{{ runLabel(item.record) }}</td>
-            <td :class="{ 'violation': item.wns != null && item.wns < 0 }">
+            <td :class="{ violation: item.wns != null && item.wns < 0 }">
               {{ item.wns != null ? item.wns.toFixed(3) : '—' }}
             </td>
-            <td :class="{ 'violation': item.tns != null && item.tns < 0 }">
+            <td :class="{ violation: item.tns != null && item.tns < 0 }">
               {{ item.tns != null ? item.tns.toFixed(3) : '—' }}
             </td>
           </tr>
@@ -376,8 +378,8 @@ function clearClocks() {
 }
 .summary-table .summary-label {
   max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 .summary-table .violation {
   color: #e74c3c;

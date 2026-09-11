@@ -55,7 +55,15 @@ function createDashboard() {
       power_total: 4,
       wns: -0.5,
       tns: -5,
-      cell_count: 180
+      cell_count: 180,
+      risk: {
+        rating: 'low',
+        auto_rating: 'low',
+        manual_rating: null,
+        source: 'automatic',
+        can_edit: true,
+        summary: { worst_wns: -30, worst_tns: -500 }
+      }
     }
   ])
   dashboard.selectAll()
@@ -100,5 +108,17 @@ describe('dashboard analytical tables', () => {
     expect(wrapper.text()).toContain('版本风险评估')
     await wrapper.get('select').setValue('high')
     expect(dashboardApi.setRisk).toHaveBeenCalledWith(1, '1', 'high')
+  })
+
+  it('renders each run risk assessment as its own row', () => {
+    const wrapper = mount(RiskOverviewPanel, { global: { plugins: [createDashboard()] } })
+    const rows = wrapper.findAll('.risk-grid article')
+
+    expect(rows).toHaveLength(2)
+    expect(rows[0].text()).toContain('Run #1')
+    expect(rows[0].text()).not.toContain('Run #2')
+    expect(rows[1].text()).toContain('Run #2')
+    expect(rows[1].text()).not.toContain('Run #1')
+    expect(rows.every(row => row.findAll('select').length === 1)).toBe(true)
   })
 })

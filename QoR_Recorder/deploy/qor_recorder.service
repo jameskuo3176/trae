@@ -11,9 +11,11 @@ Group=qor
 WorkingDirectory=/opt/qor_recorder
 EnvironmentFile=/opt/qor_recorder/.env
 Environment=HOST=127.0.0.1
-Environment=PORT=8000
+Environment=PORT=5000
 Environment=GUNICORN_WORKERS=3
 Environment=GUNICORN_TIMEOUT=120
+Environment=PYTHONUNBUFFERED=1
+Environment=LOG_DIR=/opt/qor_recorder/logs
 
 # start.sh validates the prebuilt offline venv, migrates Django, then execs gunicorn.
 ExecStart=/bin/bash /opt/qor_recorder/start.sh
@@ -60,6 +62,7 @@ LockPersonality=yes
 ReadWritePaths=/opt/qor_recorder/data \
                /opt/qor_recorder/uploads \
                /opt/qor_recorder/backups \
+               /opt/qor_recorder/config \
                /opt/qor_recorder/logs \
                /opt/qor_recorder/mongodbdir
 

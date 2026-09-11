@@ -188,26 +188,77 @@ def modules(request):
         except Exception as exc:
             diagnostics.append({'project_id': pid, 'message': str(exc)})
 
-    links = ProjectModule.objects.select_related('module').filter(project_id__in=project_ids)
+    links = list(
+        ProjectModule.objects.select_related('module')
+        .filter(project_id__in=project_ids)
+        .order_by('module__normalized_name', 'project_id')
+    )
+    owner_ids = {link.owner_id for link in links if link.owner_id is not None}
+    owners = {
+        user.id: user
+        for user in User.objects.filter(id__in=owner_ids)
+    } if owner_ids else {}
+
+    def _owner_payload(owner_id):
+        owner = owners.get(owner_id) if owner_id is not None else None
+        return {
+            'owner_id': owner_id,
+            'owner_username': owner.username if owner else None,
+            'owner_display_name': (
+                (owner.display_name or owner.username) if owner else None
+            ),
+        }
+
     if len(project_ids) == 1:
-        data = [{
-            'id': link.module_id,
-            'name': link.module.name,
-            'normalized_name': link.module.normalized_name,
-            'project_id': link.project_id,
-            'project_ids': [link.project_id],
-        } for link in links.order_by('module__normalized_name')]
+        data = []
+        for link in links:
+            payload = _owner_payload(link.owner_id)
+            data.append({
+                'id': link.module_id,
+                'name': link.module.name,
+                'normalized_name': link.module.normalized_name,
+                'project_id': link.project_id,
+                'project_ids': [link.project_id],
+                **payload,
+                'owner_ids': [link.owner_id] if link.owner_id is not None else [],
+                'owners': (
+                    [{
+                        'id': link.owner_id,
+                        'username': payload['owner_username'],
+                        'display_name': payload['owner_display_name'],
+                        'project_id': link.project_id,
+                    }]
+                    if link.owner_id is not None else []
+                ),
+            })
     else:
         grouped = {}
-        for link in links.order_by('module__normalized_name', 'project_id'):
+        for link in links:
             item = grouped.setdefault(link.module_id, {
                 'id': link.module_id,
                 'name': link.module.name,
                 'normalized_name': link.module.normalized_name,
                 'project_id': None,
                 'project_ids': [],
+                'owner_id': None,
+                'owner_username': None,
+                'owner_display_name': None,
+                'owner_ids': [],
+                'owners': [],
             })
             item['project_ids'].append(link.project_id)
+            if link.owner_id is not None and link.owner_id not in item['owner_ids']:
+                item['owner_ids'].append(link.owner_id)
+                payload = _owner_payload(link.owner_id)
+                item['owners'].append({
+                    'id': link.owner_id,
+                    'username': payload['owner_username'],
+                    'display_name': payload['owner_display_name'],
+                    'project_id': link.project_id,
+                })
+        for item in grouped.values():
+            if len(item['owner_ids']) == 1:
+                item.update(_owner_payload(item['owner_ids'][0]))
         data = list(grouped.values())
     return JsonResponse({
         'ok': True,
@@ -325,6 +376,15 @@ def _record_child(request, project_id, record_id, method):
     except Exception as exc:
         return _error('repository_error', 'record query failed', 503, {'reason': str(exc)})
     if value is None:
+        if method == 'get_raw_report':
+            return JsonResponse({
+                'ok': True,
+                'data': {
+                    'record_id': str(record_id),
+                    'project_id': project_id,
+                    'content': None,
+                },
+            })
         return _error('not_found', 'record not found', 404)
     if method == 'get_record':
         value.setdefault('project_id', project_id)

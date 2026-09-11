@@ -182,7 +182,7 @@ def test_admin_owner_viewer_dashboard_read_the_same_record_scope(record_projects
 
 
 @pytest.mark.django_db(transaction=True, databases='__all__')
-def test_record_owner_filter_matches_uploader(record_projects, client):
+def test_record_owner_filter_matches_module_release_owner(record_projects, client):
     env = record_projects
     project = env['projects'][0]
     with env['blocker'].unblock():
@@ -192,10 +192,7 @@ def test_record_owner_filter_matches_uploader(record_projects, client):
         })
         assert owners.status_code == 200
         owner_rows = owners.json()
-        assert {row['username'] for row in owner_rows} == {
-            'module-owner',
-            'module-outsider',
-        }
+        assert {row['username'] for row in owner_rows} == {'module-owner'}
 
         filtered = client.get('/api/qor_data', {
             'project_ids': str(project.id),
@@ -204,8 +201,13 @@ def test_record_owner_filter_matches_uploader(record_projects, client):
             'page_size': 50,
         }).json()['records']
         assert filtered
-        assert all(row['uploader_username'] == 'module-owner' for row in filtered)
-        assert all(row['owner_id'] == env['owner'].id for row in filtered)
+        assert all(row['release_owner_username'] == 'module-owner' for row in filtered)
+        assert any(row['uploader_username'] == 'module-outsider' for row in filtered)
+        outsider_upload = next(
+            row for row in filtered if row['uploader_username'] == 'module-outsider'
+        )
+        assert outsider_upload['owner_id'] == env['outsider'].id
+        assert outsider_upload['uploader_id'] == env['outsider'].id
 
         outsider_only = client.get('/api/qor_data', {
             'project_ids': str(project.id),
@@ -213,8 +215,56 @@ def test_record_owner_filter_matches_uploader(record_projects, client):
             'page': 1,
             'page_size': 50,
         }).json()['records']
-        assert [row['id'] for row in outsider_only] == [1]
-        assert outsider_only[0]['uploader_username'] == 'module-outsider'
+        assert outsider_only == []
+
+        multi_owner = client.get('/api/qor_data', {
+            'project_ids': str(project.id),
+            'owner_ids': f"{env['owner'].id},{env['outsider'].id}",
+            'page': 1,
+            'page_size': 50,
+        }).json()['records']
+        assert multi_owner
+        assert all(row['release_owner_username'] == 'module-owner' for row in multi_owner)
+
+
+@pytest.mark.django_db(transaction=True, databases='__all__')
+def test_qor_data_module_ids_accept_project_composites(record_projects, client):
+    env = record_projects
+    alpha, beta = env['projects']
+    with env['blocker'].unblock():
+        client.force_login(env['admin'])
+        rows = client.get('/api/qor_data', {
+            'project_ids': f'{alpha.id},{beta.id}',
+            'module_ids': f'{alpha.id}:1',
+            'page': 1,
+            'page_size': 50,
+        }).json()['records']
+        assert rows
+        assert all(row['project_id'] == alpha.id for row in rows)
+        assert all(row['module_id'] == 1 for row in rows)
+
+
+@pytest.mark.django_db(transaction=True, databases='__all__')
+def test_record_owner_display_and_filter_fall_back_without_module_mapping(
+    record_projects, client,
+):
+    env = record_projects
+    project = env['projects'][0]
+    with env['blocker'].unblock():
+        LegacyModuleMapping.objects.filter(project=project).delete()
+        client.force_login(env['owner'])
+
+        rows = client.get('/api/qor_data', {
+            'project_ids': str(project.id),
+            'owner_id': env['outsider'].id,
+            'page': 1,
+            'page_size': 50,
+        }).json()['records']
+
+        assert [row['id'] for row in rows] == [1]
+        assert rows[0]['release_owner_id'] is None
+        assert rows[0]['release_owner_username'] is None
+        assert rows[0]['uploader_username'] == 'module-outsider'
 
 
 @pytest.mark.django_db(transaction=True, databases='__all__')

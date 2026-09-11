@@ -43,6 +43,8 @@ NUMERIC_RANGES = {
     # cells
     'cell_count': (0, 1e9), 'instance_count': (0, 1e9),
     'net_count': (0, 1e9), 'sequential_cell_count': (0, 1e9),
+    'ram_cell_count': (0, 1e9), 'macro_cell_count': (0, 1e9),
+    'register_count': (0, 1e9),
     # frequency
     'target_frequency': (0, 1e6), 'achieved_frequency': (0, 1e6),
     # ratios (0-1 小数, 但允许 0-100 上传时自动归一)
@@ -55,7 +57,8 @@ NUMERIC_RANGES = {
 
 INT_FIELDS = {
     'nvp_setup', 'nvp_hold', 'cell_count', 'instance_count',
-    'net_count', 'sequential_cell_count',
+    'net_count', 'sequential_cell_count', 'ram_cell_count',
+    'macro_cell_count', 'register_count',
 }
 
 RATIO_FIELDS = {'mbb_ratio', 'clock_gating_ratio', 'utilization'}
@@ -74,6 +77,32 @@ class JSONUploadError(ValueError):
         self.message = message
         self.status_code = status_code
         super().__init__(f'{path}: {message}')
+
+
+def _normalize_upload_full_dir_alias(upload: dict, path: str) -> None:
+    """Canonicalize historical upload.directory to upload.full_dir in place."""
+    values = {}
+    for key in ('full_dir', 'directory'):
+        value = upload.get(key)
+        if value is None:
+            values[key] = ''
+            continue
+        if not isinstance(value, str):
+            raise JSONUploadError(f'{path}.{key}', '若提供则必须为字符串')
+        values[key] = value.strip()
+
+    full_dir = values['full_dir']
+    directory = values['directory']
+    if full_dir and directory and full_dir != directory:
+        raise JSONUploadError(
+            path,
+            'upload.full_dir 与 upload.directory 同时存在但值不同',
+        )
+
+    canonical = full_dir or directory
+    if canonical:
+        upload['full_dir'] = canonical
+    upload.pop('directory', None)
 
 
 # =========================================================================
@@ -103,6 +132,7 @@ def validate_upload_json(data: Any) -> dict:
     upload = data.get('upload')
     if not upload or not isinstance(upload, dict):
         raise JSONUploadError('$.upload', '必填, 对象')
+    _normalize_upload_full_dir_alias(upload, '$.upload')
     _validate_upload(upload, '$.upload')
 
     # records (可选但若有则必须为非空数组)
@@ -146,7 +176,7 @@ def _validate_upload(upload: dict, path: str) -> None:
     if not full_dir or not isinstance(full_dir, str):
         raise JSONUploadError(f'{path}.full_dir', '必填, 字符串；version 仅从该路径派生')
     try:
-        derive_version(full_dir)
+        derive_version(full_dir, fallback=version)
     except PathDerivationError as exc:
         raise JSONUploadError(f'{path}.full_dir', exc.message) from exc
 
@@ -190,6 +220,18 @@ def _validate_record(rec: Any, path: str) -> None:
                 if k == 'path':
                     if v is not None and not isinstance(v, str):
                         raise JSONUploadError(f'{path}.clocks.{cname}.path', '字符串')
+                elif k in {'nvp', 'hold_nvp'}:
+                    if (
+                        v is not None
+                        and (
+                            not isinstance(v, int)
+                            or isinstance(v, bool)
+                            or v < 0
+                        )
+                    ):
+                        raise JSONUploadError(
+                            f'{path}.clocks.{cname}.{k}', '非负整数'
+                        )
                 else:
                     if v is not None and not isinstance(v, (int, float)):
                         raise JSONUploadError(f'{path}.clocks.{cname}.{k}', '数值')
@@ -277,7 +319,11 @@ def _extract_qor_fields(rec: dict) -> dict:
     a = rec.get('area') or {}
     if a.get('total') is not None:         flat['area_total'] = _coerce_num(a['total'])
     if a.get('combinational') is not None: flat['area_combinational'] = _coerce_num(a['combinational'])
-    if a.get('sequential') is not None:    flat['area_sequential'] = _coerce_num(a['sequential'])
+    if a.get('sequential') is not None:
+        flat['area_sequential'] = _coerce_num(a['sequential'])
+    elif a.get('non_combinational') is not None:
+        # Native DC alias: non_combinational → Sequential area
+        flat['area_sequential'] = _coerce_num(a['non_combinational'])
     if a.get('black_box') is not None:     flat['area_black_box'] = _coerce_num(a['black_box'])
     if a.get('macro') is not None:         flat['area_macro'] = _coerce_num(a['macro'])
 
@@ -302,11 +348,21 @@ def _extract_qor_fields(rec: dict) -> dict:
 
     # cells
     c = rec.get('cells') or {}
-    for k in ('cell_count', 'instance_count', 'net_count', 'sequential_cell_count'):
+    for k in (
+        'cell_count', 'instance_count', 'net_count',
+        'sequential_cell_count', 'ram_cell_count',
+        'macro_cell_count', 'register_count',
+    ):
         if c.get(k) is not None:
             v = _coerce_num(c[k])
             if v is not None:
                 flat[k] = int(v) if k in INT_FIELDS else v
+
+    # register_count may also sit at record top-level (DC converters)
+    if 'register_count' not in flat and rec.get('register_count') is not None:
+        v = _coerce_num(rec['register_count'])
+        if v is not None:
+            flat['register_count'] = int(v)
 
     # frequency
     f = rec.get('frequency') or {}
@@ -382,7 +438,14 @@ def json_to_qor_records(
         full_dir = validate_full_dir(full_dir, 'full_dir')  # 校验绝对路径
         try:
             full_dir = normalize_full_dir(full_dir)
-            version = derive_version(full_dir)
+            version = derive_version(
+                full_dir,
+                fallback=(
+                    _sanitize_str(rec.get('version'))
+                    or default_version
+                    or _sanitize_str(upload.get('version'))
+                ),
+            )
         except PathDerivationError as exc:
             raise JSONUploadError('$.records[].full_dir', exc.message) from exc
         release_dir = (_sanitize_str(rec.get('release_dir')) or

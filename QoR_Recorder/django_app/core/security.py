@@ -9,6 +9,7 @@ Django 版本, 与 Flask security.py 功能一致。
 """
 import hashlib
 import hmac
+import logging
 import re
 import time
 from collections import defaultdict, deque
@@ -16,6 +17,8 @@ from functools import wraps
 
 from django.conf import settings
 from django.http import JsonResponse
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================================
@@ -313,11 +316,13 @@ def check_secret_key():
         return
 
     if settings.DEBUG:
-        print('[SECURITY] 警告: SECRET_KEY 仍是默认值, 仅允许 DEBUG 模式使用!')
+        logger.warning('[SECURITY] SECRET_KEY 仍是默认值, 仅允许 DEBUG 模式使用!')
         return
 
     if not enforce:
-        print('[SECURITY] 警告: SECRET_KEY 仍是默认值 (ENFORCE_SECRET_KEY=0 已关闭强制检查)')
+        logger.warning(
+            '[SECURITY] SECRET_KEY 仍是默认值 (ENFORCE_SECRET_KEY=0 已关闭强制检查)'
+        )
         return
 
     raise RuntimeError(

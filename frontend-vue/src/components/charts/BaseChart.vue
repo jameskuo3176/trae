@@ -11,8 +11,7 @@ const props = defineProps({
 })
 
 const { initChart, setOption, resize, dispose } = useCharts()
-const { chartType, height, option, table, tableWidth, tableFontSize } =
-  useChartPresentation(props)
+const { chartType, height, option, table, tableWidth, tableFontSize } = useChartPresentation(props)
 const isTable = computed(() => chartType.value === 'table')
 const chartHost = ref(null)
 let chartInitialized = false
@@ -154,6 +153,7 @@ watch(
   z-index: 1;
   background: var(--color-surface);
   text-align: left;
+  white-space: pre-line;
 }
 .chart-table thead th:first-child {
   z-index: 3;

@@ -34,6 +34,32 @@ def test_v2_modules_require_auth_and_explicit_project(client):
 
 
 @pytest.mark.django_db
+def test_v2_modules_include_release_owner_from_project_module(client):
+    admin = User.objects.create_user('admin-owner-modules', password='x', role='admin')
+    release = User.objects.create_user(
+        'release-owner', password='x', role='owner', display_name='Release Owner'
+    )
+    client.force_login(admin)
+    project = Project.objects.create(name='Owned modules')
+    module = GlobalModule.objects.create(name='CPU', normalized_name='ignored')
+    ProjectModule.objects.create(project=project, module=module, owner_id=release.id)
+    response = client.get('/api/v2/modules', {'project_id': project.id})
+    assert response.status_code == 200
+    row = response.json()['data'][0]
+    assert row['id'] == module.id
+    assert row['owner_id'] == release.id
+    assert row['owner_username'] == 'release-owner'
+    assert row['owner_display_name'] == 'Release Owner'
+    assert row['owner_ids'] == [release.id]
+    assert row['owners'] == [{
+        'id': release.id,
+        'username': 'release-owner',
+        'display_name': 'Release Owner',
+        'project_id': project.id,
+    }]
+
+
+@pytest.mark.django_db
 def test_unsafe_legacy_endpoint_uses_x_csrftoken():
     admin = User.objects.create_user('csrf-admin', password='x', role='admin')
     client = Client(enforce_csrf_checks=True)
@@ -79,6 +105,29 @@ def test_v2_records_are_paginated_without_eager_raw_payload(client):
         raw = client.get(f'/api/v2/projects/{project.id}/records/2/raw')
         assert raw.json()['data']['content'] == 'raw report'
         repository.get_raw_report.assert_called_once_with(project.id, '2')
+
+
+@pytest.mark.django_db
+def test_v2_raw_report_returns_empty_payload_when_record_has_no_raw(client):
+    admin = User.objects.create_user('empty-raw-admin', password='x', role='admin')
+    project = Project.objects.create(name='Empty Raw')
+    client.force_login(admin)
+    repository = Mock()
+    repository.get_record.return_value = {
+        'id': '6a858e1eafb0e39b66a02e96',
+        'project_id': project.id,
+        'version': 'v1',
+    }
+    repository.get_raw_report.return_value = None
+    with patch('django_app.api_v2.get_record_repository', return_value=repository):
+        response = client.get(
+            f'/api/v2/projects/{project.id}/records/6a858e1eafb0e39b66a02e96/raw'
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body['ok'] is True
+    assert body['data']['content'] is None
+    assert body['data']['record_id'] == '6a858e1eafb0e39b66a02e96'
 
 
 @pytest.mark.django_db

@@ -6,13 +6,18 @@ from dataclasses import dataclass
 
 
 _REGR_SEGMENT = re.compile(r"^regr_[A-Za-z0-9][A-Za-z0-9._-]*$", re.IGNORECASE)
+_SYN_REGR_SEGMENT = re.compile(r"^syn_regr_[A-Za-z0-9][A-Za-z0-9._-]*$", re.IGNORECASE)
 _QUARTER_WEEK_SEGMENT = re.compile(r"^\d{4}Q[1-4]_w\d+$", re.IGNORECASE)
+_LEGACY_RELEASE_SEGMENT = re.compile(r"^v\d+(?:[._-]\d+)*$", re.IGNORECASE)
+_CONTROLLED_FALLBACK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 
 
 def _is_version_segment(value: str) -> bool:
     return bool(
-        _REGR_SEGMENT.fullmatch(value)
+        _SYN_REGR_SEGMENT.fullmatch(value)
+        or _REGR_SEGMENT.fullmatch(value)
         or _QUARTER_WEEK_SEGMENT.fullmatch(value)
+        or _LEGACY_RELEASE_SEGMENT.fullmatch(value)
     )
 
 
@@ -52,12 +57,17 @@ def normalize_full_dir(full_dir: str) -> str:
     return normalized
 
 
-def derive_version(full_dir: str) -> str:
+def derive_version(full_dir: str, fallback: str | None = None) -> str:
     """Derive version only from full_dir.
 
-    Supported version segments are ``regr_*`` and release-train names such as
-    ``2026Q3_w3``. If ``main`` is present, the nearest valid version segment
-    directly before it wins. Otherwise the last valid version segment is used.
+    Supported version segments are ``syn_regr_*``, ``regr_*``, release-train
+    names such as ``2026Q3_w3``, and legacy release names such as ``v1``/``v1.2``.
+    If ``main`` is present, the nearest valid version segment directly before it
+    wins. Otherwise the last valid version segment is used.
+
+    ``fallback`` is only used by controlled import surfaces when the path has
+    no version segment. It is deliberately validated and opt-in so callers
+    cannot silently recreate the historical unconditional ``v1`` fallback.
     """
     normalized = normalize_full_dir(full_dir)
     segments = [segment for segment in normalized.split("/") if segment]
@@ -74,10 +84,18 @@ def derive_version(full_dir: str) -> str:
             return segments[index - 1]
     if candidates:
         return segments[candidates[-1]]
+    if fallback is not None:
+        fallback_value = str(fallback).strip()
+        if _CONTROLLED_FALLBACK.fullmatch(fallback_value):
+            return fallback_value
+        raise PathDerivationError(
+            "invalid_version_fallback",
+            "upload version fallback must contain only letters, numbers, '.', '_' or '-'",
+            full_dir,
+        )
     raise PathDerivationError(
         "version_not_in_path",
-        "full_dir must contain a valid regr_* or YYYYQn_wN version segment; "
-        "new imports have no version fallback",
+        "full_dir must contain a valid syn_regr_*, regr_*, YYYYQn_wN, or vN version segment",
         full_dir,
     )
 

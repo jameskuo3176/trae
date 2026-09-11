@@ -15,7 +15,7 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-QOR_SERVER ?= http://127.0.0.1:8000
+QOR_SERVER ?= http://127.0.0.1:5000
 PROJECT_ID ?= 6
 MODULE_NAME ?= windows_upload_demo
 VERSION ?= linux_$(shell date +%Y%m%d_%H%M%S)
